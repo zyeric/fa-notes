@@ -44,6 +44,8 @@ The assumed reader frontier is:
 - ordinary attention and the broad purpose of FlashAttention are familiar;
 - online softmax, CUDA work ownership, state residence, tile dispatch, and
   reduction order need to be rebuilt explicitly;
+- generic CTA/SM admission and occupancy background lives in
+  [`gpu-hardware-notes`](https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/gpu-execution-model.md);
 - forward has completed a reader-question pass;
 - backward has a mathematical derivation and source-level determinism
   diagnosis, but its physical execution has not yet received the same
@@ -555,6 +557,104 @@ The same parameter name has a materially different backward consequence:
 This is why forward splitting preserves unique output ownership while the
 historical sequence-parallel backward uses atomic `dQ` accumulation.
 
+#### From the grid to physical SM residence
+
+`blockIdx.z` is the Q-tile **split identity**, not one Q-tile number and not an
+SM number. The three layers are:
+
+```text
+logical work:
+    Q tiles and K/V tiles
+
+CUDA launch:
+    CTA (blockIdx.x=b, blockIdx.y=h, blockIdx.z=r)
+
+physical execution:
+    the GPU admits each pending CTA onto an SM with enough free resources
+```
+
+The source's loop nesting is also easy to misread unless the CTA boundary is
+shown:
+
+```text
+parallel over CTAs (b, h, r):
+    for K/V tile j:                     # device_1xN_loop
+        load K_j and V_j
+        for Q tile i = r, r+R, r+2R:   # device_1xN_
+            load Q_i and prior state[i]
+            update state[i] with K_j, V_j
+            store state[i]
+```
+
+For a non-causal worked example, let:
+
+```text
+Nq = 64, Br = 16  -> four Q tiles Q0..Q3
+Nk = 512, Bc = 128 -> four K/V tiles KV0..KV3
+R = num_splits = 2
+```
+
+Then CTA `(b,h,0)` owns Q0 and Q2, while CTA `(b,h,1)` owns Q1 and Q3. For
+every K/V-tile iteration, both CTAs separately load that K/V tile and update
+only their own Q rows:
+
+```text
+CTA z=0: KV0 -> (Q0,Q2), KV1 -> (Q0,Q2), ... KV3 -> (Q0,Q2)
+CTA z=1: KV0 -> (Q1,Q3), KV1 -> (Q1,Q3), ... KV3 -> (Q1,Q3)
+```
+
+The K/V-outer order lets one CTA retain the current K/V tile on chip while it
+visits several owned Q tiles. Different CTAs cannot reuse one another's
+ordinary shared-memory allocation, so increasing `num_splits` duplicates K/V
+loads. This is the physical source of the parallelism-versus-traffic tradeoff.
+
+Shared memory is physically SRAM in an SM, but it is logically CTA-private.
+When the scheduler makes several CTAs resident on one SM, each gets a disjoint
+allocation from that SM's shared-memory pool. In the normal CUDA execution
+model used here, a resident CTA executes on one SM; `blockIdx.z` does not bind
+it to a particular SM.
+
+#### Compile-time specialization, launch-time choice, and CTA admission
+
+FA1 v1.0.9 separates three decisions:
+
+```text
+build time:
+    compile template families for dtype/mode and head-dimension buckets
+    -> ptxas fixes the machine instruction stream and register allocation
+
+host launch time:
+    select one compiled kernel from shape/mode
+    -> compute the requested dynamic shared-memory size for this launch
+    -> query cudaOccupancyMaxActiveBlocksPerMultiprocessor
+    -> choose num_splits and grid(batch, heads, num_splits)
+
+GPU execution time:
+    admit pending CTAs to SMs as resource slots become available
+    -> schedule ready warps from resident CTAs
+```
+
+“Precompiled” means precompiled code and resource metadata, not precomputed
+attention results. The host is choosing from that code menu; this historical
+path is not compiling a new kernel for each input. JIT-based systems can add a
+compile/cache step at runtime, but that is a different implementation model.
+
+The occupancy call is made for the selected kernel function with its block size
+and dynamic shared-memory request. Its answer is a theoretical maximum active
+CTA count per SM for that device and launch configuration. It does not inspect
+which SM is momentarily busy, and it does not choose the final CTA-to-SM map.
+At admission time, registers, shared memory, threads/warps, the architectural
+block limit, and other hardware constraints all have to fit. Allocation
+granularity makes the exact calculation subtler than simply dividing headline
+capacities.
+
+This also explains why a source branch cannot normally “use fewer registers
+this time” and increase residency: register allocation and static shared-memory
+requirements belong to the selected compiled kernel, while dynamic shared
+memory and launch dimensions belong to the launch. Theoretical occupancy is
+only a capacity bound; achieved occupancy and end-to-end performance still
+depend on available work, memory stalls, tile reuse, and extra traffic.
+
 #### Where the running state resides
 
 Within one $(Q_i,K_j,V_j)$ tile operation:
@@ -1000,11 +1100,14 @@ For a new attention kernel, ask these questions in order:
    explicit synchronization protocol?
 7. **Intra-CTA reductions:** Are GEMM, row-max, row-sum, and dot-product trees
    fixed for the resolved kernel?
-8. **Dispatch identity:** Can shape, architecture, SM count, autotuning,
+8. **Compile/launch/admission split:** Which resource requirements and
+   instruction choices are fixed in the binary, which launch parameters are
+   selected by the host, and which placement decisions belong to the GPU?
+9. **Dispatch identity:** Can shape, architecture, SM count, autotuning,
    workspace, or compiler state select another plan?
-9. **Mutable state:** Are Philox seed/offset, dropout masks, streams, or
+10. **Mutable state:** Are Philox seed/offset, dropout masks, streams, or
    workspaces replayed and initialized identically?
-10. **Claim boundary:** Is the claim same-process repeatability, fresh-process
+11. **Claim boundary:** Is the claim same-process repeatability, fresh-process
     repeatability, clean-build repeatability, or cross-hardware equality?
 
 An atomic instruction is evidence of a possible multi-writer sum, not an
@@ -1112,6 +1215,9 @@ The completed forward track has answered:
 - how multi-head and packed-varlen indexing wrap the same per-head algorithm;
 - where forward state resides, how Q-row `num_splits` schedules work, and how
   causal skipping is balanced;
+- how logical Q/K/V tiles map to CTAs and then to physical SM residence;
+- what build-time specialization, host-side occupancy/launch choice, and
+  hardware CTA admission each decide;
 - which A100/H100 forward tiles the historical source selects, how it
   pipelines them, and why the Tensor Core $d$ reduction repeats;
 
