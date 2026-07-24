@@ -2,8 +2,9 @@
 
 Date: 2026-07-24
 
-Status: FA1 algorithm and historical CUDA source study complete; CPU-only
-source reasoning, with GPU validation still pending
+Status: FA1 algorithm and historical CUDA forward study complete; backward
+derivation and source mechanism recorded but not yet discussed at the same
+reader-driven depth; CPU-only reasoning, with GPU validation still pending
 
 ## Scope And Reading Contract
 
@@ -30,6 +31,55 @@ The paper and the implementation are separate evidence. The paper proves that
 the tiled algorithm computes the same mathematical attention function. The
 CUDA source is needed to decide who writes each output, which reductions run
 concurrently, and what the `deterministic` option actually changes.
+
+### Document role and reader frontier
+
+This is both the human learning narrative and the pinned FA1 source audit. It
+follows the repo-level
+[kernel and communication research workflow](../../../../../kernel_communication_research.md)
+without splitting one tightly coupled operator across several files.
+
+The assumed reader frontier is:
+
+- ordinary attention and the broad purpose of FlashAttention are familiar;
+- online softmax, CUDA work ownership, state residence, tile dispatch, and
+  reduction order need to be rebuilt explicitly;
+- forward has completed a reader-question pass;
+- backward has a mathematical derivation and source-level determinism
+  diagnosis, but its physical execution has not yet received the same
+  question-by-question pass.
+
+### Recommended reading paths
+
+For the completed forward track, read straight through Sections 1--9. The
+lowering path is:
+
+```text
+ordinary attention
+  -> stable and online softmax
+  -> paper Q/K/V tiling
+  -> v1.0.9 dispatch and CTA ownership
+  -> memory residence and Tensor Core reductions
+  -> causal/varlen scheduling
+  -> fixed-envelope forward determinism
+```
+
+For backward, first finish the forward track, then read Sections 10--12 before
+the shared verdict and verification sections.
+
+### Lowering and evidence map
+
+| Layer | FA1 object | Primary section/evidence |
+| --- | --- | --- |
+| mathematical contract | $O=\operatorname{softmax}(QK^\top)V$ | Sections 1--5 |
+| reference algorithm | materialized scores/probabilities | Section 3 |
+| execution rewrite | tiled online softmax without $N^2$ HBM state | Sections 5--6 |
+| forward kernel pattern | one owner over Q rows, sequential K/V traversal | Section 9 |
+| CUDA model | CTA grid, warps, shared/global state, MMA chain | Section 9 |
+| hardware envelope | SM80/SM90 resources and Tensor Core instructions | Section 9 |
+| backward contract | recompute $P$; produce $dQ,dK,dV$ | Sections 10--11 |
+| backward implementation | single owner or sequence-K partial `dQ` writers | Section 12 |
+| scoped claim | conditional forward/backward repeatability | Sections 13--18 |
 
 ## 1. Four Terms That Must Not Be Collapsed
 
@@ -336,132 +386,7 @@ Therefore these two claims can both be true:
 Likewise, two deterministic FA1 kernels with different tile plans can each
 repeat exactly within their own plan and still disagree with each other.
 
-## 9. Backward, Derived Before It Is Tiled
-
-Let $dO=\partial\phi/\partial O$ be the incoming gradient.
-
-### 9.1 Gradient of V
-
-Since $O=PV$:
-
-$$
-dV=P^\top dO.
-$$
-
-Elementwise, every query row contributes to each $dV_j$:
-
-$$
-dV_j=\sum_i P_{ij}dO_i.
-$$
-
-### 9.2 Gradient of P
-
-Again from $O=PV$:
-
-$$
-dP=dO\,V^\top,\qquad
-dP_{ij}=dO_i^\top V_j.
-$$
-
-### 9.3 Gradient through softmax
-
-For one row, the softmax Jacobian gives:
-
-$$
-dS_{ij}=P_{ij}(dP_{ij}-D_i),
-$$
-
-where
-
-$$
-D_i=\sum_j P_{ij}dP_{ij}.
-$$
-
-The apparent reduction over the full probability row can be replaced by a
-small dot product:
-
-$$
-D_i
-=\sum_j P_{ij}(dO_i^\top V_j)
-=dO_i^\top\left(\sum_jP_{ij}V_j\right)
-=dO_i^\top O_i.
-$$
-
-This identity is crucial. Forward already saved $O_i$, so backward can compute
-$D_i$ in $O(d)$ work without first materializing the full $P$ row.
-
-### 9.4 Gradients of Q and K
-
-For $S=QK^\top$:
-
-$$
-dQ=dS\,K,\qquad
-dK=dS^\top Q.
-$$
-
-With a softmax scale $\tau$, $S=\tau QK^\top$, so both expressions gain the
-factor $\tau$.
-
-### 9.5 Recompute P instead of saving it
-
-Forward saves the row maximum $m_i$ and exponential sum $\ell_i$, or
-equivalently the log-sum-exp:
-
-$$
-\operatorname{LSE}_i=m_i+\log\ell_i.
-$$
-
-For a recomputed score tile:
-
-$$
-P_{ij}=e^{S_{ij}-\operatorname{LSE}_i}
-=\frac{e^{S_{ij}-m_i}}{\ell_i}.
-$$
-
-Backward can therefore recreate one $P_{ij}$ tile from $Q_i,K_j$ and the
-linear-sized saved normalization state. It trades recomputation for avoiding
-an $N\times N$ saved tensor.
-
-## 10. FA1 Paper Backward Tiling
-
-The paper's abstract backward loop is:
-
-```text
-initialize dQ, dK, dV to zero
-for each K/V tile j:
-    keep local dK_j and dV_j accumulators on chip
-    for each Q tile i:
-        load Q_i, O_i, dO_i, dQ_i, l_i, m_i
-        recompute S_ij and P_ij
-        D_i = rowsum(dO_i * O_i)
-        dP_ij = dO_i V_j^T
-        dS_ij = P_ij * (dP_ij - D_i)
-        dV_j += P_ij^T dO_i
-        dK_j += tau * dS_ij^T Q_i
-        dQ_i += tau * dS_ij K_j
-    write dK_j and dV_j once
-```
-
-This exposes three different ownership shapes:
-
-| Output | Contributions | Natural owner in the paper loop |
-| --- | --- | --- |
-| $dQ_i$ | all K/V tiles $j$ | query row tile $i$, revisited across $j$ |
-| $dK_j$ | all query tiles $i$ | key tile $j$ |
-| $dV_j$ | all query tiles $i$ | value tile $j$ |
-
-The serial pseudocode gives $dQ_i$ a fixed $j=1,2,\ldots,T_c$ update order.
-It does not prove that a parallel CUDA implementation preserves that order.
-Parallelizing different $j$ tiles is attractive for occupancy, but then
-several CTAs produce partial contributions to the same $dQ_i$.
-
-This is the bridge from the math to the determinism question:
-
-> Find every many-to-one sum, then ask whether one worker owns the complete
-> sum or whether independent workers combine partial sums into a shared
-> destination.
-
-## 11. What The FA1 v1.0.9 CUDA Source Actually Does
+## 9. FA1 v1.0.9 Source Map And Forward Audit
 
 The v1.0.9 code is an optimized implementation, not a literal transcription of
 the paper loop. The important source landmarks are:
@@ -486,7 +411,52 @@ the paper loop. The important source landmarks are:
 - `tests/test_flash_attn.py`: repeated-output race tests and the explicit
   comment that sequence-K parallelism makes `dQ` nondeterministic.
 
-### 11.1 Forward Execution Walkthrough
+### 9.1 Forward audit at a glance
+
+Boundary contract:
+
+| Input/state | Role in the studied path |
+| --- | --- |
+| Q, K, V | FP16/BF16 tensors with equal head count; packed-varlen offsets are separate metadata |
+| scale and causal mode | applied while forming/masking score tiles |
+| dropout RNG | logical-coordinate Philox state that must replay exactly |
+| O and LSE | semantic output plus saved normalization state |
+| padded LSE / scratch | implementation storage, not automatically valid comparison bytes |
+
+Ownership and order:
+
+| Value | Contributors | Physical owner/combine | Order |
+| --- | --- | --- | --- |
+| one $O_i$ Q-row tile | all K/V tiles | one CTA owns the complete running state | fixed K/V traversal |
+| one $S_{ij}$ fragment | head-dimension chunks | one dependent MMA accumulator chain | fixed in the compiled kernel |
+| row max/sum | columns in the current score tile | intra-CTA reduction | fixed tree for the resolved specialization |
+| distinct heads/batches | none across each other | disjoint CTAs and output regions | scheduler completion order is irrelevant |
+
+State residence:
+
+| State | Residence/lifetime |
+| --- | --- |
+| Q/K/V tile fragments | shared memory and registers during a tile operation |
+| score and GEMM accumulators | Tensor Core accumulator registers |
+| row reduction scratch | registers plus shared memory |
+| partial normalized O and LSE | FP32 global buffers between K/V-tile steps when required |
+| final O | requested output dtype in global memory |
+
+Resource and progress ledgers:
+
+- compute: QK MMA, row max/sum/exponential work, and PV MMA remain ordered by
+  true data dependencies within one owner;
+- data: larger K/V tiles increase reuse and reduce partial-state round trips
+  but consume more registers/shared memory;
+- concurrency: `batch * heads * num_splits` creates independent CTA work;
+- liveness: forward has no cross-CTA producer/consumer ring or shared numeric
+  destination, so progress does not depend on another CTA publishing a
+  partial-O generation.
+
+The following walkthrough supplies the source evidence and boundary cases
+behind this compact record.
+
+### 9.2 Forward execution walkthrough
 
 #### Batch, heads, and packed variable lengths
 
@@ -811,7 +781,140 @@ The source race test repeatedly exact-compares forward outputs. This supports
 fixed-plan repeatability, while the ownership and reduction structure explain
 why there is no visible cross-CTA numeric race.
 
-### 11.2 Backward with `num_splits == 1`
+## 10. Backward, Derived Before It Is Tiled
+
+Let $dO=\partial\phi/\partial O$ be the incoming gradient.
+
+### 10.1 Gradient of V
+
+Since $O=PV$:
+
+$$
+dV=P^\top dO.
+$$
+
+Elementwise, every query row contributes to each $dV_j$:
+
+$$
+dV_j=\sum_i P_{ij}dO_i.
+$$
+
+### 10.2 Gradient of P
+
+Again from $O=PV$:
+
+$$
+dP=dO\,V^\top,\qquad
+dP_{ij}=dO_i^\top V_j.
+$$
+
+### 10.3 Gradient through softmax
+
+For one row, the softmax Jacobian gives:
+
+$$
+dS_{ij}=P_{ij}(dP_{ij}-D_i),
+$$
+
+where
+
+$$
+D_i=\sum_j P_{ij}dP_{ij}.
+$$
+
+The apparent reduction over the full probability row can be replaced by a
+small dot product:
+
+$$
+D_i
+=\sum_j P_{ij}(dO_i^\top V_j)
+=dO_i^\top\left(\sum_jP_{ij}V_j\right)
+=dO_i^\top O_i.
+$$
+
+This identity is crucial. Forward already saved $O_i$, so backward can compute
+$D_i$ in $O(d)$ work without first materializing the full $P$ row.
+
+### 10.4 Gradients of Q and K
+
+For $S=QK^\top$:
+
+$$
+dQ=dS\,K,\qquad
+dK=dS^\top Q.
+$$
+
+With a softmax scale $\tau$, $S=\tau QK^\top$, so both expressions gain the
+factor $\tau$.
+
+### 10.5 Recompute P instead of saving it
+
+Forward saves the row maximum $m_i$ and exponential sum $\ell_i$, or
+equivalently the log-sum-exp:
+
+$$
+\operatorname{LSE}_i=m_i+\log\ell_i.
+$$
+
+For a recomputed score tile:
+
+$$
+P_{ij}=e^{S_{ij}-\operatorname{LSE}_i}
+=\frac{e^{S_{ij}-m_i}}{\ell_i}.
+$$
+
+Backward can therefore recreate one $P_{ij}$ tile from $Q_i,K_j$ and the
+linear-sized saved normalization state. It trades recomputation for avoiding
+an $N\times N$ saved tensor.
+
+## 11. FA1 Paper Backward Tiling
+
+The paper's abstract backward loop is:
+
+```text
+initialize dQ, dK, dV to zero
+for each K/V tile j:
+    keep local dK_j and dV_j accumulators on chip
+    for each Q tile i:
+        load Q_i, O_i, dO_i, dQ_i, l_i, m_i
+        recompute S_ij and P_ij
+        D_i = rowsum(dO_i * O_i)
+        dP_ij = dO_i V_j^T
+        dS_ij = P_ij * (dP_ij - D_i)
+        dV_j += P_ij^T dO_i
+        dK_j += tau * dS_ij^T Q_i
+        dQ_i += tau * dS_ij K_j
+    write dK_j and dV_j once
+```
+
+This exposes three different ownership shapes:
+
+| Output | Contributions | Natural owner in the paper loop |
+| --- | --- | --- |
+| $dQ_i$ | all K/V tiles $j$ | query row tile $i$, revisited across $j$ |
+| $dK_j$ | all query tiles $i$ | key tile $j$ |
+| $dV_j$ | all query tiles $i$ | value tile $j$ |
+
+The serial pseudocode gives $dQ_i$ a fixed $j=1,2,\ldots,T_c$ update order.
+It does not prove that a parallel CUDA implementation preserves that order.
+Parallelizing different $j$ tiles is attractive for occupancy, but then
+several CTAs produce partial contributions to the same $dQ_i$.
+
+This is the bridge from the math to the determinism question:
+
+> Find every many-to-one sum, then ask whether one worker owns the complete
+> sum or whether independent workers combine partial sums into a shared
+> destination.
+
+## 12. FA1 v1.0.9 Backward Audit
+
+This is the current backward source skeleton. It establishes the decisive
+ownership difference and the meaning of the public deterministic control, but
+it should receive the same state-residence, tile, pipeline, and boundary-case
+question pass as forward before the FA1 study is considered equally deep in
+both directions.
+
+### 12.1 Backward with `num_splits == 1`
 
 The non-sequence-parallel path launches one CTA for each batch/head pair. That
 CTA walks the K/V tiles and preserves the accumulation order for the affected
@@ -823,7 +926,7 @@ The v1.0.9 Python API maps `deterministic=True` to
 backward; it declines the faster cross-K-tile parallel decomposition that
 would create multiple `dQ` writers.
 
-### 11.3 Backward with `num_splits > 1`
+### 12.2 Backward with `num_splits > 1`
 
 The sequence-parallel path launches CTAs over K/V column tiles:
 
@@ -842,7 +945,7 @@ The v1.0.9 tests encode exactly this diagnosis: forward, `dK`, and `dV` are
 exact-compared across repeats, while sequence-parallel `dQ` is allowed a tiny
 arithmetic tolerance and is annotated as nondeterministic.
 
-### 11.4 Dropout state
+### 12.3 Dropout state
 
 With dropout, deterministic replay also requires the same random mask. The
 source stores Philox RNG state in forward and constructs offsets from logical
@@ -854,7 +957,7 @@ It does not excuse a caller from replaying the same seed and offset. An
 earlier random operation that consumes a different number of counters can
 change attention dropout even if the attention kernel itself is unchanged.
 
-## 12. The FA1 Determinism Verdict
+## 13. The FA1 Determinism Verdict
 
 For the pinned v1.0.9 CUDA implementation:
 
@@ -877,7 +980,7 @@ This verdict is intentionally narrower than:
 - a claim about FA2 or later implementations;
 - a claim about every Triton, ROCm, inference, sparse, or KV-cache path.
 
-## 13. Reusable Proof Obligations Learned From FA1
+## 14. Reusable Proof Obligations Learned From FA1
 
 For a new attention kernel, ask these questions in order:
 
@@ -910,7 +1013,7 @@ can reach the same address. Conversely, the absence of an atomic is not a
 complete proof if buffers alias or another kernel performs an unordered
 reduction.
 
-## 14. Counterexamples That Prevent Overclaiming
+## 15. Counterexamples That Prevent Overclaiming
 
 1. A deterministic kernel and a reference kernel can disagree bitwise because
    deterministic does not mean reference-identical.
@@ -927,12 +1030,12 @@ reduction.
 6. A fixed source commit can produce a different reduction plan after a
    compiler, architecture, or generated-artifact change.
 
-## 15. Future FA1 Component Probe
+## 16. Future FA1 Component Probe
 
 The smallest useful GPU probe should capture one resolved FA1 call, not merely
 compare final training loss.
 
-### 15.1 `GuardSpec`
+### 16.1 `GuardSpec`
 
 Fingerprint before the call:
 
@@ -961,7 +1064,7 @@ Padding and intentionally uninitialized regions must be excluded from equality
 checks; otherwise allocator garbage can be mistaken for a numerical
 divergence.
 
-### 15.2 Probe matrix
+### 16.2 Probe matrix
 
 1. Repeat identical captured inputs at least 100 times with dropout disabled.
 2. Repeat with dropout enabled while restoring exact RNG state.
@@ -979,7 +1082,7 @@ The expected diagnostic signature for the pinned sequence-parallel backward
 is: identical inputs and forward output, then the first exact mismatch at
 `dQ`, while `dK` and `dV` remain equal for the studied path.
 
-## 16. Model-Level Guard Placement
+## 17. Model-Level Guard Placement
 
 In a real model, place guards at:
 
@@ -1001,9 +1104,9 @@ Interpret the first mismatch:
 This is more precise than waiting for loss or gradient norm to diverge, and it
 turns the source-level ownership hypothesis into a falsifiable runtime check.
 
-## 17. Stop Line And Next Questions
+## 18. Stop Line And Next Questions
 
-This note has answered, through FA1:
+The completed forward track has answered:
 
 - why tiled online softmax is exact attention;
 - how multi-head and packed-varlen indexing wrap the same per-head algorithm;
@@ -1011,6 +1114,9 @@ This note has answered, through FA1:
   causal skipping is balanced;
 - which A100/H100 forward tiles the historical source selects, how it
   pipelines them, and why the Tensor Core $d$ reduction repeats;
+
+The backward scaffold has recorded:
+
 - why backward can recompute $P$ from linear-sized saved state;
 - where the $dQ,dK,dV$ reductions come from;
 - how the historical FA1 CUDA implementation maps those reductions to CTAs;
@@ -1018,7 +1124,13 @@ This note has answered, through FA1:
 - why `deterministic=True` selects the single-split backward;
 - what a future component and model-level verification must observe.
 
-FA2 is deliberately not derived here. Before starting it, the useful checks
-are whether the reader can independently explain the online-softmax invariant,
-derive $D_i=dO_i^\top O_i$, and predict the first mismatch caused by parallel
-K-tile contributions to `dQ`.
+The next learning step is the backward reader pass, not FA2. It should answer
+at forward-level detail where every saved/recomputed value resides, how
+backward tiles and warps are assigned, what is pipelined, and which boundary
+cases alter the physical path. The current source verdict supplies hypotheses
+for that pass; it should not substitute for it.
+
+FA2 remains deliberately deferred. Before starting it, the useful checks are
+whether the reader can independently explain the online-softmax invariant,
+derive $D_i=dO_i^\top O_i$, trace the backward physical execution, and predict
+the first mismatch caused by parallel K-tile contributions to `dQ`.
