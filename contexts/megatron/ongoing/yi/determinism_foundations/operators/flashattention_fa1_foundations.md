@@ -279,6 +279,13 @@ for each K/V tile j:
 At no point does the full $S$ or $P$ matrix need to reside in HBM. A
 $B_r\times B_c$ score/probability tile exists transiently on chip.
 
+The word "running" does not imply that every row's state stays on chip across
+the complete K/V traversal. In the paper's K/V-tile-outer loop, one K/V tile
+is reused over many Q tiles. The running $O_i,\ell_i,m_i$ for all those Q
+tiles cannot remain in the limited SRAM simultaneously, so the pseudocode
+loads and writes them in HBM at each K/V-tile step. The state has a stable
+logical owner, but its residence can be global memory between steps.
+
 The paper proves:
 
 - the returned value is $O=\operatorname{softmax}(QK^\top)V$ in real
@@ -465,6 +472,12 @@ the paper loop. The important source landmarks are:
   query-row split heuristic;
 - `csrc/flash_attn/src/fmha_fprop_kernel_1xN.h`: sequential K/V-tile loop and
   online softmax/output state;
+- `csrc/flash_attn/src/fmha/kernel_traits.h` and the
+  `fmha_fwd_hdim*.cu` files: CTA tile shapes and head-dimension dispatch;
+- `csrc/flash_attn/src/fmha_kernel.h` and `fmha/gmem_tile.h`: packed
+  variable-length offsets and predicated loads;
+- `csrc/flash_attn/src/fmha/mask.h` and `fmha/softmax.h`: causal/tail
+  validity checks and score masking;
 - `csrc/flash_attn/src/fmha_bwd_launch_template.h`: single-CTA versus
   sequence-K-parallel backward dispatch;
 - `csrc/flash_attn/src/fmha_dgrad_kernel_1xN_loop.h`: `dQ` accumulation and
@@ -473,23 +486,330 @@ the paper loop. The important source landmarks are:
 - `tests/test_flash_attn.py`: repeated-output race tests and the explicit
   comment that sequence-K parallelism makes `dQ` nondeterministic.
 
-### 11.1 Forward ownership
+### 11.1 Forward Execution Walkthrough
 
-The forward grid is indexed by batch, head, and a split of query-row tiles.
-Each CTA owns complete query rows and walks the K/V tiles in program order,
-maintaining their online-softmax and output state. Forward `num_splits`
-partitions different query rows; it does not split one row's K/V reduction
-between CTAs.
+#### Batch, heads, and packed variable lengths
 
-Consequently, ordinary forward has:
+The forward launch grid is:
 
-- one CTA owner for each output row tile;
-- no inter-CTA floating-point reduction into the same $O$ row;
-- a fixed K/V tile traversal inside that owner for one resolved kernel.
+```text
+blockIdx.x = batch or packed-sequence index
+blockIdx.y = attention-head index
+blockIdx.z = query-tile split index
+```
+
+Ordinary multi-head attention does not change the inner online-softmax
+algorithm. Heads are independent attention matrices until the later output
+projection, and separate CTAs write disjoint $O[b,h,:,:]$ regions. The number
+of heads changes the number of schedulable CTAs and can change the
+`num_splits` occupancy decision, but it does not introduce a cross-head
+forward reduction. This historical interface expects Q, K, and V to have the
+same number of heads; MQA/GQA is outside this FA1 path.
+
+The variable-length interface packs tokens as:
+
+```text
+Q: [sum(seqlen_q), heads, d]
+K: [sum(seqlen_k), heads, d]
+V: [sum(seqlen_k), heads, d]
+cu_seqlens_q: [0, len_q_0, len_q_0 + len_q_1, ...]
+cu_seqlens_k: [0, len_k_0, len_k_0 + len_k_1, ...]
+```
+
+For each batch index, `BlockInfoPadded` loads the packed starting offsets and
+the actual Q/K lengths. Global-memory tile loaders use those values to
+predicate tail loads, and Q loops stop at the logical sequence end. Varlen
+therefore adds address calculation, predicates, early exits, and possible
+load imbalance; it does not change the per-head online-softmax recurrence or
+create another writer for one logical output row.
+
+`max_seqlen_q` and `max_seqlen_k` still matter. They select one rounded kernel
+specialization and temporary-buffer shape for the whole call, while shorter
+sequences use predicates. Padded or unused LSE storage is not a semantic
+output and must be excluded from bytewise comparisons.
+
+#### Forward `num_splits`
+
+Forward `num_splits` is a scheduling partition over distinct Q-row tiles. It
+is not split-K and does not divide one row's softmax normalization among
+several CTAs.
+
+Let:
+
+$$
+B_r=16,\qquad
+T_r=\left\lceil\frac{N_q}{B_r}\right\rceil,\qquad
+R=\texttt{num\_splits}.
+$$
+
+The launch creates `batch * heads * R` CTAs. Split $r$ owns Q-tile indices:
+
+$$
+r,\quad r+R,\quad r+2R,\quad\ldots
+$$
+
+For example:
+
+```text
+num_splits = 1:
+    CTA 0 -> Q tiles 0, 1, 2, 3, ...
+
+num_splits = 4:
+    CTA 0 -> Q tiles 0, 4, 8, 12, ...
+    CTA 1 -> Q tiles 1, 5, 9, 13, ...
+    CTA 2 -> Q tiles 2, 6, 10, 14, ...
+    CTA 3 -> Q tiles 3, 7, 11, 15, ...
+```
+
+Each split independently loads the K/V tiles needed by its Q rows, so
+increasing $R$ creates more CTA parallelism at the cost of repeated K/V HBM
+traffic. `num_splits=0` asks the host heuristic to choose $R$. It estimates
+the number of CTA waves using:
+
+- `batch * heads * R`;
+- the actual GPU's SM count;
+- the occupancy API's active-CTAs-per-SM result for this kernel.
+
+It chooses the smallest split count within 95% of the best estimated wave
+efficiency. The variable does not reserve $R$ physical SMs for one attention
+matrix; it creates $R$ independently schedulable CTA work units, which the GPU
+may place on any SM.
+
+The same parameter name has a materially different backward consequence:
+
+| Path | Split dimension | Shared numeric destination? |
+| --- | --- | --- |
+| forward | different Q-row tiles | no; each split owns different $O_i$ |
+| sequence-parallel backward | different K/V tiles | yes; splits contribute to the same `dQ` |
+
+This is why forward splitting preserves unique output ownership while the
+historical sequence-parallel backward uses atomic `dQ` accumulation.
+
+#### Where the running state resides
+
+Within one $(Q_i,K_j,V_j)$ tile operation:
+
+- Q/K/V fragments occupy shared memory and registers;
+- $S_{ij}$ occupies Tensor Core accumulator registers;
+- row-max, row-sum, and exponential state use registers plus
+  shared-memory reduction scratch;
+- the current $P_{ij}V_j$ result uses registers/shared memory.
+
+Across different K/V tiles, the v1.0.9 source does not keep every Q row's
+running state in shared memory:
+
+- it stores partial normalized $O_i$ in an FP32 global `o_tmp` buffer when
+  more than one K/V tile is required;
+- it stores the combined
+  $\operatorname{LSE}_i=m_i+\log\ell_i$ in an FP32 global `softmax_lse`
+  buffer instead of storing $m_i$ and $\ell_i$ separately;
+- the same CTA reloads, rescales, and merges that state for the next K/V tile;
+- the final valid K/V step writes the output in the requested FP16/BF16 dtype.
+
+"Global memory" is the program-visible residence; an access may be served by
+cache rather than physical DRAM. The determinism argument uses ownership and
+order, not an assumption that the state physically remains in SRAM.
+
+This placement follows FA1's reuse choice:
+
+```text
+for K/V tile j:
+    keep K_j and V_j on chip
+    for many owned Q tiles i:
+        load, update, and store state[i]
+```
+
+One K/V tile is reused over many Q tiles, but all those Q rows' running state
+cannot simultaneously fit on chip.
+
+#### Forward tile shapes in v1.0.9
+
+The compiled kernel trait has the form:
+
+```text
+FMHA_kernel_traits<S, D, STEP=16, WARPS_M=1, WARPS_N=4>
+```
+
+The template parameter happens to be named `S` in the source, but here it is
+the K/V tile width $B_c$ and is unrelated to the runtime `num_splits` $R$ used
+in the preceding subsection.
+
+It gives:
+
+- $B_r=\texttt{STEP}=16$ Q rows;
+- $B_c=S=128$ or 256 K/V rows;
+- a compiled head-dimension bucket $D=32,64,$ or 128;
+- four warps, or 128 threads, per CTA.
+
+For both A100/SM80 and H100/SM90, this revision selects:
+
+| Actual head dimension | Compiled $D$ | `max_seqlen_k <= 128` | `max_seqlen_k > 128` |
+| --- | ---: | ---: | ---: |
+| 8--32, multiple of 8 | 32 | $16\times128$ | $16\times256$ |
+| 40--64, multiple of 8 | 64 | $16\times128$ | $16\times256$ |
+| 72--128, multiple of 8 | 128 | $16\times128$ | $16\times128$ |
+
+The first dimension in the table is Q rows and the second is K/V rows, so it
+is also the shape of the transient score tile. An actual $d$ such as 40
+dispatches to the $D=64$ family; predicated loads zero the inactive compiled
+columns.
+
+The selection balances several pressures:
+
+1. $B_r=16$ matches the Tensor Core M granularity and limits simultaneous
+   score, softmax, and output state.
+2. A larger $B_c$ reuses each K/V load over more score columns and reduces the
+   number of K/V-loop iterations and partial-O/LSE global round trips.
+3. K/V storage grows as $B_cd$, score state grows as $B_rB_c$, and Q/K/V and
+   output fragments also consume registers. For $d>64$, $B_c=256$ creates too
+   much register/shared-memory pressure, so the source uses 128.
+4. If the maximum K length is at most 128, a 256-column tile would only add
+   padding and resource use without removing another K/V iteration.
+
+A100 provides up to 164 KB of shared memory per SM, while H100 provides up to
+228 KB, but both expose 64K 32-bit registers and at most 64 active warps per
+SM. See the NVIDIA
+[Ampere tuning guide](https://docs.nvidia.com/cuda/ampere-tuning-guide/index.html)
+and
+[Hopper tuning guide](https://docs.nvidia.com/cuda/hopper-tuning-guide/index.html).
+The FA1 v1.0.9 forward dispatch does not use the architecture to select a
+larger H100 tile: it uses head dimension and rounded K length. Architecture
+can still change the occupancy result, SM count, and therefore `num_splits`.
+Hopper-specific TMA and warp-specialized pipelines are not used here.
+
+#### Software pipeline
+
+FA1 v1.0.9 is fused and software-pipelined, but it is not an FA3-style
+producer/consumer warp pipeline. For one K/V tile, the flow is approximately:
+
+```text
+load K_j and V_j
+
+load Q_i
+compute Q_i K_j^T
+prefetch Q_{i+1}
+softmax current scores
+compute P_ij V_j
+store current partial O/LSE
+switch the shared-memory Q buffer
+
+compute Q_{i+1} K_j^T
+prefetch Q_{i+2}
+...
+```
+
+Q uses double-buffered shared memory, and the next Q global load is issued
+before the current tile finishes softmax, PV, and output storage. The GEMM
+K-dimension fragment loop also loads a following fragment while executing the
+current MMA. There is no explicit `cp.async` path in this historical kernel,
+no dedicated producer warp, and no pipeline that removes the data dependency
+between `QK -> softmax -> PV` or between successive online-softmax states.
+
+#### Tensor Core reduction over head dimension
+
+For one score element:
+
+$$
+S_{ij}=\sum_{r=0}^{d-1}Q_{ir}K_{jr}.
+$$
+
+The source uses warp-level Tensor Core instructions such as
+`mma.sync.aligned.m16n8k16`. If $d=64$, the logical accumulator chain is:
+
+```text
+acc = 0
+acc = MMA(Q[0:16],  K[0:16],  acc)
+acc = MMA(Q[16:32], K[16:32], acc)
+acc = MMA(Q[32:48], K[32:48], acc)
+acc = MMA(Q[48:64], K[48:64], acc)
+```
+
+The later MMA reads the previous accumulator, so the same output fragment has
+a fixed dependency order in one compiled kernel. Warp scheduling may
+interleave unrelated instructions or pause this warp, but it cannot execute a
+dependent accumulator update before its predecessor.
+
+The forward configuration has `WARPS_K=1`: warps divide the score tile mainly
+along key columns, not by producing independent partial sums along $d$ for the
+same $S_{ij}$. There is no cross-warp or cross-CTA split-K combine for QK.
+Actual head dimensions that are not multiples of 16, such as 40, use a larger
+compiled bucket and predicated zero-filled columns.
+
+This supports bitwise repetition for the QK reduction under one fixed
+architecture and kernel binary. It does not prove equality with an unfused
+reference, across a different tile/compiler artifact, or between SM80 and
+SM90; the internal Tensor Core arithmetic and association belong to that
+implementation envelope.
+
+#### Causal skipping and load balance
+
+For standard causal self-attention, key position $k$ is valid for query
+position $q$ only when $k\le q$. At tile level:
+
+| | early K tile | middle K tile | late K tile |
+| --- | --- | --- | --- |
+| early Q tile | diagonal/masked | skip | skip |
+| middle Q tile | full | diagonal/masked | skip |
+| late Q tile | full | full | diagonal/masked |
+
+The source avoids completely invalid tile pairs by starting the Q loop for K
+tile $j$ near:
+
+$$
+\text{first Q tile}=\frac{jB_c}{B_r}.
+$$
+
+It therefore does not load early Q/partial-O state that cannot use the current
+K/V tile. Within a tile that crosses the diagonal, it still performs the tile
+QK operation and sets positions with $k>q$ to $-\infty$ before softmax.
+Tail predicates separately cover actual variable lengths. A K/V tile is still
+loaded if later owned Q rows need it; it can be skipped entirely only when no
+owned valid Q row remains or the K tile is beyond the logical K length.
+
+Causal work is lighter for early Q tiles and heavier for late Q tiles. The
+round-robin `num_splits` mapping deliberately mixes them. In a simplified
+example:
+
+```text
+Q-tile work: 1 1 1 1 | 2 2 2 2 | 3 3 3 3 | 4 4 4 4
+
+split 0 owns 0,4,8,12  -> 1+2+3+4
+split 1 owns 1,5,9,13  -> 1+2+3+4
+split 2 owns 2,6,10,14 -> 1+2+3+4
+split 3 owns 3,7,11,15 -> 1+2+3+4
+```
+
+Real ratios do not always align perfectly, but interleaving is much better
+than assigning one CTA a contiguous early range and another a contiguous late
+range. The occupancy heuristic creates enough CTA waves when beneficial, and
+the GPU schedules another pending CTA when one finishes. Residual imbalance
+can still matter for small `batch * heads`, the last CTA wave, or a varlen
+batch with highly skewed sequence lengths. FA1 has no global persistent work
+queue or cost-aware work stealing.
+
+#### Why the complete forward repeats
+
+For one resolved kernel, ordinary forward has:
+
+1. one CTA owner for each output Q-row tile;
+2. a fixed K/V-tile traversal for that owner;
+3. fixed intra-CTA QK, row-max, row-sum, and PV reduction trees;
+4. no inter-CTA floating-point combine into the same $O_i$;
+5. fixed logical-coordinate RNG state when dropout is replayed.
+
+The running state can be stored in global memory without creating a race:
+only its owner CTA reads and updates that address, in program order. Other
+CTAs may run in any scheduler order because they write disjoint Q rows.
+
+Sequential accumulation is therefore part of the explanation, but it is not
+sufficient by itself. The decisive combination is unique ownership plus a
+fixed local reduction order. A design in which several CTAs each accumulated
+sequentially and then atomically combined their partial $O_i$ would not inherit
+this conclusion.
 
 The source race test repeatedly exact-compares forward outputs. This supports
-fixed-plan repeatability, but the source structure is the stronger explanation
-of why there is no visible cross-CTA writer race.
+fixed-plan repeatability, while the ownership and reduction structure explain
+why there is no visible cross-CTA numeric race.
 
 ### 11.2 Backward with `num_splits == 1`
 
@@ -686,6 +1006,11 @@ turns the source-level ownership hypothesis into a falsifiable runtime check.
 This note has answered, through FA1:
 
 - why tiled online softmax is exact attention;
+- how multi-head and packed-varlen indexing wrap the same per-head algorithm;
+- where forward state resides, how Q-row `num_splits` schedules work, and how
+  causal skipping is balanced;
+- which A100/H100 forward tiles the historical source selects, how it
+  pipelines them, and why the Tensor Core $d$ reduction repeats;
 - why backward can recompute $P$ from linear-sized saved state;
 - where the $dQ,dK,dV$ reductions come from;
 - how the historical FA1 CUDA implementation maps those reductions to CTAs;
