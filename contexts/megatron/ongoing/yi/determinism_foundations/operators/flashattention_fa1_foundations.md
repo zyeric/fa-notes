@@ -1713,6 +1713,27 @@ Bc = 128 or 256 K/V rows
 CTA = 8 warps = 256 threads
 ```
 
+This does not contradict the four-warp forward configuration. A CTA has no
+universal warp count: the selected forward kernel launches 128 threads, while
+the separately compiled backward kernel launches 256. For $B_c=128$, a useful
+logical comparison is:
+
+```text
+forward:  4 warps * 32 K/V rows per warp = 128 rows
+backward: 8 warps * 16 K/V rows per warp = 128 rows
+```
+
+The backward body has more independent matrix products and output-gradient
+state to produce, so this implementation exposes more intra-CTA parallelism.
+The extra warps do not increase the SM's issue bandwidth; they give its warp
+schedulers more resident work to choose from and change the per-CTA resource
+footprint. On A100/H100, the architectural limit of 64 resident warps per SM
+would permit at most 16 four-warp CTAs or eight eight-warp CTAs by the warp
+limit alone. Registers, shared memory, CTA slots, and allocation granularity
+usually impose a lower bound. The complete admission and issue distinction is
+explained in
+[`gpu-execution-model.md`](https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/gpu-execution-model.md#resident-capacity-is-not-simultaneous-issue-width).
+
 All eight warps participate in movement and compute. Their main logical
 decompositions are:
 
