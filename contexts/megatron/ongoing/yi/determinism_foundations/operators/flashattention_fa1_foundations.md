@@ -12,6 +12,10 @@ This note stops at FlashAttention-1 (FA1). It is the mathematical and
 mechanical foundation for the broader
 [FlashAttention source audit](flashattention.md); it does not expand FA2,
 FA3, FA4, CuTe, paged attention, or inference-engine scheduling.
+The separate
+[large-head-dimension attention note](large_head_dim_attention.md) uses this
+FA1 layout as a counterfactual for DeepSeek-V4 and Gemma 4 `d=512` paths
+without attributing FA1's work partition to those later implementations.
 
 The core derivation first uses one batch element, one attention head, no mask,
 no dropout, and equal query/key sequence length. These features are added back
@@ -932,6 +936,21 @@ locality, shared-memory traffic, CTA size, and occupancy. Later attention
 kernels should be compared by asking whether they preserve this partition,
 repartition P, enlarge the Q-row tile, or change the Tensor Core operand path.
 
+For large output width, the output-column alternative becomes more attractive.
+If two warp groups own disjoint halves of a 512-column output, they compute:
+
+```text
+group 0: O[:,   0:256] = P[:, :] @ V[:,   0:256]
+group 1: O[:, 256:512] = P[:, :] @ V[:, 256:512]
+```
+
+Those results are concatenated/disjointly stored rather than added. This
+removes replicated complete-width partial O, but both groups need the complete
+P rows, so the implementation must redistribute, reload, or publish P through
+a shared producer/consumer boundary. The detailed V4/Gemma/FA4 source signals
+and the distinction from cross-CTA SplitKV live in
+[the large-head-dimension note](large_head_dim_attention.md).
+
 ##### Why distributed K/V can fit in registers
 
 One $[128,64]$ BF16 K or V tile is 16 KiB. Distributed over 128 threads, that
@@ -1762,6 +1781,14 @@ The source-selected families request:
 These numbers describe shared-memory allocation only. Register fragments,
 FP32 Tensor Core accumulators, pointers, predicates, and fetch registers are
 additional resources fixed by compilation.
+
+A mechanical `D=512,B_c=128` substitution, which is not a supported FA1
+specialization, would require 456 KiB even if V remained in registers and
+584 KiB if another shared V tile were needed. The eight FP32
+`[B_r,D]` `dQ` copies alone consume 256 KiB. This counterfactual explains why
+modern large-d backward kernels must change the tile, partial count,
+accumulator residence, or multi-stage ownership rather than simply recompiling
+the FA1 layout. It does not estimate a DeepSeek-V4 production kernel.
 
 ### 12.2 One K/V-tile computation body
 

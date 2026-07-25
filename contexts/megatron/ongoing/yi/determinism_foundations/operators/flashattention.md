@@ -22,6 +22,12 @@ ROCm/Triton/CK backends, inference KV-cache mutation, paged attention,
 score/mask modifications, and block-sparse variants need separate dispatch
 records.
 
+DeepSeek-V4 and Gemma 4 large-head-dimension inference paths are tracked
+separately in
+[large-head-dimension attention](large_head_dim_attention.md). Their
+`d=512`, MQA/GQA, FA4/FlashMLA, and SplitKV choices must not inherit the
+ordinary-attention verdict in this file without a resolved dispatch.
+
 Source landmarks within the pinned tree:
 
 - `README.md` and `flash_attn/flash_attn_interface.py`: public deterministic
