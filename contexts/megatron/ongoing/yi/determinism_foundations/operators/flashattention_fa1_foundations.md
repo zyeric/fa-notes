@@ -402,7 +402,10 @@ the paper loop. The important source landmarks are:
 - `csrc/flash_attn/src/fmha/kernel_traits.h` and the
   `fmha_fwd_hdim*.cu` files: CTA tile shapes and head-dimension dispatch;
 - `csrc/flash_attn/src/fmha_kernel.h` and `fmha/gmem_tile.h`: packed
-  variable-length offsets and predicated loads;
+  variable-length offsets, 16-byte vector loads, and predication;
+- `csrc/flash_attn/src/fmha/utils.h` and `fmha/smem_tile.h`: ordinary
+  global-load helpers, register-to-shared stores, shared-memory padding/XOR
+  swizzles, and fragment loads;
 - `csrc/flash_attn/src/fmha/mask.h` and `fmha/softmax.h`: causal/tail
   validity checks and score masking;
 - `csrc/flash_attn/src/fmha_bwd_launch_template.h`: single-CTA versus
@@ -438,7 +441,9 @@ State residence:
 
 | State | Residence/lifetime |
 | --- | --- |
-| Q/K/V tile fragments | shared memory and registers during a tile operation |
+| global-load fetch vectors | per-thread transit registers until committed to shared memory |
+| Q tile | double-buffered shared memory, then distributed per-thread MMA fragment registers |
+| K/V tile | one shared-memory region reused V-then-K; fragments retained in registers across owned Q tiles |
 | score and GEMM accumulators | Tensor Core accumulator registers |
 | row reduction scratch | registers plus shared memory |
 | partial normalized O and LSE | FP32 global buffers between K/V-tile steps when required |
@@ -747,19 +752,234 @@ larger H100 tile: it uses head dimension and rounded K length. Architecture
 can still change the occupancy result, SM count, and therefore `num_splits`.
 Hopper-specific TMA and warp-specialized pipelines are not used here.
 
-#### Software pipeline
+#### Forward memory movement and layout audit
+
+Tile computation alone does not explain FA1 performance. For every later
+attention implementation, compare the same six questions:
+
+| Question | FA1 v1.0.9 answer |
+| --- | --- |
+| 1. How does global memory get accessed? | predicated, 16-byte-per-thread vector loads arranged across complete Q/K/V rows |
+| 2. What role do L1 and L2 play? | ordinary hardware-managed caching only; no source-level residency guarantee or persistence policy |
+| 3. How does global data reach shared memory? | global load into per-thread fetch registers, then an explicit shared-memory store |
+| 4. How is shared memory allocated and laid out? | Q double buffer; K/V and later O/scratch lifetime reuse; padded and XOR-swizzled physical layout |
+| 5. How does shared data reach Tensor Cores? | `ldsm`/`ldsmt`-style fragment loads into distributed per-thread registers, then MMA |
+| 6. What overlaps, and what synchronizes reuse? | next-Q software prefetch plus fixed CTA barriers; no async-copy producer warp |
+
+These are performance questions first, but they also identify correctness
+boundaries. A cache miss should change latency only; an incorrect predicate,
+swizzle, barrier, or buffer-generation transition can change values.
+
+##### 1. Global load shape, vector width, and coalescing
+
+For one K/V outer-loop step, the logical tiles cover the complete compiled
+head-dimension bucket:
+
+```text
+Q_i: [Br, D]
+K_j: [Bc, D]
+V_j: [Bc, D]
+```
+
+The outer loop advances along K/V sequence rows, not along $D$. If the actual
+head dimension is $d=40$ and dispatch selects $D=64$, columns 0--39 contain
+input values and columns 40--63 are zero-filled by predicates. QK then walks
+the complete compiled $D$ in fixed 16-wide MMA chunks; it is not a cross-CTA
+split of the reduction dimension. For PV, $B_c$ is the reduction dimension and
+$D$ is the output width.
+
+`Gmem_tile_qkv` gives each active thread a `uint4` fetch, or 16 contiguous
+bytes. With BF16/FP16, that is eight adjacent elements. Threads assigned to one
+row cover adjacent vectors, and the CTA repeats that pattern across tile rows.
+For $D=64$, eight threads cover one 128-byte row; 128 CTA threads can cover 16
+such rows in one load round. Larger $B_c$ uses several rounds per thread.
+
+This layout is designed for coalesced transactions, while the row/head strides,
+alignment, varlen tail, and $d<D$ predicate determine which requests are
+active. The source establishes the address pattern; final transaction counts
+remain a profiler/SASS question.
+
+##### 2. L1 and L2 are opportunities, not owned state
+
+The v1.0.9 forward source uses ordinary typed global loads. It does not express
+an L1/L2 cache modifier, an L2 persistence/access-policy window, a preferred
+L1/shared carveout, or a cache-resident correctness assumption.
+
+Hardware caching can still help:
+
+- each Q tile is reloaded when the CTA advances to another K/V outer step;
+- different forward `num_splits` CTAs reload the same K/V rows for disjoint Q
+  rows;
+- partial O/LSE state is written to and later read from program-visible global
+  memory.
+
+Those patterns create possible L1/L2 reuse, especially L2 reuse across SMs, but
+the note must not call them guaranteed cache hits. The implementation's durable
+optimization is explicit register/shared-memory reuse. Whether a particular
+global access is served by L1, L2, or HBM affects latency and traffic, not the
+logical owner or reduction order.
+
+Shared memory and L1 are also not synonyms. On A100/H100 they share an SM-local
+physical SRAM capacity pool, but shared memory is an explicitly allocated,
+CTA-private address space while L1 is an evictable hardware cache. A CTA's
+dynamic shared-memory request is not a direct continuous subtraction from the
+headline unified-pool size; the architecture/runtime selects supported
+carveout configurations and then admits resident CTA allocations within them.
+The reusable hardware model lives in
+[`gpu-memory-hierarchy.md`](https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/gpu-memory-hierarchy.md).
+
+##### 3. Global-to-shared uses fetch registers
+
+The source-level path is:
+
+```text
+gmem_q/k/v.load()
+    ordinary per-thread global vector loads
+    -> each thread's fetch_[] registers
+
+gmem_q/k/v.commit(...)
+    per-thread shared-memory stores
+    -> CTA shared-memory tile
+```
+
+This is not a direct bulk copy. Each thread owns only a vector subset; all 128
+threads collectively construct the tile. The tile later returns from shared
+memory to a different set of per-thread MMA fragment registers, so two
+register roles must not be collapsed:
+
+```text
+transit/fetch registers: global -> registers -> shared
+compute fragments:       shared -> registers -> MMA
+```
+
+A100/SM80 supports `cp.async`, and H100/SM90 supports TMA, but this historical
+source explicitly uses neither. Running the same implementation on H100 does
+not automatically turn its LDG-plus-shared-store protocol into a TMA pipeline.
+A later implementation must be audited from its selected source/SASS rather
+than from hardware capability alone.
+
+##### 4. Shared-memory allocation, lifetime reuse, and swizzle
+
+For BF16/FP16, let $W=4$ be the number of score-column warps. The default
+forward trait uses:
+
+$$
+S_Q = 2B_rD\cdot 2
+$$
+
+bytes for a double-buffered Q tile,
+
+$$
+S_{K/V}=B_cD\cdot 2
+$$
+
+bytes for one shared region reused first by V and then by K, and
+
+$$
+S_O=B_rD W\cdot 4,\qquad
+S_{\text{softmax}}=B_rW\cdot2\cdot4
+$$
+
+bytes for FP32 output-reduction and softmax scratch. K/V storage and the later
+O/softmax phase have disjoint lifetimes, so the base allocation is:
+
+$$
+S_{\text{base}}
+=S_Q+\max(S_{K/V},S_O+S_{\text{softmax}}).
+$$
+
+If there is more than one K/V outer step, the launch adds a two-buffer FP32
+summary scratch:
+
+$$
+S_{\text{extra-LSE}}=2B_r\cdot4.
+$$
+
+The compiled families therefore request:
+
+| Compiled $D$ | $B_c$ | base shared memory | with multiple K/V steps |
+| ---: | ---: | ---: | ---: |
+| 32 | 128 | 10.5 KiB | 10.625 KiB |
+| 32 | 256 | 18 KiB | 18.125 KiB |
+| 64 | 128 | 20.5 KiB | 20.625 KiB |
+| 64 | 256 | 36 KiB | 36.125 KiB |
+| 128 | 128 | 40.5 KiB | 40.625 KiB |
+
+For example, $B_r=16,B_c=128,D=64$ uses 4 KiB for double-buffered Q,
+16 KiB for K/V, 16 KiB for FP32 O scratch, and 0.5 KiB for softmax scratch:
+
+```text
+4 KiB + max(16 KiB, 16 KiB + 0.5 KiB) = 20.5 KiB
+```
+
+The allocation is smaller than a naive simultaneous Q+K+V sum because both
+K/V and later phases reuse addresses. It is larger than the BF16 payload alone
+in other places because O/softmax scratch is FP32.
+
+Logical tile shape is still not the physical shared layout. `Smem_tile_*`
+rounds/packs rows for supported access widths and applies an XOR-derived
+column mapping based on the row. Conceptually:
+
+```text
+logical column:  col
+physical column: col XOR f(row)
+```
+
+This permutation preserves tensor values but spreads the addresses requested
+by warp lanes across shared-memory banks and matches the fragment-load pattern.
+A shared-memory bank conflict is not an L1 cache-set conflict: shared accesses
+have explicit addresses and bank service rules, while L1 performs tag lookup
+and cache-line replacement.
+
+##### 5. Shared-to-register fragment formation
+
+After shared stores become visible, Q/K use `ldsm`-style loads and V uses a
+transposed `ldsmt`-style path to construct each thread's fragment registers.
+No thread holds the whole tile; the warp's distributed fragments collectively
+describe the MMA operands.
+
+The K/V-shared region is reused in this order:
+
+```text
+commit V to shared
+  -> CTA barrier
+  -> load all V fragments into registers
+  -> CTA barrier before overwrite
+
+commit K to the same shared region
+  -> CTA barrier
+  -> load K fragments into registers
+```
+
+V fragments remain in registers while the CTA traverses its owned Q tiles for
+this K/V outer step. K fragments are likewise reused by the QK operations. For
+$D=64$, QK consumes four dependent $K=16$ MMA chunks. If actual $d=40$, the
+last 24 compiled columns are predicated zeros; this is still the fixed $D=64$
+instruction path, not a special $D=40$ reduction.
+
+##### 6. Software pipeline, synchronization, and reuse
 
 FA1 v1.0.9 is fused and software-pipelined, but it is not an FA3-style
 producer/consumer warp pipeline. For one K/V tile, the flow is approximately:
 
 ```text
-load K_j and V_j
+ordinary global-load K_j, V_j, Q_i into fetch registers
+commit V_j and Q_i to shared
+barrier
+load V_j and Q_i fragments
 
-load Q_i
+barrier before K overwrites the shared K/V region
+commit K_j
+barrier
+load K_j fragments
+
 compute Q_i K_j^T
-prefetch Q_{i+1}
+issue ordinary global prefetch of Q_{i+1} into fetch registers
 softmax current scores
+commit Q_{i+1} into the alternate Q shared buffer
 compute P_ij V_j
+store/reduce O scratch through shared memory
+barrier before reading the completed O reduction
 store current partial O/LSE
 switch the shared-memory Q buffer
 
@@ -774,6 +994,40 @@ K-dimension fragment loop also loads a following fragment while executing the
 current MMA. There is no explicit `cp.async` path in this historical kernel,
 no dedicated producer warp, and no pipeline that removes the data dependency
 between `QK -> softmax -> PV` or between successive online-softmax states.
+
+The barriers protect concrete lifetime transitions: shared stores before
+fragment loads, V reads before K overwrites the shared K/V region, and O
+partial stores before their reduction/readback. Q double buffering permits
+some load/compute overlap, but ordinary LDG results still occupy fetch
+registers and the same CTA warps perform both movement and compute.
+
+For determinism, swizzle and staging are value-preserving address/data-movement
+rewrites under correct predicates and barriers. They do not add another
+floating-point contributor. A missing wait or premature shared-buffer reuse
+would instead be a correctness race; replacing this pipeline with `cp.async` or
+TMA creates new barrier/stage proof obligations even if the attention
+mathematics is unchanged.
+
+#### Comparison frame for FA2 and later implementations
+
+The point of this FA1 baseline is not to pre-claim how FA2, FA3, or FA4 work.
+Each later pass should fill the same comparison table from its own source:
+
+| Dimension | Question to resolve |
+| --- | --- |
+| work owner | Does one CTA still own a complete output-row reduction, and how many logical tiles does it visit? |
+| global access | What is the vectorization, predication, coalescing, and expected cache reuse? |
+| copy primitive | ordinary LDG/STS, `cp.async`, TMA, or another mechanism? |
+| copy actors | all compute threads, selected producer threads, or dedicated producer warps? |
+| shared layout | allocation formula, stage count, swizzle, bank-conflict constraints, and lifetime overlays? |
+| Tensor Core feed | shared-to-register fragments, WGMMA/UMMA path, or another operand route? |
+| accumulator residence | registers, shared scratch, TMEM, or global workspace? |
+| overlap protocol | which stages overlap and which barrier/counter proves safe reuse? |
+| numeric order | did the new decomposition introduce split reductions, atomics, or another combine order? |
+
+This makes “new hardware optimization” falsifiable: identify the changed
+movement/compute mechanism, its resource tradeoff, and whether it preserves the
+same ownership and reduction proof.
 
 #### Tensor Core reduction over head dimension
 
@@ -1220,6 +1474,12 @@ The completed forward track has answered:
   hardware CTA admission each decide;
 - which A100/H100 forward tiles the historical source selects, how it
   pipelines them, and why the Tensor Core $d$ reduction repeats;
+- how its global access, cache opportunity, register-mediated copy, shared
+  layout/swizzle, fragment formation, and synchronization answer the
+  six-question memory-movement audit;
+- which fixed comparison dimensions should be reused for FA2 and later
+  implementations instead of describing each generation with unrelated
+  vocabulary;
 
 The backward scaffold has recorded:
 
