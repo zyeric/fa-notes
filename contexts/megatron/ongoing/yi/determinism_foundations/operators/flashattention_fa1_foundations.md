@@ -399,15 +399,16 @@ the paper loop. The important source landmarks are:
   query-row split heuristic;
 - `csrc/flash_attn/src/fmha_fprop_kernel_1xN.h`: sequential K/V-tile loop and
   online softmax/output state;
-- `csrc/flash_attn/src/fmha/kernel_traits.h` and the
-  `fmha_fwd_hdim*.cu` files: CTA tile shapes and head-dimension dispatch;
+- `csrc/flash_attn/src/fmha/kernel_traits.h`, `fmha/gemm.h`, and the
+  `fmha_fwd_hdim*.cu` files: CTA tile shapes, four-warp QK/PV decomposition,
+  and head-dimension dispatch;
 - `csrc/flash_attn/src/fmha_kernel.h` and `fmha/gmem_tile.h`: packed
   variable-length offsets, 16-byte vector loads, and predication;
 - `csrc/flash_attn/src/fmha/utils.h` and `fmha/smem_tile.h`: ordinary
   global-load helpers, register-to-shared stores, shared-memory padding/XOR
   swizzles, and fragment loads;
 - `csrc/flash_attn/src/fmha/mask.h` and `fmha/softmax.h`: causal/tail
-  validity checks and score masking;
+  validity checks, score masking, and the intra-/cross-warp max/sum reduction;
 - `csrc/flash_attn/src/fmha_bwd_launch_template.h`: single-CTA versus
   sequence-K-parallel backward dispatch;
 - `csrc/flash_attn/src/fmha_dgrad_kernel_1xN_loop.h`: `dQ` accumulation and
@@ -435,6 +436,7 @@ Ownership and order:
 | one $O_i$ Q-row tile | all K/V tiles | one CTA owns the complete running state | fixed K/V traversal |
 | one $S_{ij}$ fragment | head-dimension chunks | one dependent MMA accumulator chain | fixed in the compiled kernel |
 | row max/sum | columns in the current score tile | intra-CTA reduction | fixed tree for the resolved specialization |
+| one current-tile $P_{ij}V_j$ | four warp partials over $B_c$ | CTA shared-memory reduction | warp partials are loaded and added in fixed index order |
 | distinct heads/batches | none across each other | disjoint CTAs and output regions | scheduler completion order is irrelevant |
 
 State residence:
@@ -446,6 +448,7 @@ State residence:
 | K/V tile | one shared-memory region reused V-then-K; fragments retained in registers across owned Q tiles |
 | score and GEMM accumulators | Tensor Core accumulator registers |
 | row reduction scratch | registers plus shared memory |
+| current-tile partial O | one distributed FP32 accumulator per warp, then four slices in shared memory |
 | partial normalized O and LSE | FP32 global buffers between K/V-tile steps when required |
 | final O | requested output dtype in global memory |
 
@@ -752,6 +755,201 @@ larger H100 tile: it uses head dimension and rounded K length. Architecture
 can still change the occupancy result, SM count, and therefore `num_splits`.
 Hopper-specific TMA and warp-specialized pipelines are not used here.
 
+#### What the 128 threads do over time
+
+The most useful concrete specialization is:
+
+```text
+Br = 16, Bc = 128, D = 64, BF16
+CTA = 128 threads = four 32-thread warps
+```
+
+There are no dedicated Q-loader, K-loader, V-loader, or compute warps in this
+path. All four warps execute the same program and change collective roles over
+time:
+
+| Phase | Four-warp decomposition |
+| --- | --- |
+| Q/K/V global load and shared store | all active threads collectively cover complete tile rows with 16-byte vectors |
+| QK | warps partition the 128 score columns; each warp covers 32 K rows |
+| softmax | each warp reduces its score-column slice locally, then the CTA combines four partial max/sums through shared scratch |
+| next-Q prefetch | the same threads issue Q loads into future-value fetch registers; there is no producer warp |
+| PV | the same four warp identities become four $B_c$-reduction slices |
+| O epilogue | each warp stores one FP32 partial-O slice; threads load and add the four slices in a fixed order |
+
+This is a phase-dependent logical mapping, not a permanent partition of SM
+functional units. A warp that issues an LDG in one phase can issue Tensor Core,
+FP/SFU, shared-memory, and global-store instructions in later phases.
+
+##### Collective global-load mapping
+
+For $D=64$ BF16, one row is 128 bytes. A 16-byte vector load therefore uses
+eight threads per row. For Q:
+
+```text
+thread   0..7   -> Q row 0, eight adjacent 16-byte vectors
+thread   8..15  -> Q row 1
+...
+thread 120..127 -> Q row 15
+```
+
+Equivalently, for thread index $t$:
+
+```text
+Q row          = floor(t / 8)
+Q vector index = t mod 8
+```
+
+The $[128,64]$ K and V tiles require eight load rounds. In round $r$:
+
+```text
+K/V row        = floor(t / 8) + 16r
+K/V vector     = t mod 8
+r              = 0..7
+```
+
+Thus a D64 thread has one 16-byte Q fetch vector and eight 16-byte fetch
+vectors for each of K and V at the initial global-load point. These are transit
+registers. After shared staging, `ldsm`/`ldsmt` constructs different,
+warp-distributed compute-fragment registers.
+
+##### QK column ownership and softmax combine
+
+The QK trait is logically:
+
+```text
+Cta_tile_p = <M=16, N=128, K=64, WARPS_M=1, WARPS_N=4, WARPS_K=1>
+```
+
+For this specialization:
+
+```text
+warp 0 -> score[:,   0:32]
+warp 1 -> score[:,  32:64]
+warp 2 -> score[:,  64:96]
+warp 3 -> score[:, 96:128]
+```
+
+All four warps need the same 16 Q rows, while each consumes its own K-row
+slice. No single lane owns one complete score row; accumulator elements are
+distributed by the MMA layout.
+
+Each thread first reduces the score elements held in its registers. Small
+lane groups combine local values, selected lanes write one partial per
+row/warp to shared scratch, and `__syncthreads()` makes all four warp partials
+available for the cross-warp max/sum combine. The barrier fixes data
+availability; the compiled reduction code fixes the actual tree.
+
+##### PV turns the same warps into reduction slices
+
+The second GEMM trait reinterprets the same 128 threads as:
+
+```text
+Cta_tile_o = <M=16, N=64, K=128, WARPS_M=1, WARPS_N=1, WARPS_K=4>
+```
+
+The four score-column slices now become four pieces of the PV reduction:
+
+```text
+warp 0 -> P[:,   0:32] @ V[  0:32, :]
+warp 1 -> P[:,  32:64] @ V[ 32:64, :]
+warp 2 -> P[:,  64:96] @ V[ 64:96, :]
+warp 3 -> P[:, 96:128] @ V[96:128, :]
+```
+
+Each warp produces a distributed FP32 partial contribution to the complete
+$[16,64]$ output tile. `Smem_tile_o` stores all four partials, a CTA barrier
+makes them visible, and its load path adds partial indices 0, 1, 2, and 3 in
+that fixed order. This is an intra-CTA split reduction, not another CTA owner
+or an atomic destination.
+
+##### Why partition score columns and accept partial O
+
+The key-position axis changes roles between the two GEMMs. Partition it into
+four sets $J_0,\ldots,J_3$, and partition K/V rows the same way:
+
+$$
+K=\begin{bmatrix}K_0\\K_1\\K_2\\K_3\end{bmatrix},
+\qquad
+V=\begin{bmatrix}V_0\\V_1\\V_2\\V_3\end{bmatrix}.
+$$
+
+In QK, key position is an output-column axis:
+
+$$
+S=QK^\top
+=
+\begin{bmatrix}
+QK_0^\top & QK_1^\top & QK_2^\top & QK_3^\top
+\end{bmatrix}.
+$$
+
+Each warp can therefore own exact score columns without first combining
+partial scores. Softmax still needs the row max/sum across those column
+slices, but every individual score element has one warp owner.
+
+After softmax, the same axis is the PV reduction dimension:
+
+$$
+O=PV
+=
+P_0V_0+P_1V_1+P_2V_2+P_3V_3.
+$$
+
+Keeping the partition therefore turns the four exact score/P slices into four
+partial O contributors. This is deliberate:
+
+```text
+warp w already owns P_w and the corresponding V_w fragments
+  -> compute P_w V_w locally
+  -> reduce four much more structured partial-O slices through shared memory
+```
+
+The main alternatives move the communication boundary rather than removing
+it:
+
+| Alternative | What it avoids | What it introduces |
+| --- | --- | --- |
+| keep key-column ownership, as FA1 does | repartitioning transient P | four partial O values per output element |
+| repartition PV by output-D columns | partial-O reduction | every output-D owner needs the complete P row, so P must be exchanged/reloaded across warps |
+| split QK along head dimension D | score-column partition | partial score values must be combined before the nonlinear softmax |
+| partition by Q rows | cross-warp row softmax and partial O | with $B_r=16$, insufficient independent 16-row Tensor Core M tiles unless the CTA grows to more Q rows and more state |
+
+For this $B_r=16$ design, QK has only one natural 16-row M tile but many key
+columns, so `WARPS_N=4` supplies useful parallelism without a pre-softmax
+split-K reduction. Reusing that ownership in PV avoids materializing or
+redistributing the transient P tile. FA1 pays for one CTA-local FP32
+partial-O reduction instead.
+
+This is not a mathematical requirement for attention. It is a local
+implementation tradeoff among Tensor Core tile granularity, register
+locality, shared-memory traffic, CTA size, and occupancy. Later attention
+kernels should be compared by asking whether they preserve this partition,
+repartition P, enlarge the Q-row tile, or change the Tensor Core operand path.
+
+##### Why distributed K/V can fit in registers
+
+One $[128,64]$ BF16 K or V tile is 16 KiB. Distributed over 128 threads, that
+is 128 payload bytes, or 32 32-bit-register equivalents, per thread per
+operand. K plus V therefore has a lower-bound payload of about 64 registers
+per thread before Q/P/O fragments, accumulators, pointers, and loop state.
+
+The tile is "in registers" only collectively:
+
+```text
+each warp owns its K/V row slice
+each lane owns only the fragment elements assigned by the MMA layout
+all lanes together represent the complete CTA tile
+```
+
+Once every lane has loaded the required V fragments, a barrier allows shared V
+addresses to be overwritten by K. Once K fragments are also resident and the
+CTA has completed the corresponding reads, the K/V shared region can be reused
+as O/softmax scratch. Register liveness enables shared-memory lifetime reuse,
+but increases register pressure and can lower resident CTAs per SM. The
+aggregate SM register file is large; the per-thread allocation and occupancy
+limit still make it finite.
+
 #### Forward memory movement and layout audit
 
 Tile computation alone does not explain FA1 performance. For every later
@@ -860,7 +1058,8 @@ than from hardware capability alone.
 
 ##### 4. Shared-memory allocation, lifetime reuse, and swizzle
 
-For BF16/FP16, let $W=4$ be the number of score-column warps. The default
+For BF16/FP16, let $W=4$ be the same four physical warps interpreted as
+score-column partitions in QK and reduction-$B_c$ partitions in PV. The default
 forward trait uses:
 
 $$
@@ -911,6 +1110,17 @@ For example, $B_r=16,B_c=128,D=64$ uses 4 KiB for double-buffered Q,
 ```text
 4 KiB + max(16 KiB, 16 KiB + 0.5 KiB) = 20.5 KiB
 ```
+
+The 16 KiB O term already includes four copies:
+
+```text
+one warp partial: 16 rows * 64 columns * 4-byte FP32 = 4 KiB
+four warp partials: 4 * 4 KiB = 16 KiB
+```
+
+They are four contributors to one CTA-owned current-tile O, not four semantic
+outputs. The later shared load reduces the contributors before the CTA writes
+the current online-softmax state.
 
 The allocation is smaller than a naive simultaneous Q+K+V sum because both
 K/V and later phases reuse addresses. It is larger than the BF16 payload alone
@@ -988,18 +1198,69 @@ prefetch Q_{i+2}
 ...
 ```
 
-Q uses double-buffered shared memory, and the next Q global load is issued
-before the current tile finishes softmax, PV, and output storage. The GEMM
-K-dimension fragment loop also loads a following fragment while executing the
-current MMA. There is no explicit `cp.async` path in this historical kernel,
-no dedicated producer warp, and no pipeline that removes the data dependency
-between `QK -> softmax -> PV` or between successive online-softmax states.
+There are two distinct Q pipelines:
+
+1. across Q tiles, shared buffer A holds $Q_i$ while future $Q_{i+1}$ is
+   loaded into fetch registers and then committed to shared buffer B;
+2. inside one QK, two Q fragment-register slots ping-pong over successive
+   16-wide $D$ chunks, loading the next fragment before issuing MMA on the
+   current fragment.
+
+For $D=64$, the second pipeline is conceptually:
+
+```text
+load Q fragment D[0:16]
+load D[16:32] -> MMA D[0:16]
+load D[32:48] -> MMA D[16:32]
+load D[48:64] -> MMA D[32:48]
+                  MMA D[48:64]
+```
+
+The steady-state cross-Q source order is:
+
+```text
+finish this warp's Q_i K_j^T
+
+if Q_{i+1} exists:
+    select alternate shared write buffer
+    issue ordinary LDG Q_{i+1} -> per-thread fetch registers
+
+mask / reduce / exponentiate current score
+commit Q_{i+1} fetch registers -> alternate shared buffer
+compute P_ij V_j
+store four warp partial-O slices
+CTA barrier
+reduce/read O and finish the current state
+
+select alternate shared read buffer
+load the first Q_{i+1} fragment
+```
+
+The same threads hold current score/P/O state and future-Q fetch state at the
+same time. There is no explicit `cp.async`, no dedicated producer warp, and no
+pipeline that removes the true dependency between `QK -> softmax -> PV` or
+between successive online-softmax states.
+
+An ordinary Q LDG can be outstanding while later instructions that do not read
+its destination registers execute. The SM scoreboard records those fetch
+registers as pending; a later shared store that consumes them cannot issue
+until the load completes. Warp scheduling can also run another ready warp
+while one warp waits. This is operand-readiness and latency-hiding machinery,
+not cross-thread synchronization.
 
 The barriers protect concrete lifetime transitions: shared stores before
 fragment loads, V reads before K overwrites the shared K/V region, and O
-partial stores before their reduction/readback. Q double buffering permits
-some load/compute overlap, but ordinary LDG results still occupy fetch
-registers and the same CTA warps perform both movement and compute.
+partial stores before their reduction/readback. The O-reduction barrier also
+ensures every participating thread has committed the next Q tile before the
+CTA switches the shared read generation. A scoreboard cannot prove that
+another warp has finished its shared store; that requires the CTA barrier.
+
+The general hardware distinction between a warp PC, instruction issue,
+scoreboard dependencies, and synchronization lives in
+[`gpu-execution-model.md`](https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/gpu-execution-model.md).
+Q double buffering permits some load/compute overlap, but ordinary LDG results
+still occupy fetch registers and the same CTA warps perform both movement and
+compute.
 
 For determinism, swizzle and staging are value-preserving address/data-movement
 rewrites under correct predicates and barriers. They do not add another
@@ -1477,6 +1738,13 @@ The completed forward track has answered:
 - how its global access, cache opportunity, register-mediated copy, shared
   layout/swizzle, fragment formation, and synchronization answer the
   six-question memory-movement audit;
+- how the same 128 threads partition QK columns, cooperate on softmax, become
+  four PV reduction slices, and combine their partial O through shared memory;
+- why preserving key-column ownership avoids redistributing transient P but
+  turns that axis into a four-way PV reduction;
+- why next-Q prefetch uses same-thread future-value registers, scoreboarding,
+  alternate shared buffers, and CTA barriers rather than a dedicated producer
+  warp;
 - which fixed comparison dimensions should be reused for FA2 and later
   implementations instead of describing each generation with unrelated
   vocabulary;
