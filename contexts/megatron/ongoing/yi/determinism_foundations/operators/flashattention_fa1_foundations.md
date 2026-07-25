@@ -2,9 +2,9 @@
 
 Date: 2026-07-24
 
-Status: FA1 algorithm and historical CUDA forward study complete; backward
-derivation and source mechanism recorded but not yet discussed at the same
-reader-driven depth; CPU-only reasoning, with GPU validation still pending
+Status: FA1 algorithm and historical CUDA forward/backward source study
+complete through the deterministic and sequence-parallel paths; CPU-only
+reasoning, with GPU validation still pending
 
 ## Scope And Reading Contract
 
@@ -47,9 +47,9 @@ The assumed reader frontier is:
 - generic CTA/SM admission and occupancy background lives in
   [`gpu-hardware-notes`](https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/gpu-execution-model.md);
 - forward has completed a reader-question pass;
-- backward has a mathematical derivation and source-level determinism
-  diagnosis, but its physical execution has not yet received the same
-  question-by-question pass.
+- backward has been traced through its mathematical reductions, tile
+  ownership, state residence, pipeline, and the `num_splits` implementation
+  boundary; dropout and GPU measurements remain natural follow-up frontiers.
 
 ### Recommended reading paths
 
@@ -411,8 +411,13 @@ the paper loop. The important source landmarks are:
   validity checks, score masking, and the intra-/cross-warp max/sum reduction;
 - `csrc/flash_attn/src/fmha_bwd_launch_template.h`: single-CTA versus
   sequence-K-parallel backward dispatch;
-- `csrc/flash_attn/src/fmha_dgrad_kernel_1xN_loop.h`: `dQ` accumulation and
-  sequence-parallel atomic write;
+- `csrc/flash_attn/fmha_api.cpp`: rounded backward shapes, FP32 `softmax_d`
+  and `dq_tmp` workspaces, sequence-parallel zeroing, and final `dQ` copy;
+- `csrc/flash_attn/src/fmha_bwd_hdim*.cu`: backward $B_c$, eight-warp CTA,
+  and V-in-register specialization choices;
+- `csrc/flash_attn/src/fmha_dgrad_kernel_1xN_loop.h`:
+  non-sequence-parallel K/V loop, sequence-parallel `blockIdx.z` entry point,
+  `dQ` accumulation, and the shared one-K/V-tile computation body;
 - `csrc/flash_attn/src/fmha/gmem_tile.h`: FP32 `atomicAdd` implementation;
 - `tests/test_flash_attn.py`: repeated-output race tests and the explicit
   comment that sequence-K parallelism makes `dQ` nondeterministic.
@@ -1398,71 +1403,134 @@ why there is no visible cross-CTA numeric race.
 
 ## 10. Backward, Derived Before It Is Tiled
 
-Let $dO=\partial\phi/\partial O$ be the incoming gradient.
+Start from one batch element and one head:
 
-### 10.1 Gradient of V
+$$
+Q\in\mathbb{R}^{N_q\times d},\quad
+K,V\in\mathbb{R}^{N_k\times d},\quad
+R=QK^\top,\quad
+S=\tau R,\quad
+P=\operatorname{softmax}(S),\quad
+O=PV.
+$$
+
+Let $G=dO=\partial\phi/\partial O$ be the incoming gradient. This note reserves
+$dS$ for the derivative with respect to the **scaled** score $S$. The scale
+$\tau$ therefore appears when the gradient crosses from $S$ back to
+$QK^\top$.
+
+The backward is five equations plus their reduction axes. The CUDA kernel
+changes their grouping and residence, not their mathematical contract.
+
+### 10.1 The two output-side matrix products: `dV` and `dP`
 
 Since $O=PV$:
 
 $$
-dV=P^\top dO.
+dV=P^\top G,
 $$
 
-Elementwise, every query row contributes to each $dV_j$:
+or elementwise:
 
 $$
-dV_j=\sum_i P_{ij}dO_i.
+dV_{jr}=\sum_{i=1}^{N_q}P_{ij}G_{ir}.
 $$
 
-### 10.2 Gradient of P
+Thus one $dV$ row belongs naturally to one K/V row, but it receives
+contributions from **all query rows**.
 
 Again from $O=PV$:
 
 $$
-dP=dO\,V^\top,\qquad
-dP_{ij}=dO_i^\top V_j.
+dP=GV^\top,\qquad
+dP_{ij}=\sum_{r=1}^{d}G_{ir}V_{jr}.
 $$
 
-### 10.3 Gradient through softmax
+This is a different kind of reduction: each scalar $dP_{ij}$ reduces over the
+head dimension $d$. In the implementation it is produced by a Tensor Core
+GEMM; it is not a sequence-wide atomic reduction.
 
-For one row, the softmax Jacobian gives:
+### 10.2 The softmax Jacobian and the row scalar `D`
 
-$$
-dS_{ij}=P_{ij}(dP_{ij}-D_i),
-$$
-
-where
+For one query row $i$, write $p=P_i$ and $g=dP_i$. The softmax Jacobian is:
 
 $$
-D_i=\sum_j P_{ij}dP_{ij}.
+\frac{\partial p}{\partial S_i}
+=\operatorname{diag}(p)-pp^\top.
 $$
 
-The apparent reduction over the full probability row can be replaced by a
-small dot product:
+Multiplying it by $g$ gives:
 
 $$
+dS_i
+=\left(\operatorname{diag}(p)-pp^\top\right)g
+=p\odot\left(g-(p^\top g)\mathbf{1}\right).
+$$
+
+Define the one-scalar-per-query-row correction:
+
+$$
+D_i=P_i^\top dP_i=\sum_jP_{ij}dP_{ij}.
+$$
+
+Then:
+
+$$
+dS_{ij}=P_{ij}(dP_{ij}-D_i).
+$$
+
+At first $D_i$ appears to require the full probability row. Associativity over
+real numbers exposes a cheaper identity:
+
+$$
+\begin{aligned}
 D_i
-=\sum_j P_{ij}(dO_i^\top V_j)
-=dO_i^\top\left(\sum_jP_{ij}V_j\right)
-=dO_i^\top O_i.
+&=\sum_jP_{ij}(G_i^\top V_j) \\
+&=G_i^\top\left(\sum_jP_{ij}V_j\right) \\
+&=G_i^\top O_i.
+\end{aligned}
 $$
 
-This identity is crucial. Forward already saved $O_i$, so backward can compute
-$D_i$ in $O(d)$ work without first materializing the full $P$ row.
-
-### 10.4 Gradients of Q and K
-
-For $S=QK^\top$:
+Forward already saved $O_i$, so backward computes:
 
 $$
-dQ=dS\,K,\qquad
-dK=dS^\top Q.
+D_i=\sum_{r=1}^{d}G_{ir}O_{ir}
 $$
 
-With a softmax scale $\tau$, $S=\tau QK^\top$, so both expressions gain the
-factor $\tau$.
+with an $O(d)$ row dot product. This has two implementation consequences:
 
-### 10.5 Recompute P instead of saving it
+1. no full $N_q\times N_k$ probability matrix is needed merely to compute
+   the softmax correction;
+2. every K/V-tile worker needs the same $D_i$, so the scheduling mode must
+   decide who computes it and how the other work obtains it.
+
+### 10.3 Crossing back through the score GEMM: `dQ` and `dK`
+
+Since $S=\tau QK^\top$:
+
+$$
+dQ=\tau\,dS\,K,\qquad
+dK=\tau\,dS^\top Q.
+$$
+
+Elementwise:
+
+$$
+dQ_{ir}=\tau\sum_{j=1}^{N_k}dS_{ij}K_{jr},
+\qquad
+dK_{jr}=\tau\sum_{i=1}^{N_q}dS_{ij}Q_{ir}.
+$$
+
+The critical ownership asymmetry is now visible:
+
+- one $dQ_i$ row reduces over **all K/V rows**;
+- one $dK_j$ row reduces over **all query rows**;
+- one $dV_j$ row also reduces over **all query rows**.
+
+`dQ`, `dK`, and `dV` are all many-to-one sums, but the kernel does not have to
+parallelize or combine them in the same way.
+
+### 10.4 What is saved, recomputed, and transient
 
 Forward saves the row maximum $m_i$ and exponential sum $\ell_i$, or
 equivalently the log-sum-exp:
@@ -1482,7 +1550,41 @@ Backward can therefore recreate one $P_{ij}$ tile from $Q_i,K_j$ and the
 linear-sized saved normalization state. It trades recomputation for avoiding
 an $N\times N$ saved tensor.
 
-## 11. FA1 Paper Backward Tiling
+For the v1.0.9 path, the useful state ledger is:
+
+| State | Backward treatment |
+| --- | --- |
+| $Q,K,V$ | saved input tensors, reloaded tile by tile |
+| $O$ | saved forward output; used with $G$ to compute $D_i$ |
+| LSE | saved FP32 row normalization state; used to reconstruct $P_{ij}$ |
+| dropout Philox state | saved only when dropout must be replayed |
+| $G=dO$ | incoming gradient |
+| $D_i$ | recomputed once, then stored in FP32 `softmax_d` |
+| $S_{ij},P_{ij},dP_{ij},dS_{ij}$ | recomputed/transient tile state |
+| full $P$ or full score matrix | never materialized in HBM |
+| `dq_tmp` | FP32 implementation workspace when more than one K/V tile exists |
+
+The source folds the final factor $\tau$ into the `dQ`/`dK` epilogues. That is
+an implementation placement choice; mathematically $dS$ above is still the
+gradient with respect to the scaled score.
+
+### 10.5 Reduction ledger
+
+Before looking at CUDA, write every sum and its contributor axis:
+
+| Quantity | Formula | Reduction axis | Later owner/combine |
+| --- | --- | --- | --- |
+| $dP_{ij}$ | $\sum_rG_{ir}V_{jr}$ | head dimension $d$ | one CTA-local GEMM fragment |
+| $D_i$ | $\sum_rG_{ir}O_{ir}$ | head dimension $d$ | one row reduction, stored FP32 |
+| $dS_{ij}$ | $P_{ij}(dP_{ij}-D_i)$ | no new reduction | pointwise tile operation |
+| $dQ_{ir}$ | $\tau\sum_jdS_{ij}K_{jr}$ | all K rows | serial K-tile combine or cross-CTA atomic |
+| $dK_{jr}$ | $\tau\sum_idS_{ij}Q_{ir}$ | all Q rows | one K-tile owner loops Q tiles |
+| $dV_{jr}$ | $\sum_iP_{ij}G_{ir}$ | all Q rows | one K/V-tile owner loops Q tiles |
+
+This table predicts the final determinism result. The only sequence-wide sum
+whose ownership changes between the two v1.0.9 launch modes is `dQ`.
+
+## 11. From The Paper Loop To A Concrete Ownership Example
 
 The paper's abstract backward loop is:
 
@@ -1491,12 +1593,12 @@ initialize dQ, dK, dV to zero
 for each K/V tile j:
     keep local dK_j and dV_j accumulators on chip
     for each Q tile i:
-        load Q_i, O_i, dO_i, dQ_i, l_i, m_i
+        load Q_i, O_i, G_i, LSE_i
         recompute S_ij and P_ij
-        D_i = rowsum(dO_i * O_i)
-        dP_ij = dO_i V_j^T
+        D_i = rowsum(G_i * O_i)
+        dP_ij = G_i V_j^T
         dS_ij = P_ij * (dP_ij - D_i)
-        dV_j += P_ij^T dO_i
+        dV_j += P_ij^T G_i
         dK_j += tau * dS_ij^T Q_i
         dQ_i += tau * dS_ij K_j
     write dK_j and dV_j once
@@ -1515,6 +1617,33 @@ It does not prove that a parallel CUDA implementation preserves that order.
 Parallelizing different $j$ tiles is attractive for occupancy, but then
 several CTAs produce partial contributions to the same $dQ_i$.
 
+Use two Q tiles $I_0,I_1$ and two K/V tiles $J_0,J_1$:
+
+```text
+work for J0:
+    visit I0, I1 in order
+    accumulate the complete dK_J0 and dV_J0
+    produce partial dQ_I0 <- J0 and dQ_I1 <- J0
+
+work for J1:
+    visit I0, I1 in order
+    accumulate the complete dK_J1 and dV_J1
+    produce partial dQ_I0 <- J1 and dQ_I1 <- J1
+```
+
+The contribution matrix is:
+
+| Work unit | Owns final `dK`/`dV` | Contributes to `dQ_I0` | Contributes to `dQ_I1` |
+| --- | --- | --- | --- |
+| $J_0$ | `dK_J0`, `dV_J0` | yes | yes |
+| $J_1$ | `dK_J1`, `dV_J1` | yes | yes |
+
+There is exactly one owner for every final `dK`/`dV` tile. There are two
+contributors for each `dQ` tile. A serial implementation can make one CTA do
+$J_0$ and then $J_1$; a sequence-parallel implementation can make two CTAs do
+them concurrently. The local arithmetic for one table row can remain the same
+while the `dQ` combine protocol changes.
+
 This is the bridge from the math to the determinism question:
 
 > Find every many-to-one sum, then ask whether one worker owns the complete
@@ -1523,44 +1652,363 @@ This is the bridge from the math to the determinism question:
 
 ## 12. FA1 v1.0.9 Backward Audit
 
-This is the current backward source skeleton. It establishes the decisive
-ownership difference and the meaning of the public deterministic control, but
-it should receive the same state-residence, tile, pipeline, and boundary-case
-question pass as forward before the FA1 study is considered equally deep in
-both directions.
+The source uses one shared computation body for one K/V tile. The two backward
+modes differ mainly in whether one CTA invokes that body repeatedly for all
+K/V tiles or many CTAs each invoke it once.
 
-### 12.1 Backward with `num_splits == 1`
+### 12.1 Dispatch, tile families, and workspace
 
-The non-sequence-parallel path launches one CTA for each batch/head pair. That
-CTA walks the K/V tiles and preserves the accumulation order for the affected
-gradient rows. There is no competing CTA using FP32 atomics to add another K
-tile's contribution to the same `dQ`.
+The Python interface has a slightly misleadingly named integer:
 
-The v1.0.9 Python API maps `deterministic=True` to
-`num_splits=1` in backward. The flag does not select a different mathematical
-backward; it declines the faster cross-K-tile parallel decomposition that
-would create multiple `dQ` writers.
+- `num_splits=0`: let the host heuristic choose between the two modes;
+- `num_splits=1`: disable sequence-K parallelism;
+- any `num_splits>1`: select the sequence-parallel implementation.
 
-### 12.2 Backward with `num_splits > 1`
+For backward, a value such as 4 does **not** mean “launch exactly four K/V
+splits.” Once sequence parallelism is selected, the launch grid contains one
+CTA for every K/V tile:
 
-The sequence-parallel path launches CTAs over K/V column tiles:
+```text
+non-sequence-parallel grid:
+    (batch, heads, 1)
 
-- each K/V tile can produce its own $dK_j,dV_j$;
-- every such CTA also produces a partial contribution to many $dQ_i$ rows;
-- those partial `dQ` values are accumulated into an FP32 temporary buffer with
-  `atomicAdd`;
-- the final temporary buffer is copied to the requested `dQ` dtype.
+sequence-parallel main grid:
+    (batch, heads, ceil(Nk / Bc))
+```
 
-Atomic addition prevents lost updates, but it does not impose a stable arrival
-order among CTAs. If partial values $a,b,c$ reach one element, the hardware may
-realize `(a + b) + c` or `a + (b + c)`. Those expressions are equal over real
-numbers and can differ in floating point.
+The default heuristic compares CTA-wave utilization for `batch * heads`
+against the parallel K/V-tile count. It discounts sequence parallelism because
+that mode must zero an FP32 `dq_tmp`, run a separate $D_i$ kernel, and copy/cast
+the final `dq_tmp` to `dQ`. Causal attention receives a smaller discount
+because K/V-tile parallelism also improves load balance.
 
-The v1.0.9 tests encode exactly this diagnosis: forward, `dK`, and `dV` are
-exact-compared across repeats, while sequence-parallel `dQ` is allowed a tiny
+The public `deterministic=True` maps directly to backward `num_splits=1`.
+It does not ask CUDA for a general deterministic mode; it disables this one
+known cross-CTA `dQ` accumulation path.
+
+The compiled v1.0.9 backward family uses:
+
+```text
+Br = 16 query rows
+Bc = 128 or 256 K/V rows
+CTA = 8 warps = 256 threads
+```
+
+All eight warps participate in movement and compute. Their main logical
+decompositions are:
+
+| Phase | Eight-warp decomposition |
+| --- | --- |
+| QK and $dP=GV^\top$ | split the $B_c$ score columns across eight warps |
+| $dQ=dS K$ | eight partial reductions over disjoint $B_c$ slices |
+| $dK=dS^\top Q$, $dV=P^\top G$ | split the $B_c$ output rows across eight warps; each warp accumulates its owned rows across Q tiles |
+
+For $B_c=128$, a warp covers 16 K/V rows; for $B_c=256$, it covers 32. The
+backward K/V tile selection is:
+
+| Compiled $D$ | Rounded K length 128 | Rounded K length 256 or larger on A100/H100 |
+| ---: | ---: | ---: |
+| 32 | $B_c=128$ | $B_c=256$ |
+| 64 | $B_c=128$ | $B_c=256$ |
+| 128 | $B_c=128$ | $B_c=128$ |
+
+The D64/$B_c=256$ A100/H100 specialization deliberately does **not** retain V
+fragments across the whole Q loop. The source comment says this avoids
+register spilling at the cost of more shared memory. This is a concrete
+example of tile choice being constrained by register liveness, not just by
+whether the BF16 payload fits in aggregate SM storage.
+
+The dynamic shared-memory request is:
+
+$$
+S_{\rm bwd}
+=2S_Q+S_V(1+\mathbf{1}_{V\notin regs})+S_{dQ}+2S_S,
+$$
+
+where the first term is the already-double-buffered Q layout used separately
+for Q and $G$, $S_{dQ}$ stores eight FP32 warp partials, and the two score-sized
+buffers hold/transposes $P$ and $dS$. For these supported FP16/BF16 shapes:
+
+$$
+\begin{aligned}
+S_Q &= 2B_rD\cdot2, \\
+S_V &= B_cD\cdot2, \\
+S_{dQ} &= 8B_rD\cdot4, \\
+S_S &= B_rB_c\cdot2
+\end{aligned}
+$$
+
+bytes. For example, $D=64,B_c=128$ uses:
+
+```text
+Q and G double buffers:  2 * 4 KiB =  8 KiB
+shared K/V region:                    16 KiB
+eight FP32 dQ partials:               32 KiB
+P and dS transpose buffers: 2 * 4 =   8 KiB
+                                      --------
+                                      64 KiB
+```
+
+The source-selected families request:
+
+| $D$ | $B_c$ | V retained in registers | dynamic shared memory |
+| ---: | ---: | --- | ---: |
+| 32 | 128 | yes | 36 KiB |
+| 32 | 256 | yes | 52 KiB |
+| 64 | 128 | yes | 64 KiB |
+| 64 | 256 on A100/H100 | no | 120 KiB |
+| 128 | 128 | no | 152 KiB |
+
+These numbers describe shared-memory allocation only. Register fragments,
+FP32 Tensor Core accumulators, pointers, predicates, and fetch registers are
+additional resources fixed by compilation.
+
+### 12.2 One K/V-tile computation body
+
+Fix one K/V tile $J$. The common `one_iter` body keeps `dK_J` and `dV_J`
+accumulators live in FP32 registers while it visits all valid 16-row Q tiles
+in increasing order:
+
+```text
+load fixed K_J and V_J
+initialize FP32 acc_dK_J and acc_dV_J
+
+for Q tile I in increasing sequence order:
+    load Q_I, G_I, LSE_I, D_I
+    recompute score S_IJ and probability P_IJ
+    dP_IJ = G_I V_J^T
+    dS_IJ = P_IJ * (dP_IJ - D_I)
+
+    local_dQ_I_from_J = tau * dS_IJ K_J
+    acc_dV_J += P_IJ^T G_I
+    acc_dK_J += tau * dS_IJ^T Q_I
+
+    reduce/write this J work unit's dQ contribution
+
+write final dK_J and dV_J once
+```
+
+The code interleaves these operations more aggressively than the pseudocode,
+but the dependency graph is the same.
+
+#### State residence
+
+| State | Residence and lifetime in the common body |
+| --- | --- |
+| current/future Q and $G$ | separate double-buffered shared tiles; ordinary global prefetch uses per-thread fetch registers |
+| current K/V tile | global-to-register-to-shared staging; fragments then feed the GEMMs; V may remain in registers in selected specializations |
+| LSE and $D$ | FP32 global row buffers, loaded for the current Q tile |
+| score/$P$/$dP$/$dS$ | distributed per-thread registers; $P$ and $dS$ also pass through score-shaped shared buffers for transposed consumption |
+| eight local `dQ` partials | FP32 accumulator registers, then eight slices in `smem_dq` |
+| `dK_J`,`dV_J` | FP32 register accumulators kept across all Q tiles |
+| cross-K-tile `dQ` state | FP32 global `dq_tmp` |
+
+`P` and `dS` need two orientations. QK and $dP$ naturally produce a
+$[B_r,B_c]$ warp layout, while $dV=P^\top G$ and $dK=dS^\top Q$ consume the
+transpose. The source stores them through swizzled shared-memory tiles and
+reloads the transposed fragments instead of materializing a global tensor.
+
+#### Within one Q-tile iteration
+
+The approximate source order is:
+
+```text
+1.  load G fragment
+2.  recompute Q K^T, apply mask, reconstruct P from LSE
+3.  store P to shared for its transposed dV use
+4.  prefetch the next Q tile
+5.  initialize dP registers with -D, then accumulate G V^T
+6.  multiply pointwise by P to obtain dS
+7.  prefetch the next G and, when needed, O
+8.  store dS to shared for its transposed dK use
+9.  compute eight warp-local dQ = dS K partials
+10. store the eight partials to smem_dq
+11. reload transposed P and accumulate dV
+12. commit the prefetched next Q into the alternate shared buffer
+13. reload/reduce smem_dq and combine it with any earlier K-tile dQ
+14. reload transposed dS and accumulate dK
+15. commit the prefetched next G and switch shared-buffer generations
+```
+
+The next-Q/next-$G$ prefetch is the same style as forward: ordinary loads can
+be outstanding while independent instructions issue, and their destination
+registers are tracked by the scoreboard. It is not a dedicated producer warp
+or an asynchronous-copy pipeline.
+
+CTA barriers protect reuse of `smem_dq` and the double-buffered Q/$G$ storage.
+Warp synchronization protects score-tile transpose handoffs where only
+warp-level communication is needed. The fixed source instructions and barriers
+define the local reduction order for one resolved specialization.
+
+#### Why `dQ` has eight shared-memory partials
+
+For the $dQ$ GEMM, $B_c$ is the reduction dimension. The eight warps each
+multiply their own K/V-row slice:
+
+```text
+warp 0: dS[:, J0] @ K[J0, :]
+warp 1: dS[:, J1] @ K[J1, :]
+...
+warp 7: dS[:, J7] @ K[J7, :]
+```
+
+They therefore produce eight partial versions of the same $[B_r,D]$ `dQ`
+tile. `smem_dq` stores all eight FP32 copies. Its reload helper adds partial
+indices 0 through 7 in a fixed loop. This is a CTA-local fixed-order reduction,
+not the nondeterministic atomic reduction discussed below.
+
+`dK` and `dV` make the opposite ownership choice: the eight warps partition
+the output K/V rows, so a warp can keep its own output fragments in registers
+and add Q tiles in increasing order. The CTA writes each final `dK_J`/`dV_J`
+tile once.
+
+### 12.3 Backward with `num_splits == 1`
+
+The non-sequence-parallel kernel launches one CTA per batch/head and calls the
+common body for K/V tile indices:
+
+```text
+J = 0, 1, 2, ..., ceil(Nk / Bc) - 1
+```
+
+in that fixed order. This is more specific than saying merely that atomics are
+absent:
+
+```text
+CTA(b,h):
+    J0 body: loop Q tiles -> write first FP32 dQ state
+    J1 body: loop Q tiles -> load prior dQ, add J1 partials, write FP32 state
+    ...
+    last J body: load prior dQ, add last partials, scale/cast final dQ
+```
+
+Within K tile $J$ the eight warp partials are added by ascending partial index.
+Across K tiles, the same CTA first loads the prior FP32 `dq_tmp` value and then
+adds the current tile's eight partials. The effective source-level order is:
+
+```text
+J0: partial[0], partial[1], ..., partial[7]
+J1: prior_J0, partial[0], ..., partial[7]
+J2: prior_J1, partial[0], ..., partial[7]
+...
+```
+
+Only that CTA accesses the batch/head's in-progress `dQ` as an owner. The
+global temporary is needed because one CTA cannot keep every Q row's `dQ`
+live on chip while the outer loop advances over K/V tiles; global residence
+does not imply shared ownership.
+
+The first K/V-tile iteration also computes $D_i=G_i^\top O_i$ while visiting Q
+tiles and stores it in `softmax_d`. Later K/V iterations reload the value.
+There is no need for a separate dot-product kernel because the single CTA
+itself establishes “compute first, consume later” program order.
+
+For fixed binary, inputs, shape, mask/RNG state, and specialization, this path
+has:
+
+1. one CTA owner for the cross-K `dQ` sum;
+2. a fixed K/V-tile traversal;
+3. fixed eight-warp local combines;
+4. one K/V-tile owner for each complete `dK` and `dV` sum;
+5. no cross-CTA floating-point destination.
+
+That is the source-level reason `num_splits=1` is expected to repeat
+bitwise—not a generic guarantee that every GEMM or every CUDA instruction is
+deterministic under an arbitrarily changed implementation envelope.
+
+### 12.4 What changes with `num_splits > 1`
+
+Sequence parallelism changes the outer ownership:
+
+```text
+CTA blockIdx.z = J0 -> run the common body once for J0
+CTA blockIdx.z = J1 -> run the common body once for J1
+...
+```
+
+The inner Q-tile order, local formulas, eight-warp `dQ` reduction, and
+one-owner `dK_J`/`dV_J` epilogues are reused. Three surrounding protocols must
+change.
+
+#### Change 1: compute `D` before all K/V-tile CTAs
+
+No CTA-local barrier can make one K/V-tile CTA publish $D_i$ and safely release
+all other CTAs in the same launch. v1.0.9 therefore first launches a separate
+grid over Q-row tiles to compute:
+
+$$
+D_i=G_i^\top O_i
+$$
+
+and store `softmax_d`. CUDA stream ordering makes those writes visible before
+the sequence-parallel main kernel.
+
+#### Change 2: zero a shared FP32 `dq_tmp`
+
+Every K/V-tile CTA produces a contribution to every visited `dQ_I`. The host
+creates or zeroes the FP32 `dq_tmp` before launching those CTAs. This is why
+sequence parallelism has setup overhead even though the mathematical backward
+is unchanged.
+
+#### Change 3: atomically add each K/V-tile contribution
+
+After the common body reduces one CTA's eight warp partials in fixed order, it
+uses FP32 `atomicAdd` on `dq_tmp`:
+
+```text
+dq_tmp[I] += local_dQ_from_J   # atomic per element
+```
+
+The atomic makes each read-modify-write indivisible, so contributions are not
+lost. It does not impose a K/V-tile arrival order. Extend the ownership example
+to three K/V tiles. One run can serialize:
+
+```text
+zero -> contribution(J0) -> contribution(J1) -> contribution(J2)
+```
+
+while another can serialize:
+
+```text
+zero -> contribution(J1) -> contribution(J2) -> contribution(J0)
+```
+
+These correspond to different parenthesizations of three FP32 partials.
+FP32 addition is not associative, so correct executions can differ in their
+low bits. With exactly two ordinary finite partials, swapping the two additions
+normally gives the same value because addition is commutative; the first clear
+non-associativity case needs three partials. With only one K/V tile there is
+only one atomic writer and therefore no cross-CTA numeric race at all. The
+source-level warning is consequently:
+
+> Do not assume sequence-parallel `dQ` is bitwise repeatable when multiple,
+> especially three or more, K/V-tile CTAs contribute to the same element.
+
+In causal attention the contributor count is row-dependent: early query rows
+may see only the first K/V tile, while later rows see several.
+
+Once all main-kernel CTAs finish, a stream-ordered copy/cast converts `dq_tmp`
+into the requested `dQ` dtype.
+
+The exact boundary is:
+
+| Property | Preserved from the common body? |
+| --- | --- |
+| Q-tile traversal inside one K/V work unit | yes, fixed |
+| eight-warp local `dQ` combine | yes, fixed |
+| `dK_J` and `dV_J` single-owner accumulation | yes |
+| order among different K/V contributions to one `dQ` element | **no**; atomic arrival order |
+
+This is why scheduler freedom is numerically relevant only for `dQ` in this
+path. `dK_J` and `dV_J` still have disjoint K/V-tile owners; changing the order
+in which those CTAs finish does not change which arithmetic chain writes one
+output element.
+
+The v1.0.9 tests encode the same diagnosis: forward, `dK`, and `dV` are
+exact-compared across repeats, while sequence-parallel `dQ` is allowed a small
 arithmetic tolerance and is annotated as nondeterministic.
 
-### 12.3 Dropout state
+### 12.5 Dropout state
 
 With dropout, deterministic replay also requires the same random mask. The
 source stores Philox RNG state in forward and constructs offsets from logical
@@ -1580,7 +2028,7 @@ For the pinned v1.0.9 CUDA implementation:
 | --- | --- | --- |
 | forward, fixed RNG state | expected deterministic within a fixed implementation envelope | one CTA owns each output row tile |
 | backward, `deterministic=True` / `num_splits=1` | expected deterministic within a fixed implementation envelope | avoids sequence-K-parallel `dQ` atomic accumulation |
-| default backward when heuristic selects `num_splits>1` | `dQ` is not bitwise safe to assume deterministic | K-tile CTAs atomically add partial `dQ` |
+| default backward when heuristic selects `num_splits>1` | `dQ` is not bitwise safe to assume deterministic when multiple K-tile CTAs contribute | K-tile CTAs atomically add partial `dQ` in an unspecified arrival order |
 | `dK`, `dV` in the studied sequence-parallel path | repeated exactly in the historical race test | K/V-tile ownership avoids the corresponding shared atomic destination |
 
 The implementation envelope still includes the commit, CUDA entry point,
@@ -1749,22 +2197,32 @@ The completed forward track has answered:
   implementations instead of describing each generation with unrelated
   vocabulary;
 
-The backward scaffold has recorded:
+The completed backward source pass has answered:
 
-- why backward can recompute $P$ from linear-sized saved state;
-- where the $dQ,dK,dV$ reductions come from;
-- how the historical FA1 CUDA implementation maps those reductions to CTAs;
-- why its sequence-K-parallel `dQ` path is nondeterministic;
-- why `deterministic=True` selects the single-split backward;
+- how the five backward equations induce distinct head-dimension, Q-sequence,
+  and K-sequence reductions;
+- why $D_i=dO_i^\top O_i$ lets backward recompute $P$ from linear-sized saved
+  state;
+- how an eight-warp CTA processes one K/V tile, transposes $P/dS$ through
+  shared memory, and accumulates `dK`/`dV` across Q tiles;
+- where Q, $dO$, K/V, LSE, $D$, transient score state, warp-local `dQ`,
+  `dK`/`dV`, and cross-K `dq_tmp` reside;
+- why `num_splits=1` gives one batch/head CTA a fixed K/V-tile and local-warp
+  reduction order;
+- why `num_splits>1` is a mode selector for one CTA per K/V tile, not the
+  literal number of CTAs;
+- why the parallel mode needs a separate $D$ kernel, zeroed FP32 workspace,
+  atomic `dQ`, and a final copy/cast;
+- why this mode leaves `dK`/`dV` single-owned but makes only the cross-CTA
+  `dQ` arrival order nondeterministic;
 - what a future component and model-level verification must observe.
 
-The next learning step is the backward reader pass, not FA2. It should answer
-at forward-level detail where every saved/recomputed value resides, how
-backward tiles and warps are assigned, what is pipelined, and which boundary
-cases alter the physical path. The current source verdict supplies hypotheses
-for that pass; it should not substitute for it.
+The next useful step is a reader-question pass over backward, especially the
+subtleties that only become visible when tracing one concrete specialization.
+Dropout's exact lane/counter mapping and GPU measurements of register count,
+occupancy, workspace traffic, and repeatability remain open evidence tasks.
 
-FA2 remains deliberately deferred. Before starting it, the useful checks are
-whether the reader can independently explain the online-softmax invariant,
-derive $D_i=dO_i^\top O_i$, trace the backward physical execution, and predict
-the first mismatch caused by parallel K-tile contributions to `dQ`.
+FA2 remains deliberately deferred. Before starting it, the useful check is
+whether the reader can independently derive $D_i=dO_i^\top O_i$, draw the
+one-K/V-tile owner diagram, explain the eight local `dQ` partials, and predict
+the first mismatch introduced by parallel K/V-tile contributions.
