@@ -57,6 +57,11 @@ The assumed reader frontier is:
 
 ### Recommended reading paths
 
+For a short re-entry before a later-generation comparison, read the
+[FA1 one-page checkpoint](flashattention_fa1_checkpoint.md). It compresses the
+forward/backward ownership, state residence, and scoped determinism verdict
+without replacing the evidence in this file.
+
 For the completed forward track, read straight through Sections 1--9. The
 lowering path is:
 

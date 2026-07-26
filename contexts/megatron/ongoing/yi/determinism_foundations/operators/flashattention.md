@@ -17,6 +17,12 @@ lengths, and MHA/MQA/GQA far enough to understand the determinism mechanism.
 It uses the older CUDA path under `csrc/flash_attn` as the clearest mechanical
 example and checks how the current CuTe path generalizes it.
 
+The historical learning sequence is maintained separately:
+
+- [FA1 one-page checkpoint](flashattention_fa1_checkpoint.md);
+- [full FA1 foundations and v1.0.9 audit](flashattention_fa1_foundations.md);
+- [FA2 v2.0.0 forward delta](flashattention_fa2_forward.md).
+
 It does not claim one verdict for every implementation in the repository.
 ROCm/Triton/CK backends, inference KV-cache mutation, paged attention,
 score/mask modifications, and block-sparse variants need separate dispatch
