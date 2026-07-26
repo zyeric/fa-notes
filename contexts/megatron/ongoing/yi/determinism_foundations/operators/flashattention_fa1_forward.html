@@ -1,0 +1,1285 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="FlashAttention-1 forward 的算法、CTA/warp、内存搬运与确定性技术地图">
+  <title>FlashAttention-1 Forward · Visual Technical Map</title>
+  <style>
+    :root {
+      --bg: #07101d;
+      --bg-2: #0a1727;
+      --panel: #101f32;
+      --panel-2: #152a41;
+      --ink: #f2f7fb;
+      --muted: #9eb0c5;
+      --line: #2a435e;
+      --cyan: #55d9fb;
+      --green: #70e3aa;
+      --amber: #ffc66f;
+      --red: #ff8585;
+      --violet: #b8a2ff;
+      --blue: #78a9ff;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .38);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 84% 12%, rgba(85, 217, 251, .11), transparent 28%),
+        radial-gradient(circle at 12% 88%, rgba(184, 162, 255, .10), transparent 32%),
+        linear-gradient(135deg, rgba(255, 255, 255, .018), transparent 42%);
+    }
+
+    a { color: var(--cyan); text-underline-offset: 3px; }
+    strong { color: #fff; }
+
+    .deck { position: relative; width: 100%; height: 100%; }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: none;
+      grid-template-rows: auto 1fr auto;
+      gap: clamp(12px, 1.6vh, 23px);
+      padding: clamp(30px, 4.5vh, 64px) clamp(38px, 5.4vw, 96px) clamp(27px, 3.7vh, 52px);
+    }
+
+    .slide.active { display: grid; animation: enter .24s ease-out; }
+    @keyframes enter {
+      from { opacity: .18; transform: translateX(12px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    .kicker {
+      color: var(--cyan);
+      font-size: clamp(12px, .95vw, 17px);
+      font-weight: 780;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: .25em; font-size: clamp(48px, 6vw, 102px); line-height: .98; letter-spacing: -.045em; }
+    h2 { margin-bottom: 0; font-size: clamp(33px, 4vw, 68px); line-height: 1.04; letter-spacing: -.035em; }
+    h3 { margin-bottom: .4em; font-size: clamp(20px, 1.8vw, 31px); line-height: 1.15; }
+    p, li, td, th { font-size: clamp(16px, 1.38vw, 25px); line-height: 1.34; }
+    p { margin-bottom: .65em; }
+    ul, ol { margin: .25em 0; padding-left: 1.15em; }
+    li { margin: .19em 0; }
+    code, .mono {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: .9em;
+    }
+
+    .content { min-height: 0; align-self: stretch; }
+    .center { display: grid; place-items: center; text-align: center; }
+    .vcenter { align-self: center; }
+    .lead { font-size: clamp(24px, 2.55vw, 47px); line-height: 1.22; color: #dce8f4; }
+    .small { font-size: clamp(13px, 1vw, 18px); line-height: 1.35; }
+    .tiny { font-size: clamp(11px, .82vw, 15px); line-height: 1.35; }
+    .muted { color: var(--muted); }
+    .cyan { color: var(--cyan); }
+    .green { color: var(--green); }
+    .amber { color: var(--amber); }
+    .red { color: var(--red); }
+    .violet { color: var(--violet); }
+    .blue { color: var(--blue); }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(18px, 2.7vw, 46px); align-items: center; height: 100%; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(13px, 1.65vw, 28px); align-items: stretch; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: clamp(10px, 1.15vw, 20px); align-items: stretch; }
+    .wide-left { grid-template-columns: 1.22fr .78fr; }
+    .wide-right { grid-template-columns: .78fr 1.22fr; }
+
+    .card {
+      background: linear-gradient(145deg, rgba(21, 42, 65, .96), rgba(10, 23, 39, .96));
+      border: 1px solid var(--line);
+      border-radius: 17px;
+      padding: clamp(14px, 1.55vw, 26px);
+      box-shadow: var(--shadow);
+    }
+    .card p:last-child, .card ul:last-child, .card ol:last-child { margin-bottom: 0; }
+    .card.cyan-edge { border-top: 4px solid var(--cyan); }
+    .card.green-edge { border-top: 4px solid var(--green); }
+    .card.amber-edge { border-top: 4px solid var(--amber); }
+    .card.red-edge { border-top: 4px solid var(--red); }
+    .card.violet-edge { border-top: 4px solid var(--violet); }
+    .compact p, .compact li { font-size: clamp(14px, 1.14vw, 21px); }
+
+    .tag {
+      display: inline-block;
+      margin-bottom: .55em;
+      padding: .27em .6em;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(4, 12, 22, .64);
+      font-size: clamp(11px, .72vw, 14px);
+      font-weight: 760;
+      letter-spacing: .065em;
+      text-transform: uppercase;
+    }
+
+    .quote {
+      border-left: 5px solid var(--cyan);
+      padding: .16em 0 .16em .75em;
+      font-size: clamp(28px, 3.05vw, 55px);
+      line-height: 1.17;
+      letter-spacing: -.025em;
+    }
+
+    .equation {
+      display: block;
+      margin: .55em 0;
+      padding: .68em .85em;
+      background: #050f1b;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      color: var(--amber);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: clamp(17px, 1.55vw, 28px);
+      text-align: center;
+    }
+
+    .flow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: .9em 0;
+    }
+    .node {
+      padding: .65em .9em;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 13px;
+      font-size: clamp(15px, 1.18vw, 22px);
+      font-weight: 680;
+      text-align: center;
+    }
+    .node.cyan-node { border-color: var(--cyan); background: rgba(85, 217, 251, .08); }
+    .node.green-node { border-color: var(--green); background: rgba(112, 227, 170, .08); }
+    .node.amber-node { border-color: var(--amber); background: rgba(255, 198, 111, .08); }
+    .node.violet-node { border-color: var(--violet); background: rgba(184, 162, 255, .08); }
+    .arrow { color: var(--cyan); font-size: clamp(23px, 2vw, 37px); }
+
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { padding: .44em .5em; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--cyan); text-align: left; font-weight: 740; }
+    .dense td, .dense th { font-size: clamp(12px, .94vw, 17px); line-height: 1.25; padding: .34em .42em; }
+
+    .stack { display: grid; gap: 8px; width: min(1050px, 96%); margin: 0 auto; }
+    .layer {
+      display: grid;
+      grid-template-columns: minmax(145px, 205px) 1fr;
+      align-items: center;
+      gap: 17px;
+      padding: .62em .9em;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--panel);
+    }
+    .layer strong { color: var(--cyan); font-size: clamp(14px, 1.08vw, 20px); }
+    .layer span { color: #d7e3ee; font-size: clamp(13px, 1vw, 18px); }
+
+    .matrix {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #071321;
+    }
+    .matrix.cells-4 { grid-template-columns: repeat(4, 1fr); }
+    .matrix.cells-8 { grid-template-columns: repeat(8, 1fr); }
+    .cell {
+      display: grid;
+      place-items: center;
+      min-height: clamp(32px, 4.1vh, 52px);
+      border-radius: 7px;
+      background: #18324b;
+      color: #dce8f4;
+      font: 650 clamp(11px, .85vw, 15px)/1.1 "SFMono-Regular", Consolas, monospace;
+      text-align: center;
+    }
+    .cell.c0 { background: rgba(85, 217, 251, .24); color: var(--cyan); }
+    .cell.c1 { background: rgba(112, 227, 170, .22); color: var(--green); }
+    .cell.c2 { background: rgba(255, 198, 111, .22); color: var(--amber); }
+    .cell.c3 { background: rgba(184, 162, 255, .22); color: var(--violet); }
+    .cell.masked { opacity: .24; background: repeating-linear-gradient(135deg, #2b3542 0 7px, #172334 7px 14px); }
+
+    .legend { display: flex; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: clamp(11px, .8vw, 15px); }
+    .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 3px; background: currentColor; }
+
+    .timeline {
+      display: grid;
+      grid-template-columns: repeat(var(--steps, 6), 1fr);
+      gap: 0;
+      margin: 1.25em 0 .7em;
+    }
+    .time-item {
+      position: relative;
+      padding: 1.7em .45em .35em;
+      border-top: 3px solid var(--line);
+      text-align: center;
+    }
+    .time-item::before {
+      content: "";
+      position: absolute;
+      top: -8px;
+      left: calc(50% - 7px);
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--cyan);
+    }
+    .time-item strong { color: var(--cyan); font-size: clamp(12px, .9vw, 16px); }
+    .time-item span { display: block; margin-top: .32em; color: var(--muted); font-size: clamp(10px, .72vw, 14px); line-height: 1.25; }
+
+    .bar-chart { display: grid; gap: 12px; }
+    .bar-row { display: grid; grid-template-columns: 7em 1fr 5.5em; align-items: center; gap: 12px; }
+    .bar-row > span { font-size: clamp(12px, .9vw, 16px); }
+    .bar-track { height: 25px; overflow: hidden; border-radius: 999px; background: #081421; border: 1px solid var(--line); }
+    .bar { height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--cyan), var(--blue)); }
+
+    .codebox {
+      margin: .55em 0;
+      padding: .78em .92em;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: #050e19;
+      color: #d7e6f4;
+      font: clamp(12px, .98vw, 18px)/1.45 "SFMono-Regular", Consolas, monospace;
+      white-space: pre-wrap;
+    }
+    .codebox .hi { color: var(--cyan); }
+    .codebox .warn { color: var(--amber); }
+
+    .memory-map { display: grid; grid-template-columns: 1fr 70px 1fr; gap: 12px; align-items: center; }
+    .memory-column { display: grid; gap: 9px; }
+    .mem {
+      padding: .65em .8em;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--panel);
+      font-size: clamp(13px, 1vw, 18px);
+    }
+    .mem.reg { border-color: var(--amber); }
+    .mem.smem { border-color: var(--cyan); }
+    .mem.global { border-color: var(--violet); }
+    .memory-arrow { color: var(--cyan); text-align: center; font-size: 34px; }
+
+    .verdict {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 10px 16px;
+      align-items: start;
+      padding: 1em;
+      border: 1px solid rgba(112, 227, 170, .55);
+      border-radius: 16px;
+      background: rgba(112, 227, 170, .07);
+    }
+    .check {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: rgba(112, 227, 170, .18);
+      color: var(--green);
+      font-weight: 900;
+    }
+    .verdict p { margin: 0; font-size: clamp(14px, 1.15vw, 21px); }
+
+    .section-slide .content { display: grid; align-content: center; }
+    .section-slide h2 { font-size: clamp(54px, 6.7vw, 116px); }
+
+    .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #6d8298;
+      font-size: clamp(10px, .7vw, 13px);
+      letter-spacing: .02em;
+    }
+    .footer .section-name { color: #91a7bd; }
+
+    .controls {
+      position: fixed;
+      right: 18px;
+      bottom: 14px;
+      z-index: 30;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      opacity: .42;
+      transition: opacity .2s;
+    }
+    .controls:hover { opacity: 1; }
+    .controls button {
+      width: 38px;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      color: var(--ink);
+      background: rgba(16, 31, 50, .94);
+      cursor: pointer;
+      font-size: 16px;
+    }
+    .counter { min-width: 66px; text-align: center; color: var(--muted); font: 13px/1 monospace; }
+    .progress {
+      position: fixed;
+      left: 0;
+      bottom: 0;
+      z-index: 35;
+      height: 3px;
+      width: 0;
+      background: linear-gradient(90deg, var(--cyan), var(--violet));
+      transition: width .2s;
+    }
+
+    .help {
+      display: none;
+      position: fixed;
+      z-index: 40;
+      right: 20px;
+      bottom: 58px;
+      width: min(480px, 88vw);
+      padding: 17px 20px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(4, 10, 18, .97);
+      box-shadow: var(--shadow);
+    }
+    body.show-help .help { display: block; }
+    .help p { margin: .3em 0; font-size: 14px; color: #d3deea; }
+
+    body.overview { overflow: auto; }
+    body.overview .deck {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 18px;
+      height: auto;
+      padding: 18px;
+    }
+    body.overview .slide {
+      position: relative;
+      display: grid;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 16 / 9;
+      padding: 24px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      cursor: pointer;
+      transform: none;
+      animation: none;
+    }
+    body.overview .slide::after {
+      content: attr(data-number);
+      position: absolute;
+      right: 10px;
+      top: 8px;
+      color: var(--muted);
+      font: 12px monospace;
+    }
+    body.overview .slide::before {
+      content: attr(data-overview-title);
+      display: grid;
+      align-content: center;
+      padding: 0 6%;
+      color: var(--ink);
+      font-size: clamp(20px, 2.1vw, 34px);
+      font-weight: 760;
+      line-height: 1.16;
+      letter-spacing: -.025em;
+      white-space: pre-line;
+    }
+    body.overview .slide > * { display: none; }
+    body.overview .controls, body.overview .progress, body.overview .help { display: none; }
+
+    @media (max-width: 900px) {
+      .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+      .grid-2 { align-content: center; }
+      .grid-3, .grid-4 { grid-auto-flow: column; grid-auto-columns: 1fr; overflow: hidden; }
+      .slide { padding-left: 30px; padding-right: 30px; }
+      .layer { grid-template-columns: 120px 1fr; }
+      .memory-map { grid-template-columns: 1fr; }
+      .memory-arrow { transform: rotate(90deg); }
+    }
+
+    @media print {
+      @page { size: 13.333in 7.5in; margin: 0; }
+      html, body {
+        overflow: visible;
+        background: var(--bg);
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+      }
+      .deck { height: auto; }
+      .slide {
+        position: relative;
+        display: grid !important;
+        width: 13.333in;
+        height: 7.5in;
+        break-after: page;
+        page-break-after: always;
+      }
+      .controls, .progress, .help { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck" aria-live="polite">
+    <section class="slide section-slide" data-section="Opening">
+      <div class="kicker">FlashAttention-1 · Forward · Visual Technical Map</div>
+      <div class="content">
+        <h1>FA1 Forward<br><span class="cyan">从公式到物理执行</span></h1>
+        <p class="lead">online softmax · CTA ownership · memory movement · warp roles · determinism</p>
+        <p class="muted">历史实现：Dao-AILab/flash-attention v1.0.9 · CPU-only source study</p>
+      </div>
+      <footer class="footer"><span>方向键翻页 · O 总览 · ? 帮助 · F 全屏</span><span class="section-name">Opening</span></footer>
+    </section>
+
+    <section class="slide" data-section="Map">
+      <div class="kicker">How to use this deck</div>
+      <div class="content vcenter">
+        <div class="stack">
+          <div class="layer"><strong>01 · Algorithm</strong><span>ordinary attention → stable softmax → online state → tiled recurrence</span></div>
+          <div class="layer"><strong>02 · Ownership</strong><span>grid → CTA → Q-row owner → K/V traversal → <code>num_splits</code></span></div>
+          <div class="layer"><strong>03 · Resources</strong><span>tile family → registers/shared/global residence → allocation and reuse</span></div>
+          <div class="layer"><strong>04 · Warp execution</strong><span>global load → QK → softmax → PV → partial-O combine → pipeline</span></div>
+          <div class="layer"><strong>05 · Modes</strong><span>causal · varlen · multi-head · dropout</span></div>
+          <div class="layer"><strong>06 · Proof</strong><span>unique owner + fixed local orders + no cross-CTA numeric combine</span></div>
+        </div>
+        <p class="small muted center" style="margin-top:1em">这是一张可跳读的技术地图，不是完整 talk storyline；按 O 打开 overview 后可直接选择模块。</p>
+      </div>
+      <footer class="footer"><span>Markdown remains the source of truth</span><span class="section-name">Map</span></footer>
+    </section>
+
+    <section class="slide" data-section="Scope">
+      <div class="kicker">Scope &amp; evidence envelope</div>
+      <div class="content grid-2">
+        <div>
+          <p class="quote">先分清：<span class="cyan">算法证明</span>和<span class="amber">实现证明</span>回答不同问题。</p>
+          <div class="flow" style="justify-content:flex-start">
+            <span class="node cyan-node">FA1 paper</span><span class="arrow">→</span>
+            <span class="node">real-number correctness<br>IO argument</span>
+          </div>
+          <div class="flow" style="justify-content:flex-start">
+            <span class="node amber-node">v1.0.9 source</span><span class="arrow">→</span>
+            <span class="node">grid / tile / warp<br>memory / order</span>
+          </div>
+        </div>
+        <div class="card compact">
+          <h3>本页结论的边界</h3>
+          <ul>
+            <li>forward only：不展开 backward；</li>
+            <li>FP16/BF16，head dim bucket <code>D=32/64/128</code>；</li>
+            <li>历史 CUDA path，不代表 FA2/FA3/FA4；</li>
+            <li>A100/SM80 与 H100/SM90 只讨论该 binary 的资源 envelope；</li>
+            <li>source reasoning 已完成，GPU profiler/SASS validation 未完成。</li>
+          </ul>
+          <p class="small muted">Paper: arXiv:2205.14135v2<br>Source: v1.0.9 commit <code>6d48e14a…</code></p>
+        </div>
+      </div>
+      <footer class="footer"><span>exact claim must name implementation + dispatch + hardware envelope</span><span class="section-name">Scope</span></footer>
+    </section>
+
+    <section class="slide" data-section="Algorithm">
+      <div class="kicker">Four contracts that must not be collapsed</div>
+      <div class="content vcenter">
+        <div class="grid-4 compact">
+          <article class="card cyan-edge"><span class="tag">function</span><h3>Exact attention</h3><p>实数语义仍是 <code>softmax(QKᵀ)V</code>，不是稀疏或低秩近似。</p></article>
+          <article class="card green-edge"><span class="tag">stability</span><h3>Numerically stable</h3><p>减 row max，降低 exp overflow/underflow；不等于 bitwise equality。</p></article>
+          <article class="card amber-edge"><span class="tag">error</span><h3>Numerically close</h3><p>不同 tile / fusion / reduction tree 可有小的浮点差异。</p></article>
+          <article class="card violet-edge"><span class="tag">repeatability</span><h3>Bitwise deterministic</h3><p>固定 input、RNG、dispatch、binary、hardware 后重复得到相同 bits。</p></article>
+        </div>
+        <p class="lead center" style="margin-top:1em"><span class="cyan">Exact</span> 说明算什么；<span class="violet">deterministic</span> 说明同一实现是否重复。</p>
+      </div>
+      <footer class="footer"><span>mathematical equivalence ≠ identical floating-point trace</span><span class="section-name">Algorithm</span></footer>
+    </section>
+
+    <section class="slide" data-section="Algorithm">
+      <div class="kicker">Ordinary attention · where the quadratic state comes from</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="flow">
+            <span class="node cyan-node">Q [N,d]</span>
+            <span class="node cyan-node">K [N,d]</span>
+            <span class="arrow">→</span>
+            <span class="node amber-node">S=QKᵀ [N,N]</span>
+            <span class="arrow">→</span>
+            <span class="node">P=softmax(S)</span>
+            <span class="arrow">→</span>
+            <span class="node green-node">O=PV [N,d]</span>
+          </div>
+          <div class="matrix cells-8" aria-label="materialized attention matrix">
+            <span class="cell c0">S₀₀</span><span class="cell c0">S₀₁</span><span class="cell c0">…</span><span class="cell c0">S₀ⱼ</span><span class="cell c0">…</span><span class="cell c0">…</span><span class="cell c0">…</span><span class="cell c0">S₀ₙ</span>
+            <span class="cell">S₁₀</span><span class="cell">S₁₁</span><span class="cell">…</span><span class="cell">S₁ⱼ</span><span class="cell">…</span><span class="cell">…</span><span class="cell">…</span><span class="cell">S₁ₙ</span>
+            <span class="cell">⋮</span><span class="cell">⋮</span><span class="cell">⋱</span><span class="cell">⋮</span><span class="cell">⋱</span><span class="cell">⋮</span><span class="cell">⋮</span><span class="cell">⋮</span>
+            <span class="cell c3">Sᵢ₀</span><span class="cell c3">Sᵢ₁</span><span class="cell c3">…</span><span class="cell c3">Sᵢⱼ</span><span class="cell c3">…</span><span class="cell c3">…</span><span class="cell c3">…</span><span class="cell c3">Sᵢₙ</span>
+          </div>
+        </div>
+        <div class="card">
+          <h3>每个 query row 需要什么？</h3>
+          <span class="equation">Oᵢ = Σⱼ exp(Sᵢⱼ) Vⱼ / Σⱼ exp(Sᵢⱼ)</span>
+          <ul class="compact">
+            <li>算术量仍是 <code>O(N²d)</code>；</li>
+            <li>naive path 可把 <code>S</code> 与 <code>P</code> 写入 HBM；</li>
+            <li>FA1 的核心不是少算 score，而是避免 <code>N×N</code> intermediate 的 HBM 往返。</li>
+          </ul>
+        </div>
+      </div>
+      <footer class="footer"><span>the problem is IO, not a new attention definition</span><span class="section-name">Algorithm</span></footer>
+    </section>
+
+    <section class="slide" data-section="Algorithm">
+      <div class="kicker">Online softmax · the three pieces of running row state</div>
+      <div class="content grid-2">
+        <div class="card cyan-edge">
+          <h3>处理过一个 K/V prefix 后</h3>
+          <span class="equation">m = max score seen so far</span>
+          <span class="equation">ℓ = Σseen exp(Sⱼ − m)</span>
+          <span class="equation">u = Σseen exp(Sⱼ − m) Vⱼ</span>
+          <p class="lead center"><span class="green">partial output = u / ℓ</span></p>
+        </div>
+        <div>
+          <h3>新 tile 到来时必须换坐标系</h3>
+          <span class="equation">m′ = max(m, m_tile)</span>
+          <span class="equation">ℓ′ = e^(m−m′)ℓ + e^(m_tile−m′)ℓ_tile</span>
+          <span class="equation">u′ = e^(m−m′)u + Σtile e^(Sⱼ−m′)Vⱼ</span>
+          <p class="small muted">源码保存 normalized O 与 <code>LSE=m+log(ℓ)</code>；这里用 unnormalized <code>u</code> 更容易看清 invariant。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>rescale old state, add the new numerator, normalize conceptually</span><span class="section-name">Algorithm</span></footer>
+    </section>
+
+    <section class="slide" data-section="Algorithm">
+      <div class="kicker">One scalar example · scores [1,2] then [3]</div>
+      <div class="content vcenter">
+        <div class="timeline" style="--steps:3">
+          <div class="time-item"><strong>Initialize</strong><span>m=−∞<br>ℓ=0<br>u=0</span></div>
+          <div class="time-item"><strong>Tile 1 · [1,2]</strong><span>m₁=2<br>ℓ₁=e⁻¹+1<br>u₁=10e⁻¹+20</span></div>
+          <div class="time-item"><strong>Tile 2 · [3]</strong><span>m₂=3<br>old state × e⁻¹<br>add value 30</span></div>
+        </div>
+        <div class="grid-2">
+          <div class="card amber-edge">
+            <span class="equation">ℓ₂ = e⁻¹(e⁻¹+1)+1<br>= e⁻²+e⁻¹+1</span>
+          </div>
+          <div class="card green-edge">
+            <span class="equation">u₂ = e⁻¹(10e⁻¹+20)+30<br>= 10e⁻²+20e⁻¹+30</span>
+          </div>
+        </div>
+        <p class="lead center" style="margin-top:.8em"><code>u₂ / ℓ₂</code> 与一次性用 global max=3 做 stable softmax 完全相同（实数语义）。</p>
+      </div>
+      <footer class="footer"><span>the invariant survives one tile merge; induction handles all tiles</span><span class="section-name">Algorithm</span></footer>
+    </section>
+
+    <section class="slide" data-section="Ownership">
+      <div class="kicker">Paper loop and v1.0.9 source loop are related—but not identical</div>
+      <div class="content grid-2">
+        <article class="card cyan-edge">
+          <span class="tag">paper pseudocode</span>
+          <h3>K/V tile outer</h3>
+          <div class="codebox"><span class="hi">for K/V tile j:</span>
+  load Kⱼ, Vⱼ
+  for every Q tile i:
+    load Qᵢ + running state[i]
+    update with tile (i,j)
+    store running state[i]</div>
+          <p class="small">算法层说明如何用小 SRAM tile 避免 <code>N²</code> intermediate。</p>
+        </article>
+        <article class="card amber-edge">
+          <span class="tag">historical CUDA source</span>
+          <h3>CTA boundary is outside both loops</h3>
+          <div class="codebox"><span class="warn">parallel CTA (b,h,r):</span>
+  for K/V tile j:
+    retain Kⱼ, Vⱼ on chip
+    for Q tile i = r, r+R, ...:
+      reload Qᵢ + state[i]
+      update and store state[i]</div>
+          <p class="small">一个 CTA 拥有若干 Q tiles；不同 CTA 不能共享普通 shared memory，因此会重复读 K/V。</p>
+        </article>
+      </div>
+      <footer class="footer"><span>paper proves the recurrence; source determines physical ownership</span><span class="section-name">Ownership</span></footer>
+    </section>
+
+    <section class="slide" data-section="Ownership">
+      <div class="kicker">Three layers · logical tile is not CTA, CTA is not SM</div>
+      <div class="content vcenter">
+        <div class="grid-3 compact">
+          <article class="card cyan-edge">
+            <span class="tag">logical work</span>
+            <h3>Q tile × K/V tile</h3>
+            <p><code>Qᵢ [Bᵣ,D]</code> 与 <code>Kⱼ,Vⱼ [B꜀,D]</code> 形成一个 transient score tile。</p>
+          </article>
+          <article class="card amber-edge">
+            <span class="tag">CUDA launch</span>
+            <h3>CTA (b, h, r)</h3>
+            <p><code>blockIdx.x=batch</code><br><code>.y=head</code><br><code>.z=Q split identity</code></p>
+          </article>
+          <article class="card violet-edge">
+            <span class="tag">physical execution</span>
+            <h3>Resident on one SM</h3>
+            <p>运行时在资源允许时 admit CTA；一个 SM 可同时驻留多个 CTA。</p>
+          </article>
+        </div>
+        <div class="flow">
+          <span class="node cyan-node">compile-time<br>register/static smem</span><span class="arrow">→</span>
+          <span class="node amber-node">launch-time<br>kernel + dynamic smem + grid</span><span class="arrow">→</span>
+          <span class="node green-node">execution-time<br>CTA admission + warp issue</span>
+        </div>
+        <p class="small muted center"><code>blockIdx.z</code> 不是 Q tile number，也不是 SM number；occupancy API 给理论 active-CTA/SM 上界，不决定最终 CTA→SM 映射。</p>
+      </div>
+      <footer class="footer"><span>work identity, CUDA scheduling unit, and physical residence are distinct</span><span class="section-name">Ownership</span></footer>
+    </section>
+
+    <section class="slide" data-section="Ownership">
+      <div class="kicker">Forward num_splits · split Q ownership, not one row's K reduction</div>
+      <div class="content grid-2 wide-right">
+        <div>
+          <p class="quote"><code>R=num_splits</code><br><span class="cyan">CTA r owns i=r,r+R,…</span></p>
+          <ul class="compact">
+            <li>增加 <code>batch×heads×R</code> 个可调度 CTA；</li>
+            <li>每个 O row 仍只有一个 CTA owner；</li>
+            <li>代价是不同 CTA 重复读取相同 K/V；</li>
+            <li><code>R=0</code> 让 host heuristic 根据 SM 数、occupancy 与 wave efficiency 选择。</li>
+          </ul>
+        </div>
+        <div>
+          <div class="matrix cells-4">
+            <span class="cell c0">Q tile 0<br>CTA 0</span><span class="cell c1">Q tile 1<br>CTA 1</span><span class="cell c0">Q tile 2<br>CTA 0</span><span class="cell c1">Q tile 3<br>CTA 1</span>
+          </div>
+          <div class="flow">
+            <span class="node amber-node">KV₀</span><span class="arrow">→</span><span class="node">both CTAs load</span>
+            <span class="node amber-node">KV₁</span><span class="arrow">→</span><span class="node">both CTAs load</span>
+          </div>
+          <div class="grid-2 compact" style="height:auto">
+            <article class="card"><h3>CTA 0</h3><p>KV₀→Q₀,Q₂<br>KV₁→Q₀,Q₂</p></article>
+            <article class="card"><h3>CTA 1</h3><p>KV₀→Q₁,Q₃<br>KV₁→Q₁,Q₃</p></article>
+          </div>
+        </div>
+      </div>
+      <footer class="footer"><span>more parallel work ↔ duplicated K/V traffic</span><span class="section-name">Ownership</span></footer>
+    </section>
+
+    <section class="slide" data-section="Resources">
+      <div class="kicker">Forward tile family · v1.0.9</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <table class="dense">
+            <thead><tr><th>actual d</th><th>compiled D</th><th>max K ≤ 128</th><th>max K &gt; 128</th></tr></thead>
+            <tbody>
+              <tr><td>8–32</td><td>32</td><td>16×128</td><td>16×256</td></tr>
+              <tr><td>40–64</td><td>64</td><td>16×128</td><td>16×256</td></tr>
+              <tr><td>72–128</td><td>128</td><td>16×128</td><td>16×128</td></tr>
+            </tbody>
+          </table>
+          <div class="equation">CTA = 4 warps = 128 threads<br>Bᵣ=16 · B꜀=128/256 · D=32/64/128</div>
+          <p class="small muted">例如 actual <code>d=40</code> 进入 <code>D=64</code> family，后 24 列 predicated zero；仍走固定的 D64 MMA chain。</p>
+        </div>
+        <div class="card">
+          <h3>tile 是资源权衡</h3>
+          <ol class="compact">
+            <li><strong>Bᵣ=16：</strong>匹配 Tensor Core M granularity，限制 score/O 状态。</li>
+            <li><strong>更大 B꜀：</strong>更多 K/V reuse、更少 outer iterations 与 global state round-trip。</li>
+            <li><strong>更大 D：</strong>K/V、fragments、accumulators、O scratch 都增长。</li>
+            <li><strong>architecture：</strong>本版本不因 H100 自动选更大 tile；只会改变 occupancy、SM count 与可能的 R。</li>
+          </ol>
+        </div>
+      </div>
+      <footer class="footer"><span>tile choice balances reuse, register pressure, shared memory, and available parallelism</span><span class="section-name">Resources</span></footer>
+    </section>
+
+    <section class="slide" data-section="Resources">
+      <div class="kicker">Where state lives · program-visible residence</div>
+      <div class="content grid-2">
+        <div class="memory-map">
+          <div class="memory-column">
+            <div class="mem global"><strong>Global / HBM address space</strong><br>Q/K/V inputs · partial normalized O · LSE · final O</div>
+            <div class="mem smem"><strong>CTA shared memory</strong><br>double-buffered Q · K/V lifetime overlay · softmax/O scratch</div>
+            <div class="mem reg"><strong>Distributed registers</strong><br>fetch vectors · MMA fragments · score/P/O accumulators</div>
+          </div>
+          <div class="memory-arrow">⇄</div>
+          <div class="memory-column">
+            <div class="mem global"><strong>Across K/V tiles</strong><br>running O/LSE 可写回 global；owner 不变</div>
+            <div class="mem smem"><strong>Within one CTA phase</strong><br>tile staging、cross-warp reduction、buffer handoff</div>
+            <div class="mem reg"><strong>Within one instruction chain</strong><br>每 lane 只持有 distributed fragment</div>
+          </div>
+        </div>
+        <div class="card compact">
+          <h3>三个常见误读</h3>
+          <ul>
+            <li><strong>“on chip”</strong> 不等于所有 running state 跨完整 K/V loop 都在 shared memory。</li>
+            <li><strong>“tile in registers”</strong> 指 128 threads 集体表示 tile，不是每个 thread 存一份。</li>
+            <li><strong>“global memory access”</strong> 是地址空间；实际请求可能由 L1/L2 服务，不保证真的到 DRAM。</li>
+          </ul>
+          <p class="small amber">确定性看 owner 与 combine order，不依赖 cache hit/miss。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>logical ownership survives a change in physical residence</span><span class="section-name">Resources</span></footer>
+    </section>
+
+    <section class="slide" data-section="Resources">
+      <div class="kicker">Shared-memory lifetime overlay · BF16 D64 example</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="bar-chart">
+            <div class="bar-row"><span>Q double buffer</span><div class="bar-track"><div class="bar" style="width:22%"></div></div><span>4 KiB</span></div>
+            <div class="bar-row"><span>K/V region</span><div class="bar-track"><div class="bar" style="width:88%"></div></div><span>16 KiB</span></div>
+            <div class="bar-row"><span>O partials ×4</span><div class="bar-track"><div class="bar" style="width:88%"></div></div><span>16 KiB</span></div>
+            <div class="bar-row"><span>softmax scratch</span><div class="bar-track"><div class="bar" style="width:3%"></div></div><span>0.5 KiB</span></div>
+          </div>
+          <div class="equation">S = S<sub>Q</sub> + max(S<sub>K/V</sub>, S<sub>O</sub> + S<sub>softmax</sub>)<br>= 4 + max(16,16+0.5) = 20.5 KiB</div>
+        </div>
+        <div class="card">
+          <h3>为什么不是 Q+K+V+O 全加？</h3>
+          <div class="timeline" style="--steps:3">
+            <div class="time-item"><strong>Phase A</strong><span>V uses K/V region</span></div>
+            <div class="time-item"><strong>Phase B</strong><span>K overwrites after V fragments load</span></div>
+            <div class="time-item"><strong>Phase C</strong><span>O/scratch reuses later lifetime</span></div>
+          </div>
+          <p class="small">K、V 与 O scratch 的 lifetime 不同时，地址可以 overlay。O 的 16 KiB 已包含四份 warp-local FP32 partial：</p>
+          <span class="equation">16 rows × 64 cols × 4 bytes × 4 warps = 16 KiB</span>
+        </div>
+      </div>
+      <footer class="footer"><span>allocation follows peak simultaneous lifetime, not the sum of all logical tensors</span><span class="section-name">Resources</span></footer>
+    </section>
+
+    <section class="slide" data-section="Memory movement">
+      <div class="kicker">The movement path · explicit staging, no TMA</div>
+      <div class="content vcenter">
+        <div class="flow">
+          <span class="node violet-node">global Q/K/V</span><span class="arrow">→</span>
+          <span class="node amber-node">per-thread 16B<br>fetch registers</span><span class="arrow">→</span>
+          <span class="node cyan-node">CTA shared tile<br>swizzled layout</span><span class="arrow">→</span>
+          <span class="node amber-node">ldsm/ldsmt<br>fragment registers</span><span class="arrow">→</span>
+          <span class="node green-node">mma.sync<br>Tensor Cores</span>
+        </div>
+        <div class="grid-3 compact" style="margin-top:1.2em">
+          <article class="card cyan-edge"><h3>Global access</h3><p>每 active thread 读一个 <code>uint4=16 bytes</code> vector；threads 集体覆盖完整 rows。</p></article>
+          <article class="card amber-edge"><h3>Shared layout</h3><p>padding / XOR swizzle 改物理列地址，减少 bank conflict 并匹配 fragment load。</p></article>
+          <article class="card violet-edge"><h3>Cache boundary</h3><p>L1/L2 是 hardware-managed opportunity；源码没有 residency guarantee 或 persistence policy。</p></article>
+        </div>
+        <p class="lead center" style="margin-top:.8em"><span class="red">SM80 有 cp.async</span>，不代表这份 FA1 source 自动使用它；本路径是普通 LDG → registers → shared store。</p>
+      </div>
+      <footer class="footer"><span>hardware capability does not prove the selected implementation uses it</span><span class="section-name">Memory movement</span></footer>
+    </section>
+
+    <section class="slide" data-section="Warp execution">
+      <div class="kicker">128 threads do not have permanent jobs</div>
+      <div class="content vcenter">
+        <div class="timeline" style="--steps:6">
+          <div class="time-item"><strong>Load</strong><span>all warps cover Q/K/V vectors</span></div>
+          <div class="time-item"><strong>QK</strong><span>4 warps split score columns</span></div>
+          <div class="time-item"><strong>Softmax</strong><span>local then cross-warp row reduce</span></div>
+          <div class="time-item"><strong>Prefetch</strong><span>same threads issue next Q LDG</span></div>
+          <div class="time-item"><strong>PV</strong><span>4 warps become K-reduction slices</span></div>
+          <div class="time-item"><strong>Epilogue</strong><span>store 4 partial O; fixed combine</span></div>
+        </div>
+        <div class="grid-3 compact">
+          <article class="card"><h3>CTA</h3><p>4 warps / 128 threads，能做 CTA barrier 并共享一块 smem allocation。</p></article>
+          <article class="card"><h3>Warp</h3><p>32 lanes 同步发射 warp instruction；scheduler 在 ready warps 间选择。</p></article>
+          <article class="card"><h3>Lane / thread</h3><p>执行 address arithmetic、loads/stores、FP/SFU 与 distributed MMA fragment 操作。</p></article>
+        </div>
+        <p class="small muted center" style="margin-top:.8em">thread 不是纯 controller：它既参与控制流/地址，也会在 CUDA cores/SFUs/Tensor Core warp instruction 中贡献计算。</p>
+      </div>
+      <footer class="footer"><span>logical roles change by phase; no dedicated producer warp in FA1</span><span class="section-name">Warp execution</span></footer>
+    </section>
+
+    <section class="slide" data-section="Warp execution">
+      <div class="kicker">Collective load mapping · Bᵣ=16, B꜀=128, D=64, BF16</div>
+      <div class="content grid-2">
+        <div>
+          <h3>Q: one round covers 16 complete rows</h3>
+          <div class="matrix cells-8">
+            <span class="cell c0">t0<br>16B</span><span class="cell c0">t1</span><span class="cell c0">t2</span><span class="cell c0">t3</span><span class="cell c0">t4</span><span class="cell c0">t5</span><span class="cell c0">t6</span><span class="cell c0">t7</span>
+            <span class="cell c1">t8</span><span class="cell c1">t9</span><span class="cell c1">t10</span><span class="cell c1">t11</span><span class="cell c1">t12</span><span class="cell c1">t13</span><span class="cell c1">t14</span><span class="cell c1">t15</span>
+            <span class="cell">…</span><span class="cell">…</span><span class="cell">…</span><span class="cell">…</span><span class="cell">…</span><span class="cell">…</span><span class="cell">…</span><span class="cell">…</span>
+            <span class="cell c3">t120</span><span class="cell c3">t121</span><span class="cell c3">t122</span><span class="cell c3">t123</span><span class="cell c3">t124</span><span class="cell c3">t125</span><span class="cell c3">t126</span><span class="cell c3">t127</span>
+          </div>
+          <span class="equation">Q row = floor(t/8)<br>vector = t mod 8</span>
+        </div>
+        <div>
+          <h3>K/V: eight rounds cover 128 rows</h3>
+          <div class="codebox">for round r = 0..7:
+  row    = floor(t / 8) + 16r
+  vector = t mod 8
+  LDG 16 bytes</div>
+          <ul class="compact">
+            <li>BF16 D64 row = 64×2 = 128 bytes；</li>
+            <li>8 threads × 16 bytes = one full row；</li>
+            <li>fetch register 只负责 transit；shared→MMA 时会形成另一套 distributed fragment registers；</li>
+            <li>alignment、tail 与 varlen predicates 决定哪些 request active。</li>
+          </ul>
+        </div>
+      </div>
+      <footer class="footer"><span>all 128 threads collectively construct the tile</span><span class="section-name">Warp execution</span></footer>
+    </section>
+
+    <section class="slide" data-section="Warp execution">
+      <div class="kicker">QK · warps own score columns, not head-dimension partials</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="matrix cells-4">
+            <span class="cell c0">warp 0<br>S[:,0:32]</span>
+            <span class="cell c1">warp 1<br>S[:,32:64]</span>
+            <span class="cell c2">warp 2<br>S[:,64:96]</span>
+            <span class="cell c3">warp 3<br>S[:,96:128]</span>
+          </div>
+          <span class="equation">QK tile: M=16, N=128, K=64<br>WARPS_M=1 · WARPS_N=4 · WARPS_K=1</span>
+          <p class="small muted">每个 score element 只有一个 warp owner；没有 cross-warp/cross-CTA split-D combine。</p>
+        </div>
+        <div class="card">
+          <h3>Softmax row reduction</h3>
+          <ol class="compact">
+            <li>每 thread 先 reduce 自己 accumulator registers 中的 score elements；</li>
+            <li>lane groups 形成每个 warp 的 row partial max/sum；</li>
+            <li>selected lanes 把 partial 写入 shared scratch；</li>
+            <li><code>__syncthreads()</code> 保证可见；</li>
+            <li>固定代码树合并四个 column slices。</li>
+          </ol>
+          <p class="small amber">barrier 固定 availability；compiled reduction code 固定 arithmetic tree。二者不是一回事。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>partitioning score columns supplies parallelism without a pre-softmax split-K</span><span class="section-name">Warp execution</span></footer>
+    </section>
+
+    <section class="slide" data-section="Warp execution">
+      <div class="kicker">PV · the same key-position partition becomes a reduction split</div>
+      <div class="content vcenter">
+        <div class="grid-4 compact">
+          <article class="card cyan-edge"><h3>warp 0</h3><p><code>P[:,0:32] @ V[0:32,:]</code></p><p class="amber">partial O₀</p></article>
+          <article class="card green-edge"><h3>warp 1</h3><p><code>P[:,32:64] @ V[32:64,:]</code></p><p class="amber">partial O₁</p></article>
+          <article class="card amber-edge"><h3>warp 2</h3><p><code>P[:,64:96] @ V[64:96,:]</code></p><p class="amber">partial O₂</p></article>
+          <article class="card violet-edge"><h3>warp 3</h3><p><code>P[:,96:128] @ V[96:128,:]</code></p><p class="amber">partial O₃</p></article>
+        </div>
+        <div class="flow">
+          <span class="node">4 distributed FP32 accumulators</span><span class="arrow">→</span>
+          <span class="node cyan-node">store 4 slices in smem_o</span><span class="arrow">→</span>
+          <span class="node amber-node">CTA barrier</span><span class="arrow">→</span>
+          <span class="node green-node">load/add indices 0→1→2→3</span>
+        </div>
+        <span class="equation">O tile contribution = P₀V₀ + P₁V₁ + P₂V₂ + P₃V₃</span>
+        <p class="lead center"><span class="green">这是 CTA-local fixed reduction</span>，不是四个 semantic outputs，也不是 cross-CTA atomic。</p>
+      </div>
+      <footer class="footer"><span>QK output-axis split becomes PV reduction-axis split</span><span class="section-name">Warp execution</span></footer>
+    </section>
+
+    <section class="slide" data-section="Warp execution">
+      <div class="kicker">Why accept partial O instead of partitioning something else?</div>
+      <div class="content grid-2">
+        <div>
+          <p class="quote">FA1 保持 <span class="cyan">key-position ownership</span> 穿过 softmax 与 PV。</p>
+          <div class="flow">
+            <span class="node cyan-node">warp already owns P<sub>w</sub></span><span class="arrow">→</span>
+            <span class="node">reuse matching V<sub>w</sub></span><span class="arrow">→</span>
+            <span class="node amber-node">produce partial O<sub>w</sub></span>
+          </div>
+          <p class="small">避免 materialize/repartition transient P；代价是在 shared memory 中合并四份结构化 partial O。</p>
+        </div>
+        <div class="card compact">
+          <table class="dense">
+            <thead><tr><th>Alternative</th><th>New cost / dependency</th></tr></thead>
+            <tbody>
+              <tr><td>PV 按 output-D columns 分</td><td>O 可 concat，但每个 owner 都需要完整 P row → exchange/reload P</td></tr>
+              <tr><td>QK 按 head dim D 分</td><td>同一 score 有多个 partial → nonlinear softmax 前必须 combine</td></tr>
+              <tr><td>按 Q rows 分 warps</td><td>Bᵣ=16 只有一个自然 M tile；要扩大 Bᵣ 与 running state</td></tr>
+            </tbody>
+          </table>
+          <p class="small amber">这不是 attention 数学要求，而是 Tensor Core granularity、register locality、smem traffic 与 occupancy 的实现权衡。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>moving the partition moves the communication boundary; it does not erase it</span><span class="section-name">Warp execution</span></footer>
+    </section>
+
+    <section class="slide" data-section="Pipeline">
+      <div class="kicker">Software pipeline · overlap without dedicated producers</div>
+      <div class="content vcenter">
+        <div class="timeline" style="--steps:7">
+          <div class="time-item"><strong>Stage V,Qᵢ</strong><span>LDG→fetch regs→smem</span></div>
+          <div class="time-item"><strong>Load fragments</strong><span>V,Qᵢ smem→regs</span></div>
+          <div class="time-item"><strong>Overwrite with K</strong><span>barrier then K→smem→regs</span></div>
+          <div class="time-item"><strong>QᵢKᵀ</strong><span>dependent MMA chain</span></div>
+          <div class="time-item"><strong>Prefetch Qᵢ₊₁</strong><span>ordinary LDG outstanding</span></div>
+          <div class="time-item"><strong>softmax + PV</strong><span>independent work can overlap load latency</span></div>
+          <div class="time-item"><strong>switch Q buffer</strong><span>after smem handoff</span></div>
+        </div>
+        <div class="grid-2 compact">
+          <article class="card cyan-edge">
+            <h3>Across Q tiles</h3>
+            <p>shared buffer A 被 Qᵢ 读取；Qᵢ₊₁ 先进入 fetch registers，再写入 alternate shared buffer B。</p>
+          </article>
+          <article class="card amber-edge">
+            <h3>Inside one QK</h3>
+            <p>两个 Q fragment-register slots 在 D 的 16-wide chunks 上 ping-pong：load next fragment while MMA consumes current.</p>
+          </article>
+        </div>
+        <p class="lead center" style="margin-top:.7em">overlap 依赖 instruction independence + scoreboard + ready-warp scheduling；<span class="red">没有消除 QK→softmax→PV 真依赖</span>。</p>
+      </div>
+      <footer class="footer"><span>ordinary LDG can overlap later independent instructions, but it still occupies registers</span><span class="section-name">Pipeline</span></footer>
+    </section>
+
+    <section class="slide" data-section="Pipeline">
+      <div class="kicker">Scoreboard, barrier, and warp scheduler solve different problems</div>
+      <div class="content grid-3 compact">
+        <article class="card amber-edge">
+          <span class="tag">per-warp readiness</span>
+          <h3>Scoreboard</h3>
+          <p>跟踪 register operand 是否 pending。消费 Qᵢ₊₁ fetch registers 的 shared store 必须等 LDG 完成。</p>
+          <p class="small amber">不能证明另一个 warp 已经写完 shared memory。</p>
+        </article>
+        <article class="card cyan-edge">
+          <span class="tag">CTA handoff</span>
+          <h3>Barrier</h3>
+          <p>保护 shared store→fragment load、V read→K overwrite、partial-O store→combine 等 generation transition。</p>
+          <p class="small cyan">决定跨 threads/warps 的 visibility 与 safe reuse。</p>
+        </article>
+        <article class="card violet-edge">
+          <span class="tag">issue timing</span>
+          <h3>Warp scheduler</h3>
+          <p>每周期从 resident ready warps 中选 instruction issue；warp 有自己的 PC 与 execution state。</p>
+          <p class="small violet">改变 timing，不可反转同一 accumulator 的 true dependency。</p>
+        </article>
+        <p class="lead center" style="grid-column:1/-1;margin-top:.8em">缺 barrier / 过早复用是 correctness race；不同合法 issue timing 本身不是 numeric contributor reorder。</p>
+      </div>
+      <footer class="footer"><span>operand readiness ≠ cross-warp synchronization ≠ arithmetic association</span><span class="section-name">Pipeline</span></footer>
+    </section>
+
+    <section class="slide" data-section="Numeric order">
+      <div class="kicker">Head dimension D is a fixed dependent MMA chain</div>
+      <div class="content grid-2">
+        <div>
+          <span class="equation">Sᵢⱼ = Σ<sub>r=0…d−1</sub> Qᵢᵣ Kⱼᵣ</span>
+          <div class="codebox">acc = 0
+acc = MMA(Q[ 0:16], K[ 0:16], acc)
+acc = MMA(Q[16:32], K[16:32], acc)
+acc = MMA(Q[32:48], K[32:48], acc)
+acc = MMA(Q[48:64], K[48:64], acc)</div>
+        </div>
+        <div class="card">
+          <h3>为什么这个 reduction 可重复？</h3>
+          <ul class="compact">
+            <li>later MMA 读取 previous accumulator；</li>
+            <li>compiled instruction stream 固定 D-chunk 次序；</li>
+            <li><code>WARPS_K=1</code>，没有多个 warps 为同一 score 发布独立 D-partials；</li>
+            <li>warp 可暂停或与别的 warp interleave，但不能越过 true dependency。</li>
+          </ul>
+          <p class="small amber">这只支持固定 binary/architecture 的 repeatability；不证明 fused vs unfused、D64 vs D128、SM80 vs SM90 bits 相同。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>fixed dependency order is local determinism, not cross-implementation equivalence</span><span class="section-name">Numeric order</span></footer>
+    </section>
+
+    <section class="slide" data-section="Modes">
+      <div class="kicker">Causal · skip fully invalid tile pairs, mask diagonal tiles</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="matrix cells-4" aria-label="causal tiled attention matrix">
+            <span class="cell c2">diagonal</span><span class="cell masked">skip</span><span class="cell masked">skip</span><span class="cell masked">skip</span>
+            <span class="cell c0">full</span><span class="cell c2">diagonal</span><span class="cell masked">skip</span><span class="cell masked">skip</span>
+            <span class="cell c0">full</span><span class="cell c0">full</span><span class="cell c2">diagonal</span><span class="cell masked">skip</span>
+            <span class="cell c0">full</span><span class="cell c0">full</span><span class="cell c0">full</span><span class="cell c2">diagonal</span>
+          </div>
+          <div class="legend" style="margin-top:10px">
+            <span class="cyan">full tile</span><span class="amber">compute + element mask</span><span class="muted">not loaded/computed</span>
+          </div>
+        </div>
+        <div>
+          <ul class="compact">
+            <li>完全在 causal diagonal 右上的 tile pair 可以跳过；</li>
+            <li>跨 diagonal 的 tile 仍做 QK，再把 <code>k&gt;q</code> score 设为 <code>−∞</code>；</li>
+            <li>早期 Q rows 工作少，后期 Q rows 工作多；</li>
+            <li>round-robin <code>i=r,r+R,…</code> 把轻重 Q tiles 混进各 CTA，缓解 contiguous partition 的 imbalance；</li>
+            <li>small batch×heads、last wave、skewed varlen 仍可能有残余 imbalance。</li>
+          </ul>
+          <p class="small amber">FA1 没有 persistent global queue 或 cost-aware work stealing；GPU 只能在 CTA 完成后调度另一个 pending CTA。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>tile skipping saves impossible work; round-robin ownership smooths the triangular load</span><span class="section-name">Modes</span></footer>
+    </section>
+
+    <section class="slide" data-section="Modes">
+      <div class="kicker">Multi-head, varlen, and dropout · what changes?</div>
+      <div class="content vcenter">
+        <div class="grid-3 compact">
+          <article class="card cyan-edge">
+            <h3>Multi-head</h3>
+            <p>每个 head 是独立 attention matrix；增加 grid CTAs，不引入 cross-head forward reduction。</p>
+            <p class="small muted">v1.0.9 studied path expects equal Q/K/V head count；MQA/GQA outside scope。</p>
+          </article>
+          <article class="card amber-edge">
+            <h3>Packed varlen</h3>
+            <p><code>cu_seqlens</code> 给 packed offsets；predicates / early exits 处理真实长度。</p>
+            <p class="small muted">改变地址、active work 与 load balance；不改变 online recurrence 或 O-row owner。</p>
+          </article>
+          <article class="card violet-edge">
+            <h3>Dropout</h3>
+            <p>softmax 后对 P 应用 keep mask；normalizer 不变，value path 改变。</p>
+            <p class="small muted">repeatability 额外要求 Philox seed、offset 与 logical-coordinate mapping 一致。</p>
+          </article>
+        </div>
+        <div class="card compact" style="margin-top:1em">
+          <p><strong>Probe 边界：</strong>padded / unused LSE bytes 不一定是 semantic output；fully masked rows 的约定也必须从 source 定义，不能直接把整个 workspace bytewise compare。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>modes change dispatch and predicates more often than they change ownership</span><span class="section-name">Modes</span></footer>
+    </section>
+
+    <section class="slide" data-section="Determinism">
+      <div class="kicker">Why fixed-plan FA1 forward repeats</div>
+      <div class="content grid-2 wide-left">
+        <div class="verdict">
+          <span class="check">1</span><p><strong>Unique owner：</strong>每个 final O Q-row tile 只有一个 CTA writer。</p>
+          <span class="check">2</span><p><strong>Fixed contributor sequence：</strong>owner 按固定 K/V-tile order 更新 running state。</p>
+          <span class="check">3</span><p><strong>Fixed local trees：</strong>QK MMA、row max/sum、PV partial-O combine 都由 resolved kernel 固定。</p>
+          <span class="check">4</span><p><strong>No cross-CTA numeric combine：</strong>不同 CTA 写 disjoint O rows；没有 atomic accumulation。</p>
+          <span class="check">5</span><p><strong>Replay RNG：</strong>dropout 需要固定 logical Philox state。</p>
+        </div>
+        <div>
+          <p class="quote"><span class="green">scheduler 可以改变完成时间</span><br>但不能改变一个 O owner 内的 contributor order。</p>
+          <div class="flow">
+            <span class="node">CTA A → O rows A</span>
+            <span class="node">CTA B → O rows B</span>
+          </div>
+          <p class="small muted">running state 写 global 也不产生 race：仍只有原 owner CTA 按 program order 读写该地址。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>unique numeric ownership + fixed local order is the core proof pattern</span><span class="section-name">Determinism</span></footer>
+    </section>
+
+    <section class="slide" data-section="Determinism">
+      <div class="kicker">What the verdict does—and does not—say</div>
+      <div class="content grid-2">
+        <article class="card green-edge">
+          <span class="tag">source-level conclusion</span>
+          <h3>Expected bitwise repeatability</h3>
+          <p>固定 input、RNG、shape/mode、<code>num_splits</code>、selected specialization、binary 与 hardware envelope 后，audited forward path 没有可见 cross-CTA numeric race。</p>
+          <p class="small">source repeated-output race test 也支持 fixed-plan repeatability。</p>
+        </article>
+        <article class="card red-edge">
+          <span class="tag">not implied</span>
+          <h3>Cross-plan bits need not match</h3>
+          <ul class="compact">
+            <li>FA1 vs ordinary unfused attention；</li>
+            <li>不同 B꜀ / D bucket / <code>num_splits</code> dispatch；</li>
+            <li>不同 compiler artifact 或 architecture；</li>
+            <li>FA1 vs FA2/FA3/FA4；</li>
+            <li>workspace padding bytes；</li>
+            <li>整个 training stack 的 end-to-end determinism。</li>
+          </ul>
+        </article>
+        <p class="lead center" style="grid-column:1/-1;margin-top:.8em">两个 kernel 可以各自 deterministic，仍因为 reduction grouping 不同而产生不同 bits。</p>
+      </div>
+      <footer class="footer"><span>repeatability is conditional; equality across implementations is a stronger contract</span><span class="section-name">Determinism</span></footer>
+    </section>
+
+    <section class="slide" data-section="Audit map">
+      <div class="kicker">Source landmarks &amp; future GPU checks</div>
+      <div class="content grid-2">
+        <div class="card compact">
+          <h3>v1.0.9 source landmarks</h3>
+          <table class="dense">
+            <tbody>
+              <tr><td><code>fmha_fwd_launch_template.h</code></td><td>grid / num_splits heuristic</td></tr>
+              <tr><td><code>fmha_fprop_kernel_1xN.h</code></td><td>K/V outer loop / running state</td></tr>
+              <tr><td><code>kernel_traits.h</code>, <code>gemm.h</code></td><td>tile / warp decomposition</td></tr>
+              <tr><td><code>gmem_tile.h</code>, <code>smem_tile.h</code></td><td>vector load / shared layout</td></tr>
+              <tr><td><code>mask.h</code>, <code>softmax.h</code></td><td>causal / max-sum reductions</td></tr>
+            </tbody>
+          </table>
+          <p class="small"><a href="flashattention_fa1_foundations.md">Open the full Markdown source audit</a></p>
+        </div>
+        <div class="card amber-edge compact">
+          <h3>GPU validation queue</h3>
+          <ol>
+            <li>固定 dispatch 与 RNG，exact-repeat semantic O/LSE 多次；</li>
+            <li>记录 selected kernel、dynamic smem、registers/thread 与 achieved occupancy；</li>
+            <li>用 profiler 检查 global transactions、L1/L2 hit、shared bank conflicts；</li>
+            <li>用 SASS 确认 LDG/STS、fragment loads、MMA 与 barrier path；</li>
+            <li>跨 B꜀/D/architecture 只做 numerical-delta comparison，不误当 repeatability test；</li>
+            <li>对 causal/varlen/dropout 分别构造边界 shape 与 semantic mask。</li>
+          </ol>
+        </div>
+      </div>
+      <footer class="footer"><span>source reasoning narrows what runtime evidence must prove</span><span class="section-name">Audit map</span></footer>
+    </section>
+
+    <section class="slide section-slide" data-section="Checkpoint">
+      <div class="kicker">One-screen checkpoint</div>
+      <div class="content">
+        <h2>记住这五句话</h2>
+        <div class="grid-2 compact" style="margin-top:1.2em">
+          <div class="card cyan-edge">
+            <ol>
+              <li>FA1 用 online softmax state 避免 materialize <code>N²</code> S/P。</li>
+              <li>v1.0.9 forward 的一个 CTA 拥有若干 Q-row tiles，并顺序遍历 K/V tiles。</li>
+              <li>四个 warps 先分 score columns，PV 时自然变成四份 partial O。</li>
+            </ol>
+          </div>
+          <div class="card green-edge">
+            <ol start="4">
+              <li>tile 在 global/shared/distributed registers 间移动；普通 LDG pipeline，没有 TMA 或 dedicated producer。</li>
+              <li>forward determinism 来自 <strong>one O owner + fixed local orders + no cross-CTA numeric combine</strong>。</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+      <footer class="footer"><span>next: compare FA2 by the same ownership, movement, and order axes</span><span class="section-name">Checkpoint</span></footer>
+    </section>
+  </main>
+
+  <div class="controls" aria-label="slide controls">
+    <button id="prev" type="button" title="Previous slide">←</button>
+    <span class="counter" id="counter">1 / 1</span>
+    <button id="next" type="button" title="Next slide">→</button>
+    <button id="overview" type="button" title="Overview (O)">▦</button>
+    <button id="fullscreen" type="button" title="Fullscreen (F)">⛶</button>
+    <button id="helpButton" type="button" title="Help (?)">?</button>
+  </div>
+  <div class="progress" id="progress"></div>
+  <aside class="help" id="help">
+    <p><strong>← / → · PageUp / PageDown · Space</strong>：翻页</p>
+    <p><strong>O</strong>：overview；点击缩略页跳转</p>
+    <p><strong>F</strong>：全屏；<strong>?</strong>：显示/隐藏帮助</p>
+    <p><strong>Home / End</strong>：第一页 / 最后一页</p>
+    <p>浏览器 landscape、无 margin 打印可导出 PDF。</p>
+  </aside>
+
+  <script>
+    (() => {
+      const slides = Array.from(document.querySelectorAll(".slide"));
+      const counter = document.getElementById("counter");
+      const progress = document.getElementById("progress");
+      const body = document.body;
+      let current = 0;
+      let touchStartX = null;
+
+      slides.forEach((slide, index) => {
+        slide.dataset.number = String(index + 1);
+        const title = slide.querySelector("h1, h2, h3");
+        slide.dataset.overviewTitle = `${slide.dataset.section}\n${title ? title.textContent.trim() : slide.querySelector(".kicker").textContent.trim()}`;
+        const footer = slide.querySelector(".footer");
+        if (footer) {
+          const number = document.createElement("span");
+          number.textContent = `${String(index + 1).padStart(2, "0")} / ${String(slides.length).padStart(2, "0")}`;
+          footer.insertBefore(number, footer.lastElementChild);
+        }
+        slide.addEventListener("click", () => {
+          if (body.classList.contains("overview")) {
+            current = index;
+            toggleOverview(false);
+            render();
+          }
+        });
+      });
+
+      function hashIndex() {
+        const match = location.hash.match(/^#(\d+)$/);
+        if (!match) return 0;
+        return Math.min(slides.length - 1, Math.max(0, Number(match[1]) - 1));
+      }
+
+      function render(updateHash = true) {
+        slides.forEach((slide, index) => slide.classList.toggle("active", index === current));
+        counter.textContent = `${current + 1} / ${slides.length}`;
+        progress.style.width = `${((current + 1) / slides.length) * 100}%`;
+        document.title = `${slides[current].dataset.section} · FA1 Forward`;
+        if (updateHash && !body.classList.contains("overview")) {
+          history.replaceState(null, "", `#${current + 1}`);
+        }
+      }
+
+      function go(delta) {
+        if (body.classList.contains("overview")) return;
+        current = Math.min(slides.length - 1, Math.max(0, current + delta));
+        render();
+      }
+
+      function toggleOverview(force) {
+        const enabled = force === undefined ? !body.classList.contains("overview") : force;
+        body.classList.toggle("overview", enabled);
+        body.classList.remove("show-help");
+        if (!enabled) window.scrollTo(0, 0);
+      }
+
+      function toggleFullscreen() {
+        if (!document.fullscreenElement) {
+          document.documentElement.requestFullscreen?.();
+        } else {
+          document.exitFullscreen?.();
+        }
+      }
+
+      document.getElementById("prev").addEventListener("click", () => go(-1));
+      document.getElementById("next").addEventListener("click", () => go(1));
+      document.getElementById("overview").addEventListener("click", () => toggleOverview());
+      document.getElementById("fullscreen").addEventListener("click", toggleFullscreen);
+      document.getElementById("helpButton").addEventListener("click", () => body.classList.toggle("show-help"));
+
+      window.addEventListener("keydown", event => {
+        const key = event.key;
+        if (["ArrowRight", "PageDown", " "].includes(key)) {
+          event.preventDefault();
+          go(1);
+        } else if (["ArrowLeft", "PageUp"].includes(key)) {
+          event.preventDefault();
+          go(-1);
+        } else if (key === "Home") {
+          current = 0; render();
+        } else if (key === "End") {
+          current = slides.length - 1; render();
+        } else if (key.toLowerCase() === "o") {
+          toggleOverview();
+        } else if (key.toLowerCase() === "f") {
+          toggleFullscreen();
+        } else if (key === "?" || (key === "/" && event.shiftKey)) {
+          body.classList.toggle("show-help");
+        } else if (key === "Escape") {
+          body.classList.remove("show-help");
+        }
+      });
+
+      window.addEventListener("hashchange", () => {
+        current = hashIndex();
+        render(false);
+      });
+      window.addEventListener("touchstart", event => {
+        touchStartX = event.changedTouches[0].clientX;
+      }, { passive: true });
+      window.addEventListener("touchend", event => {
+        if (touchStartX === null) return;
+        const dx = event.changedTouches[0].clientX - touchStartX;
+        if (Math.abs(dx) > 60) go(dx < 0 ? 1 : -1);
+        touchStartX = null;
+      }, { passive: true });
+
+      current = hashIndex();
+      render(false);
+    })();
+  </script>
+</body>
+</html>

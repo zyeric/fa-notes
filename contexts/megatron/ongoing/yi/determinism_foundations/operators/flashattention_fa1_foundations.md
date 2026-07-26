@@ -62,6 +62,12 @@ For a short re-entry before a later-generation comparison, read the
 forward/backward ownership, state residence, and scoped determinism verdict
 without replacing the evidence in this file.
 
+For a graphical forward-only reading surface, open the standalone
+[FA1 forward visual map](flashattention_fa1_forward.html). It reorganizes the
+same source-audited conclusions into 16:9 diagrams covering the algorithm,
+CTA/warp ownership, memory movement, pipeline, modes, and determinism proof.
+This Markdown file remains the source of truth.
+
 For the completed forward track, read straight through Sections 1--9. The
 lowering path is:
 
