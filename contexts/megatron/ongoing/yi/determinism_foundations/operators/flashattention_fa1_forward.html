@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <meta name="description" content="FlashAttention-1 forward 的算法、CTA/warp、内存搬运与确定性技术地图">
-  <title>FlashAttention-1 Forward · Visual Technical Map</title>
+  <meta name="description" content="从 tiling 和 GPU 基础开始理解 FlashAttention-1 forward、CTA/warp、内存搬运与确定性">
+  <title>FlashAttention-1 Forward · Beginner Visual Map</title>
   <style>
     :root {
       --bg: #07101d;
@@ -103,6 +103,24 @@
     .violet { color: var(--violet); }
     .blue { color: var(--blue); }
 
+    .config-strip {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: .55em auto;
+      color: var(--muted);
+      font-size: clamp(12px, .9vw, 16px);
+    }
+    .config-strip span {
+      padding: .35em .7em;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(4, 12, 22, .62);
+    }
+    .config-strip strong { color: var(--cyan); }
+
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(18px, 2.7vw, 46px); align-items: center; height: 100%; }
     .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(13px, 1.65vw, 28px); align-items: stretch; }
     .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: clamp(10px, 1.15vw, 20px); align-items: stretch; }
@@ -180,6 +198,7 @@
     .node.green-node { border-color: var(--green); background: rgba(112, 227, 170, .08); }
     .node.amber-node { border-color: var(--amber); background: rgba(255, 198, 111, .08); }
     .node.violet-node { border-color: var(--violet); background: rgba(184, 162, 255, .08); }
+    .node.red-node { border-color: var(--red); background: rgba(255, 133, 133, .08); }
     .arrow { color: var(--cyan); font-size: clamp(23px, 2vw, 37px); }
 
     table { width: 100%; border-collapse: collapse; table-layout: fixed; }
@@ -261,6 +280,79 @@
     .bar-row > span { font-size: clamp(12px, .9vw, 16px); }
     .bar-track { height: 25px; overflow: hidden; border-radius: 999px; background: #081421; border: 1px solid var(--line); }
     .bar { height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--cyan), var(--blue)); }
+
+    .gpu-map {
+      display: grid;
+      grid-template-columns: .72fr 70px 1.28fr;
+      gap: 14px;
+      align-items: center;
+    }
+    .gpu-box {
+      padding: .75em;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #081522;
+    }
+    .sm-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .sm {
+      min-height: 76px;
+      padding: 9px;
+      border: 1px solid var(--violet);
+      border-radius: 10px;
+      background: rgba(184, 162, 255, .08);
+      color: var(--violet);
+      font: 700 clamp(11px, .8vw, 15px)/1.2 monospace;
+      text-align: center;
+    }
+    .sm small { display: block; margin-top: 6px; color: var(--muted); font: 500 clamp(9px, .62vw, 12px)/1.2 sans-serif; }
+
+    .cta-anatomy { display: grid; gap: 9px; }
+    .warp-line {
+      display: grid;
+      grid-template-columns: 90px repeat(8, 1fr);
+      gap: 4px;
+      align-items: center;
+    }
+    .warp-label {
+      color: var(--cyan);
+      font: 700 clamp(11px, .8vw, 15px)/1.1 monospace;
+    }
+    .lane {
+      display: grid;
+      place-items: center;
+      min-height: 29px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: #173049;
+      color: #d9e6f2;
+      font: clamp(9px, .65vw, 12px)/1 monospace;
+    }
+
+    .bank-grid {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 5px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: #071321;
+    }
+    .bank {
+      display: grid;
+      place-items: center;
+      min-height: clamp(31px, 3.6vh, 44px);
+      border: 1px solid var(--cyan);
+      border-radius: 7px;
+      color: var(--cyan);
+      background: rgba(85, 217, 251, .09);
+      font: 650 clamp(10px, .72vw, 13px)/1 monospace;
+    }
+    .bank.hot {
+      border-color: var(--red);
+      color: var(--red);
+      background: rgba(255, 133, 133, .16);
+      box-shadow: 0 0 0 2px rgba(255, 133, 133, .12);
+    }
 
     .codebox {
       margin: .55em 0;
@@ -454,7 +546,7 @@
 <body>
   <main class="deck" aria-live="polite">
     <section class="slide section-slide" data-section="Opening">
-      <div class="kicker">FlashAttention-1 · Forward · Visual Technical Map</div>
+      <div class="kicker">FlashAttention-1 · Forward · Beginner Visual Map</div>
       <div class="content">
         <h1>FA1 Forward<br><span class="cyan">从公式到物理执行</span></h1>
         <p class="lead">online softmax · CTA ownership · memory movement · warp roles · determinism</p>
@@ -467,14 +559,18 @@
       <div class="kicker">How to use this deck</div>
       <div class="content vcenter">
         <div class="stack">
-          <div class="layer"><strong>01 · Algorithm</strong><span>ordinary attention → stable softmax → online state → tiled recurrence</span></div>
-          <div class="layer"><strong>02 · Ownership</strong><span>grid → CTA → Q-row owner → K/V traversal → <code>num_splits</code></span></div>
-          <div class="layer"><strong>03 · Resources</strong><span>tile family → registers/shared/global residence → allocation and reuse</span></div>
-          <div class="layer"><strong>04 · Warp execution</strong><span>global load → QK → softmax → PV → partial-O combine → pipeline</span></div>
-          <div class="layer"><strong>05 · Modes</strong><span>causal · varlen · multi-head · dropout</span></div>
-          <div class="layer"><strong>06 · Proof</strong><span>unique owner + fixed local orders + no cross-CTA numeric combine</span></div>
+          <div class="layer"><strong>01 · Algorithm</strong><span>ordinary attention → 为什么切 tile → online softmax 如何接回完整结果</span></div>
+          <div class="layer"><strong>02 · GPU basics</strong><span>kernel/grid → CTA/SM → warp/lane/register → admission 与 warp scheduler</span></div>
+          <div class="layer"><strong>03 · Ownership</strong><span>CTA 的两层循环 → 四个 warp 在一次 tile interaction 里如何合作</span></div>
+          <div class="layer"><strong>04 · Memory</strong><span>global/register/shared → lifetime reuse → bank conflict 与 swizzle</span></div>
+          <div class="layer"><strong>05 · Execution</strong><span>QK → softmax → PV → partial-O combine → pipeline</span></div>
+          <div class="layer"><strong>06 · Proof</strong><span>causal/varlen modes → unique owner + fixed local orders</span></div>
         </div>
-        <p class="small muted center" style="margin-top:1em">这是一张可跳读的技术地图，不是完整 talk storyline；按 O 打开 overview 后可直接选择模块。</p>
+        <div class="config-strip">
+          <span>贯穿例子</span><span><strong>B</strong>=1</span><span><strong>H</strong>=32</span>
+          <span><strong>N</strong>=8192</span><span><strong>d</strong>=128</span><span><strong>dtype</strong>=BF16</span>
+        </div>
+        <p class="small muted center">按 O 打开 overview 可直接选择模块；小矩阵用来解释机制，大 shape 用来建立训练尺度直觉。</p>
       </div>
       <footer class="footer"><span>Markdown remains the source of truth</span><span class="section-name">Map</span></footer>
     </section>
@@ -506,6 +602,40 @@
         </div>
       </div>
       <footer class="footer"><span>exact claim must name implementation + dispatch + hardware envelope</span><span class="section-name">Scope</span></footer>
+    </section>
+
+    <section class="slide" data-section="Running example">
+      <div class="kicker">A representative training shape · used throughout</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="config-strip">
+            <span><strong>batch</strong>=1</span><span><strong>heads</strong>=32</span>
+            <span><strong>seqlen</strong>=8192</span><span><strong>head_dim</strong>=128</span>
+            <span><strong>dtype</strong>=BF16</span>
+          </div>
+          <div class="flow">
+            <span class="node cyan-node">Q</span><span class="node cyan-node">K</span><span class="node cyan-node">V</span>
+            <span class="arrow">:</span>
+            <span class="node">logical [B,H,N,d]<br>[1,32,8192,128]</span>
+          </div>
+          <div class="grid-3 compact">
+            <article class="card"><h3>one Q/K/V</h3><p><strong>64 MiB</strong><br>33,554,432 BF16 values</p></article>
+            <article class="card"><h3>one head's S</h3><p><strong>128 MiB</strong><br>8192×8192 BF16 lower bound</p></article>
+            <article class="card"><h3>all heads' S+P</h3><p><strong>8 GiB</strong><br>if both were BF16 materialized</p></article>
+          </div>
+        </div>
+        <div class="card amber-edge">
+          <h3>为什么这个例子有用？</h3>
+          <ul class="compact">
+            <li>Q/K/V/O 本身各约 64 MiB，线性随 N 增长；</li>
+            <li>score/probability 每个 head 有约 6710 万个元素，随 N² 增长；</li>
+            <li>32 heads 的 S 和 P 即使都按 BF16，也要约 8 GiB；</li>
+            <li>FA1 不改变这些 score 的逻辑数量，而是让小块 S/P 只短暂存在于片上。</li>
+          </ul>
+          <p class="small muted">这是容量直觉，不是某个 unfused framework 的精确峰值；实现可能用 FP32 intermediate 或复用 buffer。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>the quadratic intermediate—not Q/K/V itself—is the IO pressure</span><span class="section-name">Running example</span></footer>
     </section>
 
     <section class="slide" data-section="Algorithm">
@@ -556,6 +686,99 @@
       <footer class="footer"><span>the problem is IO, not a new attention definition</span><span class="section-name">Algorithm</span></footer>
     </section>
 
+    <section class="slide" data-section="Tiling">
+      <div class="kicker">What is a tile? · a small rectangle of a large matrix</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="matrix cells-8" aria-label="large matrix split into tiles">
+            <span class="cell c0">tile<br>(0,0)</span><span class="cell c0">↔</span><span class="cell c1">tile<br>(0,1)</span><span class="cell c1">↔</span><span class="cell c2">tile<br>(0,2)</span><span class="cell c2">↔</span><span class="cell c3">tile<br>(0,3)</span><span class="cell c3">…</span>
+            <span class="cell c0">↕</span><span class="cell c0"></span><span class="cell c1">↕</span><span class="cell c1"></span><span class="cell c2">↕</span><span class="cell c2"></span><span class="cell c3">↕</span><span class="cell c3"></span>
+            <span class="cell">tile<br>(1,0)</span><span class="cell"></span><span class="cell">tile<br>(1,1)</span><span class="cell"></span><span class="cell">tile<br>(1,2)</span><span class="cell"></span><span class="cell">tile<br>(1,3)</span><span class="cell">…</span>
+            <span class="cell">⋮</span><span class="cell">⋮</span><span class="cell">⋮</span><span class="cell">⋮</span><span class="cell">⋮</span><span class="cell">⋮</span><span class="cell">⋮</span><span class="cell">⋱</span>
+          </div>
+          <p class="small muted center" style="margin-top:.7em">tile 是逻辑矩形，不天然等于 CTA；谁处理它要由 kernel mapping 决定。</p>
+        </div>
+        <div class="card">
+          <h3>为什么要切？</h3>
+          <ol class="compact">
+            <li>完整矩阵太大，放不进一个 SM 的 registers/shared memory；</li>
+            <li>小 tile 可以从 HBM 搬到片上，反复参与很多乘加；</li>
+            <li>算完后复用片上空间装下一个 tile；</li>
+            <li>把“不断从 HBM 读同一数据”变成“搬一次，在片上多用几次”。</li>
+          </ol>
+          <div class="flow">
+            <span class="node violet-node">HBM<br>large / slow</span><span class="arrow">→</span>
+            <span class="node cyan-node">on-chip tile<br>small / fast</span><span class="arrow">↻</span>
+            <span class="node green-node">many MMAs</span>
+          </div>
+        </div>
+      </div>
+      <footer class="footer"><span>tiling trades scarce on-chip capacity for data reuse</span><span class="section-name">Tiling</span></footer>
+    </section>
+
+    <section class="slide" data-section="Tiling">
+      <div class="kicker">FA1 tiles the sequence axes · head_dim stays complete inside the tile</div>
+      <div class="content vcenter">
+        <div class="config-strip">
+          <span><strong>N</strong>=8192</span><span><strong>d</strong>=128</span>
+          <span><strong>Bᵣ</strong>=16 Q rows</span><span><strong>B꜀</strong>=128 K/V rows</span>
+        </div>
+        <div class="grid-3 compact">
+          <article class="card cyan-edge">
+            <h3>Q tile Qᵢ</h3>
+            <span class="equation">[16, 128]</span>
+            <p>沿 query sequence 切 16 rows；保留完整 compiled head dimension。</p>
+          </article>
+          <article class="card amber-edge">
+            <h3>K/V tile Kⱼ,Vⱼ</h3>
+            <span class="equation">[128, 128]</span>
+            <p>沿 key sequence 切 128 rows；K 与 V 用同一 row range。</p>
+          </article>
+          <article class="card violet-edge">
+            <h3>score tile Sᵢⱼ</h3>
+            <span class="equation">[16, 128]</span>
+            <p><code>QᵢKⱼᵀ</code> 只产生 2048 个 transient scores。</p>
+          </article>
+        </div>
+        <div class="flow">
+          <span class="node cyan-node">8192 / 16<br><strong>512 Q tiles/head</strong></span>
+          <span class="arrow">×</span>
+          <span class="node amber-node">8192 / 128<br><strong>64 K/V tiles/head</strong></span>
+          <span class="arrow">=</span>
+          <span class="node green-node"><strong>32,768 tile pairs/head</strong></span>
+        </div>
+        <p class="small muted center">32,768 × 2,048 = 67,108,864 scores：与完整 8192² 相同，区别是一次只保留一个小 score tile。</p>
+      </div>
+      <footer class="footer"><span>FA1 reduces intermediate residence and traffic—not the logical score count</span><span class="section-name">Tiling</span></footer>
+    </section>
+
+    <section class="slide" data-section="Tiling">
+      <div class="kicker">The catch · softmax couples all K/V tiles in one row</div>
+      <div class="content grid-2">
+        <div>
+          <div class="matrix cells-4">
+            <span class="cell c0">scores<br>j=0</span><span class="cell c1">scores<br>j=1</span><span class="cell c2">scores<br>j=2</span><span class="cell c3">scores<br>j=3…63</span>
+          </div>
+          <div class="flow">
+            <span class="node">tile-local max/sum</span><span class="arrow">?</span>
+            <span class="node red-node">one row-wide softmax</span>
+          </div>
+          <span class="equation">Pᵢⱼ = exp(Sᵢⱼ) / Σ<sub>t=0…8191</sub> exp(Sᵢₜ)</span>
+        </div>
+        <div class="card amber-edge">
+          <h3>不能各 tile 独立 softmax 后直接拼起来</h3>
+          <ul class="compact">
+            <li>每个 score tile 只看见 128 个 key positions；</li>
+            <li>真正 denominator 跨 64 个 K/V tiles；</li>
+            <li>后面的 tile 可能出现更大的 row max；</li>
+            <li>早先的 exponential sum 与 output numerator 必须按新 max 重标定。</li>
+          </ul>
+          <p class="lead"><span class="cyan">online softmax</span> 就是让 row state 可以一块一块地精确合并。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>tiling creates a state-merging problem; online softmax solves it</span><span class="section-name">Tiling</span></footer>
+    </section>
+
     <section class="slide" data-section="Algorithm">
       <div class="kicker">Online softmax · the three pieces of running row state</div>
       <div class="content grid-2">
@@ -598,6 +821,162 @@
       <footer class="footer"><span>the invariant survives one tile merge; induction handles all tiles</span><span class="section-name">Algorithm</span></footer>
     </section>
 
+    <section class="slide" data-section="GPU basics">
+      <div class="kicker">CUDA launch vocabulary · from one kernel call to physical SMs</div>
+      <div class="content grid-2 wide-right">
+        <div>
+          <p class="quote">CPU launch 的是一个 <span class="cyan">kernel grid</span>。</p>
+          <ol class="compact">
+            <li><strong>grid：</strong>这次 kernel launch 的全部工作；</li>
+            <li><strong>CTA / thread block：</strong>grid 中可独立调度的 work unit；</li>
+            <li><strong>SM：</strong>GPU 上真正执行 CTA 的物理计算单元；</li>
+            <li>一个 CTA 一旦 resident，会在同一个 SM 上待到结束，不会拆到多个 SM。</li>
+          </ol>
+        </div>
+        <div class="gpu-map">
+          <div class="gpu-box">
+            <h3>Grid</h3>
+            <div class="matrix cells-4">
+              <span class="cell c0">CTA 0</span><span class="cell c1">CTA 1</span><span class="cell c2">CTA 2</span><span class="cell c3">CTA 3</span>
+              <span class="cell">CTA 4</span><span class="cell">CTA 5</span><span class="cell">…</span><span class="cell">CTA n</span>
+            </div>
+          </div>
+          <div class="memory-arrow">→</div>
+          <div class="gpu-box">
+            <h3>GPU</h3>
+            <div class="sm-grid">
+              <div class="sm">SM 0<small>resident CTAs</small></div>
+              <div class="sm">SM 1<small>resident CTAs</small></div>
+              <div class="sm">SM 2<small>resident CTAs</small></div>
+              <div class="sm">SM 3<small>resident CTAs</small></div>
+              <div class="sm">SM 4<small>resident CTAs</small></div>
+              <div class="sm">SM 5<small>resident CTAs</small></div>
+              <div class="sm">…<small>many SMs</small></div>
+              <div class="sm">SM n<small>resident CTAs</small></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <footer class="footer"><span>grid/CTA are CUDA objects; SM is physical hardware</span><span class="section-name">GPU basics</span></footer>
+    </section>
+
+    <section class="slide" data-section="GPU basics">
+      <div class="kicker">CTA anatomy · 128 threads become 4 warps</div>
+      <div class="content grid-2 wide-left">
+        <div class="cta-anatomy">
+          <div class="warp-line"><span class="warp-label">warp 0</span><span class="lane">lane 0</span><span class="lane">1</span><span class="lane">2</span><span class="lane">3</span><span class="lane">…</span><span class="lane">29</span><span class="lane">30</span><span class="lane">31</span></div>
+          <div class="warp-line"><span class="warp-label">warp 1</span><span class="lane">lane 0</span><span class="lane">1</span><span class="lane">2</span><span class="lane">3</span><span class="lane">…</span><span class="lane">29</span><span class="lane">30</span><span class="lane">31</span></div>
+          <div class="warp-line"><span class="warp-label">warp 2</span><span class="lane">lane 0</span><span class="lane">1</span><span class="lane">2</span><span class="lane">3</span><span class="lane">…</span><span class="lane">29</span><span class="lane">30</span><span class="lane">31</span></div>
+          <div class="warp-line"><span class="warp-label">warp 3</span><span class="lane">lane 0</span><span class="lane">1</span><span class="lane">2</span><span class="lane">3</span><span class="lane">…</span><span class="lane">29</span><span class="lane">30</span><span class="lane">31</span></div>
+          <div class="equation">CTA = 4 warps × 32 threads = 128 threads</div>
+        </div>
+        <div class="card">
+          <h3>thread、lane、register 是什么关系？</h3>
+          <ul class="compact">
+            <li><strong>warp：</strong>SM scheduler 的基本 instruction-issue unit；32 threads 通常执行同一条 warp instruction；</li>
+            <li><strong>lane：</strong>thread 在 warp 内的编号 0…31；这里可把 lane 和 CUDA thread instance 对应起来；</li>
+            <li><strong>register：</strong>每个 thread 私有的逻辑状态；pointer、loop index、load result、MMA fragment 都可在 registers；</li>
+            <li>物理 register file 属于 SM，但 compiler 为每个 resident thread 分配互不混淆的 register state。</li>
+          </ul>
+          <p class="small amber">“tile 在 registers”表示 tile 元素分散在很多 lanes 的私有 registers 中，不是一个 thread 存整块，也不是所有 thread 各存一份。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>one warp instruction acts on 32 lane states and their private registers</span><span class="section-name">GPU basics</span></footer>
+    </section>
+
+    <section class="slide" data-section="GPU basics">
+      <div class="kicker">Inside one warp instruction · same opcode, 32 lane-local operands</div>
+      <div class="content grid-2">
+        <div>
+          <h3>Example A · vector load</h3>
+          <div class="flow">
+            <span class="node">warp PC points to LDG</span><span class="arrow">→</span>
+            <span class="node cyan-node">lane 0 address reg<br>lane 1 address reg<br>… lane 31</span><span class="arrow">→</span>
+            <span class="node amber-node">each active lane gets<br>its own fetch registers</span>
+          </div>
+          <p class="small">同一条 warp LDG 有 32 组 lane-local address/result。memory coalescer 会根据这些地址组织 transactions；结果仍写回各 thread 私有 registers。</p>
+          <h3 style="margin-top:1em">Example B · branch</h3>
+          <p class="small">如果 lanes 走不同 <code>if</code> 分支，warp 用 active mask 分批执行路径；每个 lane 的 register state 仍独立。</p>
+        </div>
+        <div class="card green-edge">
+          <h3>Example C · Tensor Core MMA</h3>
+          <div class="flow">
+            <span class="node amber-node">A fragments<br>across 32 lanes</span>
+            <span class="node amber-node">B fragments<br>across 32 lanes</span>
+            <span class="arrow">→</span>
+            <span class="node green-node">one warp-level<br>MMA instruction</span>
+            <span class="arrow">→</span>
+            <span class="node violet-node">accumulator fragments<br>across 32 lanes</span>
+          </div>
+          <ul class="compact">
+            <li>每个 lane 只持有 operand/accumulator tile 的一小部分 registers；</li>
+            <li>Tensor Core instruction 把 32 lanes 的 fragments 解释成一个合作矩阵操作；</li>
+            <li>所以“warp 算一个 matrix fragment”与“register 是 thread-private”并不矛盾。</li>
+          </ul>
+        </div>
+      </div>
+      <footer class="footer"><span>warp cooperation is encoded by how lane-local registers are interpreted by the instruction</span><span class="section-name">GPU basics</span></footer>
+    </section>
+
+    <section class="slide" data-section="GPU basics">
+      <div class="kicker">What is inside an SM? · scheduler issues, execution units do the work</div>
+      <div class="content grid-2">
+        <div class="stack" style="width:100%">
+          <div class="layer"><strong>Warp schedulers</strong><span>从所有 resident CTAs 的 ready warps 中选择下一条可发射指令</span></div>
+          <div class="layer"><strong>Register file</strong><span>保存 resident threads 的 pointers、fragments、accumulators 与临时状态</span></div>
+          <div class="layer"><strong>Shared memory / L1</strong><span>CTA-private explicit scratchpad 与 hardware-managed cache 共用片上容量池</span></div>
+          <div class="layer"><strong>Load/store units</strong><span>执行 global/shared memory address 和 load/store path</span></div>
+          <div class="layer"><strong>CUDA cores / SFUs</strong><span>地址、控制、普通算术、max/sum、exp/reciprocal 等</span></div>
+          <div class="layer"><strong>Tensor Cores</strong><span>执行 warp-level matrix multiply-accumulate instruction</span></div>
+        </div>
+        <div>
+          <p class="quote">thread 既不是纯 controller，<br>也不是一颗固定的 physical core。</p>
+          <div class="flow">
+            <span class="node">warp LDG</span><span class="arrow">→</span><span class="node violet-node">memory path</span>
+            <span class="node">warp exp/max</span><span class="arrow">→</span><span class="node amber-node">CUDA/SFU path</span>
+            <span class="node">warp MMA</span><span class="arrow">→</span><span class="node green-node">Tensor Cores</span>
+          </div>
+          <p class="small muted">warp 发出 instruction；对应的物理 pipeline 执行它。等待 memory 的 warp 可以暂停，scheduler 去发另一个 ready warp。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>warp identity describes who issues work, not one permanently assigned execution unit</span><span class="section-name">GPU basics</span></footer>
+    </section>
+
+    <section class="slide" data-section="GPU basics">
+      <div class="kicker">How can multiple CTAs live on one SM?</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="gpu-box">
+            <h3>SM 0 · one possible resident set</h3>
+            <div class="grid-3 compact" style="height:auto">
+              <article class="card cyan-edge"><h3>CTA A</h3><p>warps A0…A3<br>private smem A<br>register allocation A</p></article>
+              <article class="card amber-edge"><h3>CTA B</h3><p>warps B0…B3<br>private smem B<br>register allocation B</p></article>
+              <article class="card violet-edge"><h3>CTA C</h3><p>warps C0…C3<br>private smem C<br>register allocation C</p></article>
+            </div>
+          </div>
+          <div class="timeline" style="--steps:6">
+            <div class="time-item"><strong>A0</strong><span>LDG; then wait</span></div>
+            <div class="time-item"><strong>B2</strong><span>ready MMA</span></div>
+            <div class="time-item"><strong>C1</strong><span>shared load</span></div>
+            <div class="time-item"><strong>A3</strong><span>softmax</span></div>
+            <div class="time-item"><strong>B0</strong><span>address math</span></div>
+            <div class="time-item"><strong>A0</strong><span>load now ready</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>先 admission，后逐 warp issue</h3>
+          <ol class="compact">
+            <li>CTA admission 时一次性预留 threads/warps、registers、shared memory、block/barrier state；</li>
+            <li>资源都放得下，CTA 才能 resident；普通 shared memory allocation 在 CTAs 间互相隔离；</li>
+            <li>resident 后，scheduler 可以交错发射 A/B/C 的 ready warps；</li>
+            <li>某个 CTA 所有 warps 完成后，资源释放，pending CTA 才可进入。</li>
+          </ol>
+          <p class="small amber">A100/H100 最多 64 resident warps/SM 是 capacity limit，不代表 64 warps 同时执行；实际 resident CTA 数还取 registers、smem、block slots 等约束的最小值。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>CTA is the residency/resource unit; warp is the instruction-issue unit</span><span class="section-name">GPU basics</span></footer>
+    </section>
+
     <section class="slide" data-section="Ownership">
       <div class="kicker">Paper loop and v1.0.9 source loop are related—but not identical</div>
       <div class="content grid-2">
@@ -625,6 +1004,36 @@
         </article>
       </div>
       <footer class="footer"><span>paper proves the recurrence; source determines physical ownership</span><span class="section-name">Ownership</span></footer>
+    </section>
+
+    <section class="slide" data-section="Ownership">
+      <div class="kicker">One CTA has two loops—but the four warps do not split the loops</div>
+      <div class="content grid-2 wide-left">
+        <div class="codebox"><span class="warn">one CTA (batch b, head h, split r)</span>
+
+for K/V tile j:                 <span class="hi"># all 4 warps enter</span>
+    load/retain Kⱼ, Vⱼ          <span class="hi"># 128 threads cooperate</span>
+
+    for owned Q tile i:         <span class="hi"># all 4 warps enter</span>
+        load Qᵢ + state[i]
+        Sᵢⱼ = Qᵢ Kⱼᵀ           <span class="hi"># split score columns</span>
+        row softmax update       <span class="hi"># local + cross-warp</span>
+        partialO<sub>w</sub> = P<sub>w</sub>V<sub>w</sub>  <span class="hi"># 4 contributors</span>
+        O = sum(partialO<sub>0…3</sub>) <span class="hi"># fixed smem combine</span></div>
+        <div>
+          <div class="grid-2 compact" style="height:auto">
+            <article class="card cyan-edge"><h3>Loop ownership</h3><p>CTA 决定自己处理哪些 Q tiles，并按顺序访问 K/V tiles。不是 warp 0 跑 j=0、warp 1 跑 j=1。</p></article>
+            <article class="card amber-edge"><h3>Within one (i,j)</h3><p>四个 warps 同时处理同一个 Q×K/V tile pair，主要沿 128 个 key positions 划成 4×32。</p></article>
+          </div>
+          <div class="flow">
+            <span class="node cyan-node">same Q rows</span><span class="arrow">×</span>
+            <span class="node">4 disjoint K/V slices</span><span class="arrow">→</span>
+            <span class="node amber-node">4 partial O</span>
+          </div>
+          <p class="lead center">O 是 partial，正是因为 <span class="amber">PV 的 reduction axis 被四个 warps 分开</span>。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>loops assign work to the CTA; warp partition happens inside each tile interaction</span><span class="section-name">Ownership</span></footer>
     </section>
 
     <section class="slide" data-section="Ownership">
@@ -659,7 +1068,7 @@
 
     <section class="slide" data-section="Ownership">
       <div class="kicker">Forward num_splits · split Q ownership, not one row's K reduction</div>
-      <div class="content grid-2 wide-right">
+      <div class="content grid-2">
         <div>
           <p class="quote"><code>R=num_splits</code><br><span class="cyan">CTA r owns i=r,r+R,…</span></p>
           <ul class="compact">
@@ -668,19 +1077,22 @@
             <li>代价是不同 CTA 重复读取相同 K/V；</li>
             <li><code>R=0</code> 让 host heuristic 根据 SM 数、occupancy 与 wave efficiency 选择。</li>
           </ul>
+          <p class="small amber">下面取 <code>R=4</code> 只为数数，不声称 A100/H100 一定选 4；真实值由 launch-time heuristic 决定。</p>
         </div>
         <div>
-          <div class="matrix cells-4">
-            <span class="cell c0">Q tile 0<br>CTA 0</span><span class="cell c1">Q tile 1<br>CTA 1</span><span class="cell c0">Q tile 2<br>CTA 0</span><span class="cell c1">Q tile 3<br>CTA 1</span>
+          <div class="config-strip"><span><strong>B</strong>=1</span><span><strong>H</strong>=32</span><span><strong>N</strong>=8192</span><span><strong>R</strong>=4 (illustrative)</span></div>
+          <div class="grid-3 compact" style="height:auto">
+            <article class="card cyan-edge"><h3>Grid</h3><p><strong>1×32×4</strong><br>= 128 CTAs</p></article>
+            <article class="card amber-edge"><h3>Per CTA</h3><p><strong>512/4=128</strong><br>owned Q tiles</p></article>
+            <article class="card violet-edge"><h3>Inner work</h3><p><strong>64×128</strong><br>= 8192 tile pairs</p></article>
           </div>
           <div class="flow">
-            <span class="node amber-node">KV₀</span><span class="arrow">→</span><span class="node">both CTAs load</span>
-            <span class="node amber-node">KV₁</span><span class="arrow">→</span><span class="node">both CTAs load</span>
+            <span class="node cyan-node">CTA r=0<br>Q 0,4,…,508</span>
+            <span class="node green-node">CTA r=1<br>Q 1,5,…,509</span>
+            <span class="node amber-node">CTA r=2<br>Q 2,6,…,510</span>
+            <span class="node violet-node">CTA r=3<br>Q 3,7,…,511</span>
           </div>
-          <div class="grid-2 compact" style="height:auto">
-            <article class="card"><h3>CTA 0</h3><p>KV₀→Q₀,Q₂<br>KV₁→Q₀,Q₂</p></article>
-            <article class="card"><h3>CTA 1</h3><p>KV₀→Q₁,Q₃<br>KV₁→Q₁,Q₃</p></article>
-          </div>
+          <p class="small muted center">同一 head 的 4 CTAs 各自遍历全部 64 个 K/V tiles，因此每个 K/V tile 至少被这 4 个 owners 分别加载。</p>
         </div>
       </div>
       <footer class="footer"><span>more parallel work ↔ duplicated K/V traffic</span><span class="section-name">Ownership</span></footer>
@@ -695,11 +1107,12 @@
             <tbody>
               <tr><td>8–32</td><td>32</td><td>16×128</td><td>16×256</td></tr>
               <tr><td>40–64</td><td>64</td><td>16×128</td><td>16×256</td></tr>
-              <tr><td>72–128</td><td>128</td><td>16×128</td><td>16×128</td></tr>
+              <tr style="background:rgba(85,217,251,.10)"><td><strong>72–128</strong></td><td><strong>128</strong></td><td><strong>16×128</strong></td><td><strong>16×128</strong></td></tr>
             </tbody>
           </table>
           <div class="equation">CTA = 4 warps = 128 threads<br>Bᵣ=16 · B꜀=128/256 · D=32/64/128</div>
-          <p class="small muted">例如 actual <code>d=40</code> 进入 <code>D=64</code> family，后 24 列 predicated zero；仍走固定的 D64 MMA chain。</p>
+          <div class="config-strip"><span>running example selects</span><span><strong>Bᵣ</strong>=16</span><span><strong>B꜀</strong>=128</span><span><strong>D</strong>=128</span></div>
+          <p class="small muted">其他例子：actual <code>d=40</code> 会进入 <code>D=64</code> family，后 24 列 predicated zero；仍走固定的 D64 MMA chain。</p>
         </div>
         <div class="card">
           <h3>tile 是资源权衡</h3>
@@ -744,16 +1157,47 @@
     </section>
 
     <section class="slide" data-section="Resources">
-      <div class="kicker">Shared-memory lifetime overlay · BF16 D64 example</div>
+      <div class="kicker">“K/V tile is in registers” · distributed, not replicated</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="flow">
+            <span class="node cyan-node">one K or V tile<br>[128,128] BF16</span><span class="arrow">=</span>
+            <span class="node amber-node">32 KiB payload</span><span class="arrow">÷</span>
+            <span class="node violet-node">128 threads</span>
+          </div>
+          <span class="equation">32 KiB / 128 = 256 bytes/thread<br>≈ 64 × 32-bit register equivalents/thread/operand</span>
+          <div class="cta-anatomy">
+            <div class="warp-line"><span class="warp-label">warp 0</span><span class="lane">frag</span><span class="lane">frag</span><span class="lane">frag</span><span class="lane">…</span><span class="lane">frag</span><span class="lane">frag</span><span class="lane">frag</span><span class="lane">frag</span></div>
+            <div class="warp-line"><span class="warp-label">warp 1…3</span><span class="lane">frag</span><span class="lane">frag</span><span class="lane">frag</span><span class="lane">…</span><span class="lane">frag</span><span class="lane">frag</span><span class="lane">frag</span><span class="lane">frag</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>这个除法能说明什么，不能说明什么？</h3>
+          <ul class="compact">
+            <li>说明完整 tile 由所有 lane fragments 合起来表示；</li>
+            <li>K+V payload lower bound 已约 128 registers/thread；</li>
+            <li>还没算 Q、score/P/O accumulators、fetch registers、pointers、predicates 与 loop state；</li>
+            <li>fragment layout 不是简单 row-major 平分，而由 MMA operand mapping 决定；</li>
+            <li>真实 registers/thread 必须看 <code>ptxas</code>/kernel metadata；高 register use 会压低 resident CTAs。</li>
+          </ul>
+          <p class="small amber">shared memory 被 K 覆盖后，K/V fragments 仍可留在 thread-private registers；这正是 shared-address lifetime reuse 能成立的原因。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>register payload division gives capacity intuition, not the final compiler allocation</span><span class="section-name">Resources</span></footer>
+    </section>
+
+    <section class="slide" data-section="Resources">
+      <div class="kicker">Shared-memory lifetime overlay · running BF16 D128 example</div>
       <div class="content grid-2 wide-left">
         <div>
           <div class="bar-chart">
-            <div class="bar-row"><span>Q double buffer</span><div class="bar-track"><div class="bar" style="width:22%"></div></div><span>4 KiB</span></div>
-            <div class="bar-row"><span>K/V region</span><div class="bar-track"><div class="bar" style="width:88%"></div></div><span>16 KiB</span></div>
-            <div class="bar-row"><span>O partials ×4</span><div class="bar-track"><div class="bar" style="width:88%"></div></div><span>16 KiB</span></div>
-            <div class="bar-row"><span>softmax scratch</span><div class="bar-track"><div class="bar" style="width:3%"></div></div><span>0.5 KiB</span></div>
+            <div class="bar-row"><span>Q double buffer</span><div class="bar-track"><div class="bar" style="width:25%"></div></div><span>8 KiB</span></div>
+            <div class="bar-row"><span>K/V region</span><div class="bar-track"><div class="bar" style="width:100%"></div></div><span>32 KiB</span></div>
+            <div class="bar-row"><span>O partials ×4</span><div class="bar-track"><div class="bar" style="width:100%"></div></div><span>32 KiB</span></div>
+            <div class="bar-row"><span>softmax scratch</span><div class="bar-track"><div class="bar" style="width:2%"></div></div><span>0.5 KiB</span></div>
           </div>
-          <div class="equation">S = S<sub>Q</sub> + max(S<sub>K/V</sub>, S<sub>O</sub> + S<sub>softmax</sub>)<br>= 4 + max(16,16+0.5) = 20.5 KiB</div>
+          <div class="equation">S = S<sub>Q</sub> + max(S<sub>K/V</sub>, S<sub>O</sub> + S<sub>softmax</sub>)<br>= 8 + max(32,32+0.5) = 40.5 KiB</div>
+          <p class="small muted center">64 个 K/V steps 还需要 0.125 KiB 双 buffer LSE scratch → dynamic shared memory ≈ <strong>40.625 KiB/CTA</strong>。</p>
         </div>
         <div class="card">
           <h3>为什么不是 Q+K+V+O 全加？</h3>
@@ -762,8 +1206,9 @@
             <div class="time-item"><strong>Phase B</strong><span>K overwrites after V fragments load</span></div>
             <div class="time-item"><strong>Phase C</strong><span>O/scratch reuses later lifetime</span></div>
           </div>
-          <p class="small">K、V 与 O scratch 的 lifetime 不同时，地址可以 overlay。O 的 16 KiB 已包含四份 warp-local FP32 partial：</p>
-          <span class="equation">16 rows × 64 cols × 4 bytes × 4 warps = 16 KiB</span>
+          <p class="small">K、V 与 O scratch 的 lifetime 不同时，地址可以 overlay。O 的 32 KiB 已包含四份 warp-local FP32 partial：</p>
+          <span class="equation">16 rows × 128 cols × 4 bytes × 4 warps = 32 KiB</span>
+          <p class="small amber">只按 shared memory 粗算：A100 的 164 KiB/SM 最多容纳 4 个这种 CTA，H100 的 228 KiB/SM 最多 5 个；真实值还可能被 registers、warp/block slots 和 allocation granularity 进一步压低。</p>
         </div>
       </div>
       <footer class="footer"><span>allocation follows peak simultaneous lifetime, not the sum of all logical tensors</span><span class="section-name">Resources</span></footer>
@@ -789,6 +1234,76 @@
       <footer class="footer"><span>hardware capability does not prove the selected implementation uses it</span><span class="section-name">Memory movement</span></footer>
     </section>
 
+    <section class="slide" data-section="Shared-memory layout">
+      <div class="kicker">Bank conflict · shared memory is fast, but internally divided into banks</div>
+      <div class="content grid-2">
+        <div>
+          <h3>A useful simplified model</h3>
+          <div class="bank-grid">
+            <span class="bank">bank 0</span><span class="bank">bank 1</span><span class="bank">bank 2</span><span class="bank">bank 3</span><span class="bank">bank 4</span><span class="bank">bank 5</span><span class="bank">bank 6</span><span class="bank">bank 7</span>
+            <span class="bank">bank 8</span><span class="bank">bank 9</span><span class="bank">bank 10</span><span class="bank">bank 11</span><span class="bank">bank 12</span><span class="bank">bank 13</span><span class="bank">bank 14</span><span class="bank">bank 15</span>
+            <span class="bank">bank 16</span><span class="bank">bank 17</span><span class="bank">bank 18</span><span class="bank">bank 19</span><span class="bank">bank 20</span><span class="bank">bank 21</span><span class="bank">bank 22</span><span class="bank">bank 23</span>
+            <span class="bank">bank 24</span><span class="bank">bank 25</span><span class="bank">bank 26</span><span class="bank">bank 27</span><span class="bank">bank 28</span><span class="bank">bank 29</span><span class="bank">bank 30</span><span class="bank">bank 31</span>
+          </div>
+          <span class="equation">bank ≈ floor(byte_address / 4) mod 32</span>
+          <p class="small muted">这是帮助理解的 32-bit-word 模型；真实 transaction、vector width、BF16 packing 和 <code>ldmatrix</code> 访问规则更细。</p>
+        </div>
+        <div class="card red-edge">
+          <h3>同一条 warp shared-load instruction 会怎样？</h3>
+          <table class="dense">
+            <thead><tr><th>32 lanes request</th><th>bank map</th><th>result</th></tr></thead>
+            <tbody>
+              <tr><td>32 consecutive 32-bit words</td><td>bank 0…31</td><td><span class="green">parallel / no conflict</span></td></tr>
+              <tr><td>word 0,32,64,…</td><td>all bank 0</td><td><span class="red">many-way conflict / serialize</span></td></tr>
+              <tr><td>all lanes read exactly one address</td><td>one bank/address</td><td><span class="cyan">broadcast special case</span></td></tr>
+            </tbody>
+          </table>
+          <p class="lead">bank conflict 不会算错，通常只会让一条 shared-memory instruction 分多次服务，降低有效带宽。</p>
+          <p class="small amber">它和 global-memory coalescing、L1 cache set conflict 是三个不同问题。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>bank conflict is contention inside one shared-memory warp instruction</span><span class="section-name">Shared-memory layout</span></footer>
+    </section>
+
+    <section class="slide" data-section="Shared-memory layout">
+      <div class="kicker">Swizzle · change physical addresses while preserving logical matrix coordinates</div>
+      <div class="content grid-2">
+        <div class="card red-edge">
+          <span class="tag">toy row-major layout</span>
+          <h3>lane reads one column across rows</h3>
+          <table class="dense">
+            <thead><tr><th>lane / logical</th><th>word address</th><th>bank</th></tr></thead>
+            <tbody>
+              <tr><td>lane 0 → (row 0,col 0)</td><td>0×32+0 = 0</td><td class="red">0</td></tr>
+              <tr><td>lane 1 → (row 1,col 0)</td><td>1×32+0 = 32</td><td class="red">0</td></tr>
+              <tr><td>lane 2 → (row 2,col 0)</td><td>2×32+0 = 64</td><td class="red">0</td></tr>
+              <tr><td>…</td><td>…</td><td class="red">0</td></tr>
+            </tbody>
+          </table>
+          <p class="small">row stride 恰好是 32 words，导致不同地址全部落进 bank 0。</p>
+        </div>
+        <div class="card green-edge">
+          <span class="tag">toy XOR swizzle</span>
+          <h3>physical_col = col XOR row</h3>
+          <table class="dense">
+            <thead><tr><th>logical → physical</th><th>word address</th><th>bank</th></tr></thead>
+            <tbody>
+              <tr><td>(0,0) → (0,0)</td><td>0×32+0 = 0</td><td class="green">0</td></tr>
+              <tr><td>(1,0) → (1,1)</td><td>1×32+1 = 33</td><td class="green">1</td></tr>
+              <tr><td>(2,0) → (2,2)</td><td>2×32+2 = 66</td><td class="green">2</td></tr>
+              <tr><td>…</td><td>…</td><td class="green">distinct</td></tr>
+            </tbody>
+          </table>
+          <p class="small">store 和 load 都用同一坐标变换，所以逻辑 tensor value 不变；只是把 simultaneous lane requests 摊到不同 banks。</p>
+        </div>
+        <div class="card compact" style="grid-column:1/-1">
+          <p><strong>FA1 的实际情况：</strong><code>Smem_tile_*</code> 使用 padding 与 XOR-derived column mapping，并与 <code>ldsm/ldsmt</code> fragment pattern 配合。上面的 32×32 toy 只解释为什么 swizzle 有效，不是逐地址复刻 v1.0.9 layout。</p>
+          <p class="small amber">确定性上，正确的 swizzle 是 value-preserving address permutation；错误的 mapping 或缺失 barrier 才会变成 correctness 问题。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>swizzle spreads lane addresses across banks; it does not change the mathematical tile</span><span class="section-name">Shared-memory layout</span></footer>
+    </section>
+
     <section class="slide" data-section="Warp execution">
       <div class="kicker">128 threads do not have permanent jobs</div>
       <div class="content vcenter">
@@ -811,27 +1326,33 @@
     </section>
 
     <section class="slide" data-section="Warp execution">
-      <div class="kicker">Collective load mapping · Bᵣ=16, B꜀=128, D=64, BF16</div>
+      <div class="kicker">Collective load mapping · running Bᵣ=16, B꜀=128, D=128, BF16 example</div>
       <div class="content grid-2">
         <div>
-          <h3>Q: one round covers 16 complete rows</h3>
+          <h3>One D128 row needs 16 threads</h3>
           <div class="matrix cells-8">
             <span class="cell c0">t0<br>16B</span><span class="cell c0">t1</span><span class="cell c0">t2</span><span class="cell c0">t3</span><span class="cell c0">t4</span><span class="cell c0">t5</span><span class="cell c0">t6</span><span class="cell c0">t7</span>
-            <span class="cell c1">t8</span><span class="cell c1">t9</span><span class="cell c1">t10</span><span class="cell c1">t11</span><span class="cell c1">t12</span><span class="cell c1">t13</span><span class="cell c1">t14</span><span class="cell c1">t15</span>
-            <span class="cell">…</span><span class="cell">…</span><span class="cell">…</span><span class="cell">…</span><span class="cell">…</span><span class="cell">…</span><span class="cell">…</span><span class="cell">…</span>
-            <span class="cell c3">t120</span><span class="cell c3">t121</span><span class="cell c3">t122</span><span class="cell c3">t123</span><span class="cell c3">t124</span><span class="cell c3">t125</span><span class="cell c3">t126</span><span class="cell c3">t127</span>
+            <span class="cell c0">t8</span><span class="cell c0">t9</span><span class="cell c0">t10</span><span class="cell c0">t11</span><span class="cell c0">t12</span><span class="cell c0">t13</span><span class="cell c0">t14</span><span class="cell c0">t15</span>
+            <span class="cell c1">t16</span><span class="cell c1">t17</span><span class="cell c1">t18</span><span class="cell c1">t19</span><span class="cell c1">t20</span><span class="cell c1">t21</span><span class="cell c1">t22</span><span class="cell c1">t23</span>
+            <span class="cell c1">t24</span><span class="cell c1">t25</span><span class="cell c1">t26</span><span class="cell c1">t27</span><span class="cell c1">t28</span><span class="cell c1">t29</span><span class="cell c1">t30</span><span class="cell c1">t31</span>
           </div>
-          <span class="equation">Q row = floor(t/8)<br>vector = t mod 8</span>
+          <span class="equation">128 BF16 × 2 bytes = 256 bytes/row<br>16 threads × 16 bytes = one complete row</span>
+          <p class="small muted center">图中 t0…t15 共同搬 Q row 0；t16…t31 共同搬 Q row 1。</p>
         </div>
         <div>
-          <h3>K/V: eight rounds cover 128 rows</h3>
-          <div class="codebox">for round r = 0..7:
-  row    = floor(t / 8) + 16r
-  vector = t mod 8
+          <h3>128 threads repeat load rounds</h3>
+          <div class="codebox">Q [16,128]: two rounds
+  linear = thread + 128 * round
+  row    = floor(linear / 16)
+  vector = linear mod 16
+
+K/V [128,128]: sixteen rounds
+  row    = floor(thread / 16) + 8 * round
+  vector = thread mod 16
   LDG 16 bytes</div>
           <ul class="compact">
-            <li>BF16 D64 row = 64×2 = 128 bytes；</li>
-            <li>8 threads × 16 bytes = one full row；</li>
+            <li>每一轮，128 threads 共同覆盖 8 个 D128 rows；</li>
+            <li>Q 有 16 rows → 2 rounds；K/V 各有 128 rows → 16 rounds；</li>
             <li>fetch register 只负责 transit；shared→MMA 时会形成另一套 distributed fragment registers；</li>
             <li>alignment、tail 与 varlen predicates 决定哪些 request active。</li>
           </ul>
@@ -850,7 +1371,7 @@
             <span class="cell c2">warp 2<br>S[:,64:96]</span>
             <span class="cell c3">warp 3<br>S[:,96:128]</span>
           </div>
-          <span class="equation">QK tile: M=16, N=128, K=64<br>WARPS_M=1 · WARPS_N=4 · WARPS_K=1</span>
+          <span class="equation">QK tile: M=16, N=128, K=128<br>WARPS_M=1 · WARPS_N=4 · WARPS_K=1</span>
           <p class="small muted">每个 score element 只有一个 warp owner；没有 cross-warp/cross-CTA split-D combine。</p>
         </div>
         <div class="card">
@@ -878,7 +1399,7 @@
           <article class="card violet-edge"><h3>warp 3</h3><p><code>P[:,96:128] @ V[96:128,:]</code></p><p class="amber">partial O₃</p></article>
         </div>
         <div class="flow">
-          <span class="node">4 distributed FP32 accumulators</span><span class="arrow">→</span>
+          <span class="node">4 × [16,128] FP32 partials<br>8 KiB each</span><span class="arrow">→</span>
           <span class="node cyan-node">store 4 slices in smem_o</span><span class="arrow">→</span>
           <span class="node amber-node">CTA barrier</span><span class="arrow">→</span>
           <span class="node green-node">load/add indices 0→1→2→3</span>
@@ -978,7 +1499,11 @@
 acc = MMA(Q[ 0:16], K[ 0:16], acc)
 acc = MMA(Q[16:32], K[16:32], acc)
 acc = MMA(Q[32:48], K[32:48], acc)
-acc = MMA(Q[48:64], K[48:64], acc)</div>
+acc = MMA(Q[48:64], K[48:64], acc)
+acc = MMA(Q[64:80], K[64:80], acc)
+acc = MMA(Q[80:96], K[80:96], acc)
+acc = MMA(Q[96:112], K[96:112], acc)
+acc = MMA(Q[112:128],K[112:128],acc)</div>
         </div>
         <div class="card">
           <h3>为什么这个 reduction 可重复？</h3>
@@ -1009,9 +1534,11 @@ acc = MMA(Q[48:64], K[48:64], acc)</div>
           </div>
         </div>
         <div>
+          <div class="config-strip"><span><strong>512</strong> Q tiles</span><span><strong>64</strong> K/V tiles</span><span>standard causal</span></div>
           <ul class="compact">
             <li>完全在 causal diagonal 右上的 tile pair 可以跳过；</li>
             <li>跨 diagonal 的 tile 仍做 QK，再把 <code>k&gt;q</code> score 设为 <code>−∞</code>；</li>
+            <li>本例从 non-causal 的 32,768 个 tile pairs/head 降到 <strong>16,640</strong> 个需要处理的 pairs/head；</li>
             <li>早期 Q rows 工作少，后期 Q rows 工作多；</li>
             <li>round-robin <code>i=r,r+R,…</code> 把轻重 Q tiles 混进各 CTA，缓解 contiguous partition 的 imbalance；</li>
             <li>small batch×heads、last wave、skewed varlen 仍可能有残余 imbalance。</li>
@@ -1112,6 +1639,11 @@ acc = MMA(Q[48:64], K[48:64], acc)</div>
             </tbody>
           </table>
           <p class="small"><a href="flashattention_fa1_foundations.md">Open the full Markdown source audit</a></p>
+          <p class="tiny muted">Reusable hardware background:
+            <a href="https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/gpu-execution-model.md">GPU execution model</a>
+            ·
+            <a href="https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/gpu-memory-hierarchy.md">GPU memory hierarchy</a>
+          </p>
         </div>
         <div class="card amber-edge compact">
           <h3>GPU validation queue</h3>
@@ -1131,18 +1663,19 @@ acc = MMA(Q[48:64], K[48:64], acc)</div>
     <section class="slide section-slide" data-section="Checkpoint">
       <div class="kicker">One-screen checkpoint</div>
       <div class="content">
-        <h2>记住这五句话</h2>
+        <h2>记住这六句话</h2>
         <div class="grid-2 compact" style="margin-top:1.2em">
           <div class="card cyan-edge">
             <ol>
-              <li>FA1 用 online softmax state 避免 materialize <code>N²</code> S/P。</li>
-              <li>v1.0.9 forward 的一个 CTA 拥有若干 Q-row tiles，并顺序遍历 K/V tiles。</li>
-              <li>四个 warps 先分 score columns，PV 时自然变成四份 partial O。</li>
+              <li>FA1 把 sequence 轴切成小 tile，并用 online softmax 接回完整 row result。</li>
+              <li>kernel grid 包含许多 CTAs；一个 CTA resident 在一个 SM，SM scheduler 发射 ready warps。</li>
+              <li>v1.0.9 的一个 CTA 拥有若干 Q-row tiles，并顺序遍历 K/V tiles。</li>
             </ol>
           </div>
           <div class="card green-edge">
             <ol start="4">
-              <li>tile 在 global/shared/distributed registers 间移动；普通 LDG pipeline，没有 TMA 或 dedicated producer。</li>
+              <li>四个 warps 共同执行两层 loop；QK 分 score columns，PV 时自然形成四份 partial O。</li>
+              <li>tile 在 global/shared/distributed registers 间移动；swizzle 解决 bank layout，普通 LDG pipeline 没有 TMA。</li>
               <li>forward determinism 来自 <strong>one O owner + fixed local orders + no cross-CTA numeric combine</strong>。</li>
             </ol>
           </div>

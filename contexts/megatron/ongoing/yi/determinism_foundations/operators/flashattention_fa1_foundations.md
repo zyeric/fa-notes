@@ -64,9 +64,11 @@ without replacing the evidence in this file.
 
 For a graphical forward-only reading surface, open the standalone
 [FA1 forward visual map](flashattention_fa1_forward.html). It reorganizes the
-same source-audited conclusions into 16:9 diagrams covering the algorithm,
-CTA/warp ownership, memory movement, pipeline, modes, and determinism proof.
-This Markdown file remains the source of truth.
+same source-audited conclusions into beginner-oriented 16:9 diagrams. It first
+introduces tiling and the GPU/CTA/warp/register model, then follows a
+`B=1,H=32,N=8192,d=128` example through ownership, memory movement, shared-bank
+swizzles, the four-warp pipeline, modes, and the determinism proof. This
+Markdown file remains the source of truth.
 
 For the completed forward track, read straight through Sections 1--9. The
 lowering path is:
