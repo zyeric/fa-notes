@@ -1211,52 +1211,55 @@
     </section>
 
     <section class="slide" data-section="Algorithm">
-      <div class="kicker">Does every P tile become final? · no: consume a local numerator, keep only sufficient row state</div>
-      <div class="content grid-2">
-        <div class="card red-edge">
-          <span class="tag">what FA1 does not do</span>
-          <h3>No backward visit to old P elements</h3>
-          <div class="matrix cells-4">
-            <span class="cell c0">old P tile 0</span><span class="cell c1">old P tile 1</span><span class="cell">…</span><span class="cell c3">new tile</span>
+      <div class="kicker">Is each P tile normalized before PV? · direct answer: no</div>
+      <div class="content vcenter">
+        <div class="timeline" style="--steps:3">
+          <div class="time-item"><strong>1 · before PV</strong><span>merge max<br>m′=max(m,m_tile)<br>P̃=exp(S_tile−m′)</span></div>
+          <div class="time-item"><strong>2 · PV</strong><span>no denominator division<br>C_tile=P̃V_tile</span></div>
+          <div class="time-item"><strong>3 · after PV</strong><span>merge old numerator/sum<br>then divide by ℓ′</span></div>
+        </div>
+        <div class="grid-2">
+          <div class="card green-edge">
+            <h3>Mathematical (m,ℓ,u) view</h3>
+            <span class="equation">α = exp(m − m′)</span>
+            <span class="equation">u′ = αu + P̃V<sub>tile</sub></span>
+            <span class="equation">ℓ′ = αℓ + ΣP̃</span>
+            <span class="equation">O′ = u′ / ℓ′</span>
           </div>
-          <ul class="compact">
-            <li>未来 valid tile 可能提高 max，也会贡献 denominator；</li>
-            <li>因此早先 tile 的<strong>最终 normalized probabilities</strong> 当时尚未知；</li>
-            <li>FA1 不保存并回头逐元素修改那些 old P tiles。</li>
-          </ul>
+          <div class="card cyan-edge">
+            <h3>v1.0.9 stored-state view</h3>
+            <span class="equation">old numerator in new scale<br>= exp(LSE<sub>old</sub>−m′) · O<sub>old</sub></span>
+            <span class="equation">O′ = (old scaled numerator + C<sub>tile</sub>) / ℓ′</span>
+            <p class="small">source 跨 K/V outer steps 保存 normalized partial <code>O_old</code> 和 <code>LSE_old=m+logℓ</code>，而不是直接保存 u。</p>
+          </div>
         </div>
-        <div class="card green-edge">
-          <span class="tag">what enters PV</span>
-          <h3>Current unnormalized weights feed PV immediately</h3>
-          <span class="equation">P̃<sub>tile</sub> = exp(S<sub>tile</sub> − m′)</span>
-          <span class="equation">u′ = e^(m−m′)u + P̃<sub>tile</sub>V<sub>tile</sub></span>
-          <span class="equation">O′ = u′ / ℓ′</span>
-          <p>只需 rescale 旧的 aggregate numerator/output state，不需要重新加载旧 score 或 P elements。</p>
-        </div>
-        <div class="card compact" style="grid-column:1/-1">
-          <p><strong>数学记法：</strong>保留 <code>(m,ℓ,u)</code> 最直观。<strong>v1.0.9 source：</strong>跨 K/V outer steps 保存 normalized partial O 和 <code>LSE=m+logℓ</code>，下一步据此恢复同样的 rescale/merge。两种表示维护同一个 invariant。</p>
-        </div>
+        <p class="lead center"><span class="red">不回头更新 old P elements。</span> 新 tile 只触发 aggregate old state 的 rescale；每次得到的是“seen prefix 的 normalized O”，最后一个 tile 后才是完整 attention O。</p>
       </div>
-      <footer class="footer"><span>the kernel revises an aggregate row state—not previously materialized probability elements</span><span class="section-name">Algorithm</span></footer>
+      <footer class="footer"><span>m affects P̃ before PV; ℓ normalizes the combined output after PV</span><span class="section-name">Algorithm</span></footer>
     </section>
 
     <section class="slide" data-section="Algorithm">
-      <div class="kicker">One scalar example · scores [1,2] then [3]</div>
-      <div class="content vcenter">
-        <div class="timeline" style="--steps:3">
-          <div class="time-item"><strong>Initialize</strong><span>m=−∞<br>ℓ=0<br>u=0</span></div>
-          <div class="time-item"><strong>Tile 1 · [1,2]</strong><span>m₁=2<br>ℓ₁=e⁻¹+1<br>u₁=10e⁻¹+20</span></div>
-          <div class="time-item"><strong>Tile 2 · [3]</strong><span>m₂=3<br>old state × e⁻¹<br>add value 30</span></div>
+      <div class="kicker">Scalar PV example · scores [1,2] then [3], values [10,20] then [30]</div>
+      <div class="content grid-2">
+        <div class="card cyan-edge">
+          <span class="tag">tile 1</span>
+          <h3>PV consumes unnormalized P̃₁</h3>
+          <span class="equation">m₁=2<br>P̃₁=[e⁻¹, 1]</span>
+          <span class="equation">C₁=P̃₁V₁=10e⁻¹+20</span>
+          <span class="equation">ℓ₁=e⁻¹+1<br>O₁=C₁/ℓ₁</span>
+          <p class="small">O₁ 已经按“目前见过的 tile 1 prefix”normalize，但 P̃₁ 本身没有除以 ℓ₁。</p>
         </div>
-        <div class="grid-2">
-          <div class="card amber-edge">
-            <span class="equation">ℓ₂ = e⁻¹(e⁻¹+1)+1<br>= e⁻²+e⁻¹+1</span>
-          </div>
-          <div class="card green-edge">
-            <span class="equation">u₂ = e⁻¹(10e⁻¹+20)+30<br>= 10e⁻²+20e⁻¹+30</span>
-          </div>
+        <div class="card green-edge">
+          <span class="tag">tile 2 arrives</span>
+          <h3>Rescale O₁ aggregate, not old P̃₁ elements</h3>
+          <span class="equation">m₂=3 · α=e^(2−3)=e⁻¹<br>P̃₂=[1] · C₂=30</span>
+          <span class="equation">ℓ₂=αℓ₁+1</span>
+          <span class="equation">O₂=(αℓ₁O₁+C₂)/ℓ₂</span>
+          <p class="small">因为 <code>ℓ₁O₁=C₁</code>，这等价于 <code>(e⁻¹C₁+30)/(e⁻¹ℓ₁+1)</code>。</p>
         </div>
-        <p class="lead center" style="margin-top:.8em"><code>u₂ / ℓ₂</code> 与一次性用 global max=3 做 stable softmax 完全相同（实数语义）。</p>
+        <div class="card compact" style="grid-column:1/-1">
+          <p class="lead center"><code>O₂</code> 等于一次性对 [1,2,3] 做 global stable softmax 再乘 [10,20,30]；实现从未重新读取或修改 tile 1 的两个 P elements。</p>
+        </div>
       </div>
       <footer class="footer"><span>the invariant survives one tile merge; induction handles all tiles</span><span class="section-name">Algorithm</span></footer>
     </section>
@@ -1490,7 +1493,7 @@ for K/V tile j:                 <span class="hi"># all 4 warps enter</span>
       <div class="content grid-2">
         <div class="card cyan-edge">
           <span class="tag">start with bytes, not a matrix</span>
-          <h3>Shared memory looks like one flat byte-address space</h3>
+          <h3>One address names one byte</h3>
           <table class="dense">
             <thead><tr><th>byte address</th><th>32-bit word</th><th>bank</th></tr></thead>
             <tbody>
@@ -1503,7 +1506,7 @@ for K/V tile j:                 <span class="hi"># all 4 warps enter</span>
             </tbody>
           </table>
           <span class="equation">word = floor(byte_address / 4)<br>bank = word mod 32</span>
-          <p class="small">二维坐标 <code>(row,col)</code> 要先经过 layout，变成 flat physical byte address；<strong>bank 看的是变换后的物理地址</strong>，不是逻辑 column number。</p>
+          <p class="small"><strong>所以你的理解是对的：</strong>先把 layout 后的数据看成 flat bytes，再按每 4 bytes 一个 32-bit word 分组，最后对 32 取余得到 bank。</p>
         </div>
         <div>
           <h3>对，A100 shared memory 有 32 banks</h3>
@@ -1514,7 +1517,11 @@ for K/V tile j:                 <span class="hi"># all 4 warps enter</span>
             <span class="bank">bank 24</span><span class="bank">bank 25</span><span class="bank">bank 26</span><span class="bank">bank 27</span><span class="bank">bank 28</span><span class="bank">bank 29</span><span class="bank">bank 30</span><span class="bank">bank 31</span>
           </div>
           <p class="lead center">bank 是 <span class="cyan">shared-memory hardware</span> 的服务分区，不是 register、HBM 或 L1 cache 的概念。</p>
-          <p class="small muted">这里先使用 32-bit-word 教学模型。BF16 packing、128-bit vector request 和 <code>ldmatrix</code> 会把真实 transaction 分得更细，但“同一 warp instruction 的不同地址争用同一 bank”这个核心不变。</p>
+          <div class="card compact" style="margin-top:.7em">
+            <p><strong>BF16 reminder：</strong>一个 BF16 element = 2 bytes，因此相邻两个 BF16 elements 合起来占一个 4-byte bank word。</p>
+            <p class="small">二维 logical <code>(row,col)</code> 先经过 swizzled layout，得到 physical byte address；bank 看 physical address，不直接看 logical column。</p>
+          </div>
+          <p class="tiny muted">这里先使用 32-bit-word 教学模型。128-bit vector request 和 <code>ldmatrix</code> 会形成更细的 transaction 分解，但核心仍是“同一 warp instruction 的哪些 physical addresses 由哪些 banks 服务”。</p>
         </div>
       </div>
       <footer class="footer"><span>a matrix coordinate reaches a bank only after layout → flat byte address</span><span class="section-name">Shared-memory layout</span></footer>
@@ -1560,40 +1567,79 @@ for K/V tile j:                 <span class="hi"># all 4 warps enter</span>
     </section>
 
     <section class="slide" data-section="Shared-memory layout">
-      <div class="kicker">XOR swizzle · a four-row toy before the real K tile</div>
-      <div class="content grid-2">
-        <div class="card red-edge">
-          <span class="tag">toy hardware: show only 4 banks</span>
-          <h3>Plain 4×4 row-major layout</h3>
+      <div class="kicker">What are the four toy lanes loading? · one element each, one column collectively</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <p class="small muted center">Toy assumptions: 4 lanes · 4 banks · each matrix cell is one 32-bit word</p>
+          <div class="matrix cells-4" aria-label="toy logical matrix">
+            <span class="cell c0">a₀₀<br><small>lane 0</small></span><span class="cell">a₀₁</span><span class="cell">a₀₂</span><span class="cell">a₀₃</span>
+            <span class="cell c1">a₁₀<br><small>lane 1</small></span><span class="cell">a₁₁</span><span class="cell">a₁₂</span><span class="cell">a₁₃</span>
+            <span class="cell c2">a₂₀<br><small>lane 2</small></span><span class="cell">a₂₁</span><span class="cell">a₂₂</span><span class="cell">a₂₃</span>
+            <span class="cell c3">a₃₀<br><small>lane 3</small></span><span class="cell">a₃₁</span><span class="cell">a₃₂</span><span class="cell">a₃₃</span>
+          </div>
+          <p class="lead center">一条 toy load：四个 lanes 合作读取 logical column 0</p>
+        </div>
+        <div class="card">
+          <h3>Lane-private results</h3>
           <table class="dense">
-            <thead><tr><th>lane / logical</th><th>word address</th><th>bank</th></tr></thead>
+            <thead><tr><th>lane</th><th>loads one cell</th><th>result register</th></tr></thead>
             <tbody>
-              <tr><td>0 → (0,0)</td><td>0×4+0 = 0</td><td class="red">0 mod 4 = 0</td></tr>
-              <tr><td>1 → (1,0)</td><td>1×4+0 = 4</td><td class="red">4 mod 4 = 0</td></tr>
-              <tr><td>2 → (2,0)</td><td>2×4+0 = 8</td><td class="red">8 mod 4 = 0</td></tr>
-              <tr><td>3 → (3,0)</td><td>3×4+0 = 12</td><td class="red">12 mod 4 = 0</td></tr>
+              <tr><td>0</td><td>a₀₀</td><td>r_lane0 = a₀₀</td></tr>
+              <tr><td>1</td><td>a₁₀</td><td>r_lane1 = a₁₀</td></tr>
+              <tr><td>2</td><td>a₂₀</td><td>r_lane2 = a₂₀</td></tr>
+              <tr><td>3</td><td>a₃₀</td><td>r_lane3 = a₃₀</td></tr>
             </tbody>
           </table>
-          <p class="small">四个 lanes 想读同一 logical column；row stride 恰好等于 bank 数，于是不同 rows 全部折回 bank 0。</p>
+          <ul class="compact">
+            <li>不是 lane 0 独自读取一整行或一整列；</li>
+            <li>每个 lane 在这条 instruction 中只取一个 toy word；</li>
+            <li>四个 lane-private registers 合起来表示一个 column vector fragment；</li>
+            <li>真实 FA1 的 <code>ldsm/ldsmt</code> 会让每 lane 取得多个 packed values，mapping 更复杂，但仍是“每 lane 持有 fragment”。</li>
+          </ul>
+        </div>
+      </div>
+      <footer class="footer"><span>one lane owns one toy element; cooperating lanes collectively form the fragment</span><span class="section-name">Shared-memory layout</span></footer>
+    </section>
+
+    <section class="slide" data-section="Shared-memory layout">
+      <div class="kicker">Full 4×4 XOR swizzle · all 16 logical values, rearranged physical slots</div>
+      <div class="content grid-2">
+        <div class="card cyan-edge">
+          <span class="tag">logical coordinates</span>
+          <h3>Before swizzle</h3>
+          <p class="tiny muted center">logical columns c=0,1,2,3 from left to right</p>
+          <div class="matrix cells-4">
+            <span class="cell c0">a₀₀</span><span class="cell">a₀₁</span><span class="cell">a₀₂</span><span class="cell">a₀₃</span>
+            <span class="cell c0">a₁₀</span><span class="cell">a₁₁</span><span class="cell">a₁₂</span><span class="cell">a₁₃</span>
+            <span class="cell c0">a₂₀</span><span class="cell">a₂₁</span><span class="cell">a₂₂</span><span class="cell">a₂₃</span>
+            <span class="cell c0">a₃₀</span><span class="cell">a₃₁</span><span class="cell">a₃₂</span><span class="cell">a₃₃</span>
+          </div>
+          <span class="equation">physical_col = logical_col XOR row</span>
+          <p class="small">每个 <code>aᵣ꜀</code> 的 value 不变，只把它写入 row r 中的 physical slot <code>c XOR r</code>。</p>
         </div>
         <div class="card green-edge">
-          <span class="tag">same logical 4×4 values</span>
-          <h3>physical_col = col XOR row</h3>
-          <table class="dense">
-            <thead><tr><th>logical → physical</th><th>word address</th><th>bank</th></tr></thead>
-            <tbody>
-              <tr><td>(0,0) → (0,0)</td><td>0×4+0 = 0</td><td class="green">0</td></tr>
-              <tr><td>(1,0) → (1,1)</td><td>1×4+1 = 5</td><td class="green">1</td></tr>
-              <tr><td>(2,0) → (2,2)</td><td>2×4+2 = 10</td><td class="green">2</td></tr>
-              <tr><td>(3,0) → (3,3)</td><td>3×4+3 = 15</td><td class="green">3</td></tr>
-            </tbody>
-          </table>
-          <p class="small">写入和读取都用同一 mapping，因此读取 logical <code>(r,c)</code> 仍得到原值；改变的只是它在 shared memory 中的 physical slot。</p>
+          <span class="tag">physical shared-memory slots</span>
+          <h3>After swizzle</h3>
+          <p class="tiny muted center">physical slots p=0,1,2,3 from left to right</p>
+          <div class="matrix cells-4">
+            <span class="cell c0">a₀₀</span><span class="cell">a₀₁</span><span class="cell">a₀₂</span><span class="cell">a₀₃</span>
+            <span class="cell">a₁₁</span><span class="cell c1">a₁₀</span><span class="cell">a₁₃</span><span class="cell">a₁₂</span>
+            <span class="cell">a₂₂</span><span class="cell">a₂₃</span><span class="cell c2">a₂₀</span><span class="cell">a₂₁</span>
+            <span class="cell">a₃₃</span><span class="cell">a₃₂</span><span class="cell">a₃₁</span><span class="cell c3">a₃₀</span>
+          </div>
+          <div class="codebox">row 0: [a00, a01, a02, a03]
+row 1: [a11, a10, a13, a12]
+row 2: [a22, a23, a20, a21]
+row 3: [a33, a32, a31, a30]</div>
         </div>
         <div class="card compact" style="grid-column:1/-1">
-          <p><strong>放回真实硬件：</strong>把 toy 的 4 banks 换成 32 banks，把简单 scalar load 换成 warp fragment load。FA1 的 <code>Smem_tile_*</code> 用 padding/XOR-derived mapping，让 <code>ldsm/ldsmt</code> 需要的 lane addresses 尽量分散。</p>
-          <p class="small muted">这个 4×4 例子只说明机制，不逐地址复刻 v1.0.9 的 vector packing 和 fragment mapping。</p>
-          <p class="small amber">确定性上，正确的 swizzle 是 value-preserving address permutation；错误的 mapping 或缺失 barrier 才会变成 correctness 问题。</p>
+          <div class="flow">
+            <span class="node">logical col 0<br>a00,a10,a20,a30</span><span class="arrow">→</span>
+            <span class="node cyan-node">physical words<br>0,5,10,15</span><span class="arrow">→</span>
+            <span class="node green-node">toy banks<br>0,1,2,3</span>
+          </div>
+          <p class="small"><strong>读 logical value 时也计算同一个 physical slot：</strong>lane r 要读 <code>aᵣ₀</code>，访问 <code>p=0 XOR r</code>，所以仍得到正确元素，同时四个请求不再撞 bank 0。</p>
+          <p class="tiny muted">真实 FA1 换成 32 banks、BF16 packing 和 <code>ldsm/ldsmt</code> fragment pattern；这个 4×4 permutation 只解释机制，不逐地址复刻 v1.0.9。</p>
         </div>
       </div>
       <footer class="footer"><span>swizzle spreads lane addresses across banks; it does not change the mathematical tile</span><span class="section-name">Shared-memory layout</span></footer>

@@ -316,20 +316,37 @@ usually easier to reason about: rescale the old numerator, add the new
 numerator, then divide once conceptually.
 
 This also answers whether each transient $P$ tile is already the final
-globally normalized probability tile. It is not. For the current tile the
-kernel forms weights proportional to
+globally normalized probability tile. It is not, and the denominator division
+does not happen before the current PV matrix multiply. For the current tile
+the kernel first merges the running maximum and forms
 
 $$
 \widetilde P_\mathrm{tile}=e^{S_\mathrm{tile}-m_\mathrm{new}}
 $$
 
 and immediately consumes
-$\widetilde P_\mathrm{tile}V_\mathrm{tile}$ in the numerator update. A future
-tile can change the running maximum and denominator, but FA1 does not return
-to old probability elements. It rescales the aggregate old numerator/output
-state by $e^{m_\mathrm{old}-m_\mathrm{new}}$ and combines the new contribution.
-The mathematical $(m,\ell,u)$ state and v1.0.9's stored normalized partial
-$O$ plus LSE are equivalent sufficient-state representations.
+$C_\mathrm{tile}=\widetilde P_\mathrm{tile}V_\mathrm{tile}$. Only after PV
+does it merge the old numerator and denominator and divide:
+
+$$
+\alpha=e^{m_\mathrm{old}-m_\mathrm{new}},\qquad
+u_\mathrm{new}=\alpha u_\mathrm{old}+C_\mathrm{tile},
+$$
+
+$$
+\ell_\mathrm{new}
+=\alpha\ell_\mathrm{old}+\sum\widetilde P_\mathrm{tile},\qquad
+O_\mathrm{new}=u_\mathrm{new}/\ell_\mathrm{new}.
+$$
+
+Thus $m_\mathrm{new}$ affects the weights before PV, while
+$\ell_\mathrm{new}$ normalizes the combined output after PV. A future tile can
+change both state values, but FA1 does not return to old probability elements.
+It rescales the aggregate old numerator/output state. The mathematical
+$(m,\ell,u)$ state and v1.0.9's stored normalized partial $O$ plus LSE are
+equivalent sufficient-state representations. After each merge, the stored
+partial $O$ is normalized for the key prefix seen so far; only after the last
+K/V tile is it the complete attention output.
 
 ### 5.2 The invariant
 
@@ -1254,7 +1271,9 @@ have explicit addresses and bank service rules, while L1 performs tag lookup
 and cache-line replacement.
 
 The simplest useful A100 teaching model starts from the flat physical
-shared-memory byte address after the layout transform:
+shared-memory byte address after the layout transform. Shared memory is
+byte-addressed: one address identifies one byte, while four consecutive byte
+addresses make one 32-bit word:
 
 ```text
 word_index = floor(byte_address / 4)
@@ -1270,15 +1289,35 @@ same address is a broadcast special case rather than the different-address
 conflict case. BF16 packing, vector width, and `ldmatrix` transaction rules add
 detail, but they do not change the basic question: which physical shared
 addresses does one warp instruction request, and which banks serve them?
+One BF16 element is two bytes, so two adjacent BF16 elements occupy one
+four-byte bank word in this simplified address view.
 
-A minimal four-bank analogy makes the XOR intent visible. Four lanes reading
-logical `(row, col=0)` from a row-major 4-by-4 array request word addresses
-0, 4, 8, and 12, which all map to bank 0 modulo four. With the toy mapping
-`physical_col = col XOR row`, those logical values live at words 0, 5, 10,
-and 15 and reach banks 0, 1, 2, and 3. Store and load both apply the same
-mapping, so the logical matrix is unchanged. FA1 uses a more specific
-padding/XOR-derived layout matched to its `ldsm`/`ldsmt` fragment pattern; the
-toy formula is explanatory rather than a literal reconstruction.
+A minimal four-bank analogy makes the XOR intent visible. It deliberately
+assumes a four-lane instruction, four banks, and one 32-bit word per matrix
+cell. Lane 0 loads $a_{00}$, lane 1 loads $a_{10}$, lane 2 loads $a_{20}$,
+and lane 3 loads $a_{30}$. No lane loads a complete row or column: each lane
+gets one private result register, while the four registers collectively form
+the logical column fragment.
+
+Without swizzle, that logical column uses row-major word addresses 0, 4, 8,
+and 12, all bank 0 modulo four. Apply the toy mapping
+`physical_col = logical_col XOR row` to all 16 values:
+
+```text
+logical rows:                 physical shared-memory slots:
+[a00 a01 a02 a03]            [a00 a01 a02 a03]
+[a10 a11 a12 a13]     ->     [a11 a10 a13 a12]
+[a20 a21 a22 a23]            [a22 a23 a20 a21]
+[a30 a31 a32 a33]            [a33 a32 a31 a30]
+```
+
+The logical-column-0 values now occupy words 0, 5, 10, and 15 and reach toy
+banks 0, 1, 2, and 3. Store and load both compute the same physical slot, so
+the logical matrix is unchanged. FA1 uses a more specific padding/XOR-derived
+layout matched to its `ldsm`/`ldsmt` fragment pattern; the toy formula is
+explanatory rather than a literal reconstruction. In real fragment loads,
+each lane can receive several packed values rather than the toy's one word,
+but the tile remains distributed across lane-private registers.
 
 ##### 5. Shared-to-register fragment formation
 
