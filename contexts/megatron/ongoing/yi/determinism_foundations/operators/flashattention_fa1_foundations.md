@@ -167,6 +167,12 @@ Two memory levels matter here:
 - SRAM/registers are small on-chip storage. They are much faster but cannot
   hold the full $N \times N$ score or probability matrix for long sequences.
 
+On A100, warp schedulers, the register file, the shared-memory/L1 pool,
+load/store units, CUDA-core/SFU paths, and Tensor Cores are all components
+inside each SM. They are not a second GPU-wide layer beside the SMs. L2 is
+GPU-wide and HBM is outside the SMs; the deck's architecture diagram uses a
+separate “zoom into one SM” box to make that boundary explicit.
+
 A matrix multiplication already contains reductions:
 
 $$
@@ -203,6 +209,28 @@ kernels. That requires $O(N^2)$ intermediate storage and repeatedly moves
 quadratic-sized tensors through HBM. FA1's main question is not how to avoid
 the $O(N^2d)$ arithmetic; it is how to avoid materializing those $N^2$
 intermediates.
+
+One useful materialized baseline is:
+
+```text
+GEMM kernel:    Q,K -> S
+HBM boundary:   write/read S
+softmax kernel: S -> P
+HBM boundary:   write/read P
+GEMM kernel:    P,V -> O
+```
+
+For $B=1,H=32,N=8192,d=128$ in BF16, QK plus PV perform about
+$4BHN^2d=1.10\times10^{12}$ FLOPs. Merely writing and rereading both
+$S$ and $P$ moves about 16 GiB, bounding intensity at roughly 64 FLOP/byte
+even before other traffic. An A100 dense-BF16 Tensor-Core/HBM roofline anchor
+is about
+$312\ \mathrm{TFLOP/s}/1.555\ \mathrm{TB/s}\approx200$ FLOP/byte. The
+materialized baseline is therefore on the bandwidth side of this simplified
+roofline. FA1 moves the operational point right by removing the quadratic HBM
+intermediate traffic. This is an upper-bound model, not proof that the fused
+kernel is compute-bound: actual Q/O state traffic, tile reuse, `num_splits`,
+causal work, occupancy, and achieved bandwidth still matter.
 
 ## 4. Safe Softmax
 
@@ -286,6 +314,22 @@ The paper stores a normalized running $O$ rather than this unnormalized $u$.
 The two views are equivalent because $u=\ell O$. The unnormalized form is
 usually easier to reason about: rescale the old numerator, add the new
 numerator, then divide once conceptually.
+
+This also answers whether each transient $P$ tile is already the final
+globally normalized probability tile. It is not. For the current tile the
+kernel forms weights proportional to
+
+$$
+\widetilde P_\mathrm{tile}=e^{S_\mathrm{tile}-m_\mathrm{new}}
+$$
+
+and immediately consumes
+$\widetilde P_\mathrm{tile}V_\mathrm{tile}$ in the numerator update. A future
+tile can change the running maximum and denominator, but FA1 does not return
+to old probability elements. It rescales the aggregate old numerator/output
+state by $e^{m_\mathrm{old}-m_\mathrm{new}}$ and combines the new contribution.
+The mathematical $(m,\ell,u)$ state and v1.0.9's stored normalized partial
+$O$ plus LSE are equivalent sufficient-state representations.
 
 ### 5.2 The invariant
 
@@ -579,6 +623,24 @@ efficiency. The variable does not reserve $R$ physical SMs for one attention
 matrix; it creates $R$ independently schedulable CTA work units, which the GPU
 may place on any SM.
 
+For the running $B\cdot H=32$ example on an A100 with 108 SMs, the exact
+source heuristic gives the following conditional results when testing
+$R=1,\ldots,30$:
+
+| occupancy API result for selected D128 binary | chosen $R$ | whole grid $BHR$ |
+| ---: | ---: | ---: |
+| 1 CTA/SM | 10 | 320 CTAs |
+| 2 CTAs/SM | 13 | 416 CTAs |
+| 3 CTAs/SM | 10 | 320 CTAs |
+| 4 CTAs/SM | 13 | 416 CTAs |
+
+The 40.625 KiB dynamic-shared request bounds the D128 path to at most roughly
+four CTAs/SM by shared capacity alone, while compiled register pressure can
+lower it. This CPU-only study does not have the selected binary's ptxas
+register count, so it records the conditional table instead of pretending
+that `R=4` is the A100 result. `R=4` in the visual walkthrough is only simple
+arithmetic: four CTAs per $(b,h)$ and $BHR=128$ CTAs for the whole grid.
+
 The same parameter name has a materially different backward consequence:
 
 | Path | Split dimension | Shared numeric destination? |
@@ -670,6 +732,17 @@ GPU execution time:
 attention results. The host is choosing from that code menu; this historical
 path is not compiling a new kernel for each input. JIT-based systems can add a
 compile/cache step at runtime, but that is a different implementation model.
+
+Concretely, the host C++ validates dtype/device/shape/strides and semantic
+modes, rounds sequence bounds, allocates output/LSE/`o_tmp`, chooses the
+D32/D64/D128 family from actual $d$, selects the compiled BF16/FP16 and
+causal/dropout/return-softmax function, queries occupancy if $R$ is automatic,
+sets dynamic shared memory, and launches grid $(B,H,R)$. At SM execution time,
+hardware does not read C++ or PTX. Each resident warp has a program counter
+into the selected binary's SASS instruction stream; instruction fetch/decode
+supplies the next machine instruction, the scoreboard and active mask
+determine eligibility, and register/operand paths provide that instruction's
+lane operands when a warp is issued.
 
 The occupancy call is made for the selected kernel function with its block size
 and dynamic shared-memory request. Its answer is a theoretical maximum active

@@ -338,6 +338,12 @@
       border-radius: 11px;
       background: rgba(85, 217, 251, .06);
     }
+    .sm-zoom-label {
+      margin: 0 0 -3px;
+      color: var(--cyan);
+      font: 700 clamp(10px, .72vw, 13px)/1.2 monospace;
+      text-align: center;
+    }
     .sm-part {
       padding: .5em;
       border: 1px solid var(--line);
@@ -629,10 +635,10 @@
       <div class="kicker">How to use this deck</div>
       <div class="content vcenter">
         <div class="stack">
-          <div class="layer"><strong>01 · Semantics</strong><span>ordinary attention、N² intermediate 与 exact/deterministic contract</span></div>
-          <div class="layer"><strong>02 · GPU hardware</strong><span>A100 的 compute units 与 HBM→L2→SM SRAM→register hierarchy</span></div>
-          <div class="layer"><strong>03 · CUDA model</strong><span>kernel/grid→CTA/SM→warp instruction→thread sharing/synchronization</span></div>
-          <div class="layer"><strong>04 · Tiling</strong><span>为什么切 tile → online softmax 如何接回完整结果 → CTA ownership</span></div>
+          <div class="layer"><strong>01 · Semantics</strong><span>ordinary multi-kernel attention、N² HBM intermediate 与 exact/deterministic contract</span></div>
+          <div class="layer"><strong>02 · GPU hardware</strong><span>A100 compute/memory hierarchy → roofline → 为什么 IO-aware</span></div>
+          <div class="layer"><strong>03 · CUDA model</strong><span>host dispatch → grid/CTA/SM → SASS/warp issue → synchronization</span></div>
+          <div class="layer"><strong>04 · Tiling</strong><span>为什么切 tile → online state 如何避免回写旧 P → R/r ownership</span></div>
           <div class="layer"><strong>05 · Execution</strong><span>memory movement/swizzle → QK → softmax → PV → partial-O/pipeline</span></div>
           <div class="layer"><strong>06 · Proof</strong><span>causal/varlen modes → unique owner + fixed local orders</span></div>
         </div>
@@ -756,6 +762,26 @@
       <footer class="footer"><span>the problem is IO, not a new attention definition</span><span class="section-name">Algorithm</span></footer>
     </section>
 
+    <section class="slide" data-section="Algorithm">
+      <div class="kicker">Non-Flash baseline · kernel boundaries can force N² intermediates through HBM</div>
+      <div class="content vcenter">
+        <div class="timeline" style="--steps:5">
+          <div class="time-item"><strong>Kernel 1 · GEMM</strong><span>read Q,K<br>compute S=QKᵀ</span></div>
+          <div class="time-item"><strong>HBM</strong><span>write full S<br>[B,H,N,N]</span></div>
+          <div class="time-item"><strong>Kernel 2 · softmax</strong><span>read S<br>write P</span></div>
+          <div class="time-item"><strong>HBM</strong><span>full P survives<br>kernel boundary</span></div>
+          <div class="time-item"><strong>Kernel 3 · GEMM</strong><span>read P,V<br>write O=PV</span></div>
+        </div>
+        <div class="grid-3 compact">
+          <article class="card violet-edge"><h3>Math work</h3><p>QK 和 PV 仍约 <code>4N²d</code> FLOPs；FlashAttention 没有删除这些 logical pair interactions。</p></article>
+          <article class="card red-edge"><h3>Materialized traffic</h3><p>至少包含 S write/read 与 P write/read；对 running shape，仅这四趟约 <strong>16 GiB</strong>。</p></article>
+          <article class="card green-edge"><h3>FA1 fusion</h3><p>QK→mask→softmax→PV 留在同一个 kernel/CTA path，让 transient S/P 不跨 kernel boundary 落入 HBM。</p></article>
+        </div>
+        <p class="small muted center">“non-Flash”不是说所有 framework 永远严格发射这三个 kernel；它是 materialized attention baseline。其他 fusion 也可能消除其中一部分 traffic。</p>
+      </div>
+      <footer class="footer"><span>kernel boundaries matter because ordinary cross-kernel state normally lives in global memory</span><span class="section-name">Algorithm</span></footer>
+    </section>
+
     <section class="slide" data-section="GPU hardware">
       <div class="kicker">A100 physical map · compute lives in SMs, large memory lives outside them</div>
       <div class="content grid-2 wide-left">
@@ -768,6 +794,7 @@
               <div class="sm">SM 2<small>compute + local SRAM</small></div>
               <div class="sm">…<small>108 SMs</small></div>
             </div>
+            <p class="sm-zoom-label">↓ ZOOM INTO ONE SM · THIS HARDWARE IS REPLICATED IN EACH SM ↓</p>
             <div class="sm-detail">
               <div class="sm-part">warp schedulers</div><div class="sm-part">register file</div>
               <div class="sm-part">shared memory / L1</div><div class="sm-part">load/store units</div>
@@ -784,6 +811,7 @@
         <div class="card">
           <h3>计算单元为什么离不开 memory path？</h3>
           <ul class="compact">
+            <li><strong>图中下方六个小框：</strong>全部是“放大一个 SM”之后的内部组件，不在 SM 外面；108 个 SM 各有自己的对应资源。</li>
             <li><strong>Tensor Cores：</strong>高吞吐执行 matrix multiply-accumulate；输入 fragments 和 accumulator state 必须先到片上 operand path。</li>
             <li><strong>CUDA-core / scalar-vector paths：</strong>地址、普通算术、max/sum、类型转换和控制逻辑。</li>
             <li><strong>SFUs：</strong>协助 exp/reciprocal 等特殊函数。</li>
@@ -826,6 +854,36 @@
         </div>
       </div>
       <footer class="footer"><span>FA1 optimizes movement between the large HBM tier and scarce on-chip state</span><span class="section-name">GPU hardware</span></footer>
+    </section>
+
+    <section class="slide" data-section="GPU hardware">
+      <div class="kicker">Roofline model · performance is capped by compute or by bytes/sec</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="equation">attainable FLOP/s ≤ min(<br>peak compute,<br>HBM bandwidth × arithmetic intensity)</div>
+          <div class="equation">arithmetic intensity = useful FLOPs / HBM bytes</div>
+          <div class="flow">
+            <span class="node red-node">low intensity<br>memory-bound</span><span class="arrow">→</span>
+            <span class="node amber-node">ridge point</span><span class="arrow">→</span>
+            <span class="node green-node">high intensity<br>compute-bound</span>
+          </div>
+          <p class="small muted center">Roofline 是上界模型，不包含 latency、occupancy、instruction mix、bank conflicts 等所有细节。</p>
+        </div>
+        <div class="card">
+          <h3>Running shape 的数量级</h3>
+          <table class="dense">
+            <tbody>
+              <tr><td>QK + PV arithmetic</td><td>≈1.10×10¹² FLOPs</td></tr>
+              <tr><td>materialized S/P minimum traffic</td><td>≈16 GiB</td></tr>
+              <tr><td>baseline intensity before other traffic</td><td>≈64 FLOP/byte upper bound</td></tr>
+              <tr><td>A100 BF16 Tensor/HBM ridge anchor</td><td>≈312 TF/s ÷ 1.555 TB/s ≈200 FLOP/byte</td></tr>
+            </tbody>
+          </table>
+          <p class="lead">materialized baseline 落在 ridge 左侧；FA1 删除 N² HBM intermediate，使 arithmetic intensity 向右移动。</p>
+          <p class="small amber">不能仅凭这张图断言 FA1 一定 compute-bound：真实点仍取决于 tile reuse、Q/O state round-trip、<code>num_splits</code>、causal skipping 和 achieved bandwidth。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>FA1 spends scarce on-chip capacity to reduce slow-tier bytes per useful FLOP</span><span class="section-name">GPU hardware</span></footer>
     </section>
 
     <section class="slide" data-section="GPU hardware">
@@ -922,6 +980,7 @@
             <div class="layer"><strong>SASS machine code</strong><span>A100 真正执行的 LDG/STS/HMMA/ALU/barrier instructions 与物理 register allocation</span></div>
           </div>
           <p class="small muted center" style="margin-top:.8em">“warp instruction”是概念层说法：warp scheduler 发射下一条 machine instruction；看 source/PTX 时我们也常用它描述将被 warp-level 执行的操作。</p>
+          <p class="small amber center"><strong>硬件不读 C++ 或 PTX：</strong>每个 resident warp 的 PC 指向已加载 binary 中的下一条 SASS；instruction fetch/decode 提供指令，scoreboard/active mask 决定这个 warp 是否 eligible。</p>
         </div>
         <div class="card green-edge">
           <h3>同一 opcode，32 组 lane-local operands</h3>
@@ -931,9 +990,39 @@
             <div class="instruction-row"><span class="node">MMA fragments<br>across lanes</span><span class="arrow">→</span><span class="node green-node">Tensor Cores → lane accumulators</span></div>
           </div>
           <p class="small">每个 lane 使用自己的 registers 和 active mask；MMA 把 32 lanes 的 fragments 解释成一个合作矩阵操作。</p>
+          <p class="small muted">选中 warp 后，operand/read path 从 SM register file 取得该 SASS 指令引用的 lane operands，再送到 load/store、CUDA/SFU 或 Tensor Core pipeline。</p>
         </div>
       </div>
       <footer class="footer"><span>CUDA source → PTX intent → SASS instruction issued for a warp</span><span class="section-name">CUDA model</span></footer>
+    </section>
+
+    <section class="slide" data-section="CUDA model">
+      <div class="kicker">What the host C++ does · select and launch an already-compiled specialization</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="stack" style="width:100%">
+            <div class="layer"><strong>1 · Validate / describe inputs</strong><span>device, dtype, strides, B/H/N/d, causal, dropout, varlen offsets</span></div>
+            <div class="layer"><strong>2 · Round and allocate</strong><span>round N to tile boundaries; allocate O, LSE, and multi-K/V-step <code>o_tmp</code></span></div>
+            <div class="layer"><strong>3 · Dispatch a compiled family</strong><span><code>d≤32</code> → D32 · <code>d≤64</code> → D64 · <code>d≤128</code> → D128</span></div>
+            <div class="layer"><strong>4 · Select template booleans</strong><span>BF16/FP16, causal, dropout, return-softmax choose a precompiled function</span></div>
+            <div class="layer"><strong>5 · Configure and launch</strong><span>query occupancy, resolve R if auto, set dynamic smem, launch grid <code>(B,H,R)</code></span></div>
+          </div>
+        </div>
+        <div class="card cyan-edge">
+          <h3>Build time vs call time</h3>
+          <table class="dense">
+            <thead><tr><th>When</th><th>Decision/artifact</th></tr></thead>
+            <tbody>
+              <tr><td>extension build</td><td>CUDA templates compile to architecture machine code inside the binary</td></tr>
+              <tr><td>Python/C++ call</td><td>inspect inputs and select one existing entry point/function pointer</td></tr>
+              <tr><td>launch</td><td>choose grid/dynamic smem; GPU admits CTAs as resources become available</td></tr>
+              <tr><td>SM execution</td><td>warp PCs advance through selected SASS; schedulers issue eligible warps</td></tr>
+            </tbody>
+          </table>
+          <p class="small amber">这份 v1.0.9 path 不是根据每次 input 临时生成一份新 kernel；runtime dispatch 选择的是 build 时已经实例化进 binary 的 specialization。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>input metadata selects the binary path; the warp scheduler executes that path's SASS</span><span class="section-name">CUDA model</span></footer>
     </section>
 
     <section class="slide" data-section="CUDA model">
@@ -1122,6 +1211,36 @@
     </section>
 
     <section class="slide" data-section="Algorithm">
+      <div class="kicker">Does every P tile become final? · no: consume a local numerator, keep only sufficient row state</div>
+      <div class="content grid-2">
+        <div class="card red-edge">
+          <span class="tag">what FA1 does not do</span>
+          <h3>No backward visit to old P elements</h3>
+          <div class="matrix cells-4">
+            <span class="cell c0">old P tile 0</span><span class="cell c1">old P tile 1</span><span class="cell">…</span><span class="cell c3">new tile</span>
+          </div>
+          <ul class="compact">
+            <li>未来 valid tile 可能提高 max，也会贡献 denominator；</li>
+            <li>因此早先 tile 的<strong>最终 normalized probabilities</strong> 当时尚未知；</li>
+            <li>FA1 不保存并回头逐元素修改那些 old P tiles。</li>
+          </ul>
+        </div>
+        <div class="card green-edge">
+          <span class="tag">what enters PV</span>
+          <h3>Current unnormalized weights feed PV immediately</h3>
+          <span class="equation">P̃<sub>tile</sub> = exp(S<sub>tile</sub> − m′)</span>
+          <span class="equation">u′ = e^(m−m′)u + P̃<sub>tile</sub>V<sub>tile</sub></span>
+          <span class="equation">O′ = u′ / ℓ′</span>
+          <p>只需 rescale 旧的 aggregate numerator/output state，不需要重新加载旧 score 或 P elements。</p>
+        </div>
+        <div class="card compact" style="grid-column:1/-1">
+          <p><strong>数学记法：</strong>保留 <code>(m,ℓ,u)</code> 最直观。<strong>v1.0.9 source：</strong>跨 K/V outer steps 保存 normalized partial O 和 <code>LSE=m+logℓ</code>，下一步据此恢复同样的 rescale/merge。两种表示维护同一个 invariant。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>the kernel revises an aggregate row state—not previously materialized probability elements</span><span class="section-name">Algorithm</span></footer>
+    </section>
+
+    <section class="slide" data-section="Algorithm">
       <div class="kicker">One scalar example · scores [1,2] then [3]</div>
       <div class="content vcenter">
         <div class="timeline" style="--steps:3">
@@ -1140,6 +1259,28 @@
         <p class="lead center" style="margin-top:.8em"><code>u₂ / ℓ₂</code> 与一次性用 global max=3 做 stable softmax 完全相同（实数语义）。</p>
       </div>
       <footer class="footer"><span>the invariant survives one tile merge; induction handles all tiles</span><span class="section-name">Algorithm</span></footer>
+    </section>
+
+    <section class="slide" data-section="Ownership">
+      <div class="kicker">Before reading the source loop · R creates Q-tile owner lanes</div>
+      <div class="content vcenter">
+        <div class="flow">
+          <span class="node violet-node">R = num_splits</span><span class="arrow">→</span>
+          <span class="node amber-node">r = blockIdx.z<br>0…R−1</span><span class="arrow">→</span>
+          <span class="node cyan-node">owned Q tiles<br>i = r, r+R, r+2R,…</span>
+        </div>
+        <div class="grid-3 compact">
+          <article class="card cyan-edge"><h3>Grid identity</h3><p>每个 CTA 的 identity 是 <code>(batch b, head h, split r)</code>；grid shape 是 <code>(B,H,R)</code>。</p></article>
+          <article class="card green-edge"><h3>Unique row owner</h3><p>一个 Q tile index <code>i</code> 只属于满足 <code>i mod R = r</code> 的那个 CTA，所以对应 O rows 不跨 CTA combine。</p></article>
+          <article class="card red-edge"><h3>Not split-K</h3><p>每个 r 仍为自己的 Q rows 顺序访问全部 K/V tiles；R 不拆开同一 row 的 softmax/PV reduction。</p></article>
+        </div>
+        <div class="config-strip">
+          <span><strong>R=1</strong>: one CTA/head owns all 512 Q tiles</span>
+          <span><strong>R=4</strong>: four CTAs/head own 128 Q tiles each</span>
+        </div>
+        <p class="small muted center">这里先定义符号；后面的 <code>num_splits</code> 页面再解释 host 为什么为了 wave utilization 自动选择某个 R，以及它造成的 K/V duplicate traffic。</p>
+      </div>
+      <footer class="footer"><span>R partitions Q ownership by congruence class; r names one owner CTA</span><span class="section-name">Ownership</span></footer>
     </section>
 
     <section class="slide" data-section="Ownership">
@@ -1242,15 +1383,15 @@ for K/V tile j:                 <span class="hi"># all 4 warps enter</span>
             <li>代价是不同 CTA 重复读取相同 K/V；</li>
             <li><code>R=0</code> 让 host heuristic 根据 SM 数、occupancy 与 wave efficiency 选择。</li>
           </ul>
-          <p class="small amber">下面取 <code>R=4</code> 只为数数，不声称 A100/H100 一定选 4；真实值由 launch-time heuristic 决定。</p>
+          <p class="small amber">下面取 <code>R=4</code> 只为数数：它表示<strong>每个 (batch,head) 有 4 个 CTAs</strong>，不是整个模型只有 4 个；也不声称 A100 一定选 4。</p>
         </div>
         <div>
           <div class="config-strip"><span><strong>B</strong>=1</span><span><strong>H</strong>=32</span><span><strong>N</strong>=8192</span><span><strong>R</strong>=4 (illustrative)</span></div>
           <span class="equation">T<sub>q</sub> = ceil(N / Bᵣ) = 8192 / 16 = 512 Q tiles/head<br>512 tiles / 4 split owners = 128 Q tiles/CTA</span>
           <div class="grid-3 compact" style="height:auto">
-            <article class="card cyan-edge"><h3>Grid</h3><p><strong>1×32×4</strong><br>= 128 CTAs</p></article>
+            <article class="card cyan-edge"><h3>Whole grid</h3><p><strong>1×32×4</strong><br>= 128 CTAs</p></article>
             <article class="card amber-edge"><h3>Per CTA</h3><p><strong>128</strong><br>owned Q tiles</p></article>
-            <article class="card violet-edge"><h3>Inner work</h3><p><strong>64×128</strong><br>= 8192 tile pairs</p></article>
+            <article class="card violet-edge"><h3>Per (b,h)</h3><p><strong>4 CTAs</strong><br>one for each r</p></article>
           </div>
           <div class="flow">
             <span class="node cyan-node">CTA r=0<br>Q 0,4,…,508</span>
@@ -1262,6 +1403,37 @@ for K/V tile j:                 <span class="hi"># all 4 warps enter</span>
         </div>
       </div>
       <footer class="footer"><span>more parallel work ↔ duplicated K/V traffic</span><span class="section-name">Ownership</span></footer>
+    </section>
+
+    <section class="slide" data-section="Ownership">
+      <div class="kicker">What R would the running A100 example choose? · binary occupancy is still an input</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="equation">waves(R) = B·H·R / (SMs · CTAs/SM)</div>
+          <div class="equation">efficiency(R) = waves / ceil(waves)</div>
+          <ol class="compact">
+            <li>selected D128 binary requests 128 threads and 40.625 KiB dynamic shared/CTA；</li>
+            <li>CUDA occupancy API combines shared, compiled registers/thread and other limits to return <code>ctas_per_sm</code>；</li>
+            <li>v1.0.9 tests <code>R=1…30</code>, finds best wave efficiency, then chooses the smallest R above 95% of that best；</li>
+            <li>smaller acceptable R avoids unnecessary duplicate K/V and state traffic。</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>B·H=32, A100=108 SMs</h3>
+          <table class="dense">
+            <thead><tr><th>occupancy result</th><th>heuristic R</th><th>whole grid B·H·R</th></tr></thead>
+            <tbody>
+              <tr><td>1 CTA/SM</td><td>10</td><td>320 CTAs</td></tr>
+              <tr><td>2 CTAs/SM</td><td>13</td><td>416 CTAs</td></tr>
+              <tr><td>3 CTAs/SM</td><td>10</td><td>320 CTAs</td></tr>
+              <tr><td>4 CTAs/SM</td><td>13</td><td>416 CTAs</td></tr>
+            </tbody>
+          </table>
+          <p class="lead">所以源码支持的诚实回答是：<br><span class="amber">这个 shape 很可能不是 R=4；精确值必须观察实际 binary 的 occupancy result。</span></p>
+          <p class="small muted">40.625 KiB shared 限制最多约 4 CTA/SM；register pressure 可能把结果压到更低。CPU-only source study 没有该 D128 binary 的 ptxas register count，因此不虚构唯一 R。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>R is a host launch decision derived from the selected kernel's resource envelope</span><span class="section-name">Ownership</span></footer>
     </section>
 
     <section class="slide" data-section="Resources">
