@@ -65,10 +65,11 @@ without replacing the evidence in this file.
 For a graphical forward-only reading surface, open the standalone
 [FA1 forward visual map](flashattention_fa1_forward.html). It reorganizes the
 same source-audited conclusions into beginner-oriented 16:9 diagrams. It first
-introduces tiling and the GPU/CTA/warp/register model, then follows a
-`B=1,H=32,N=8192,d=128` example through ownership, memory movement, shared-bank
-swizzles, the four-warp pipeline, modes, and the determinism proof. This
-Markdown file remains the source of truth.
+introduces A100 compute/memory architecture and the
+grid/CTA/warp/register/synchronization model before tiling, then follows a
+`B=1,H=32,N=8192,d=128` example through online softmax, ownership, memory
+movement, shared-bank swizzles, the four-warp pipeline, modes, and the
+determinism proof. This Markdown file remains the source of truth.
 
 For the completed forward track, read straight through Sections 1--9. The
 lowering path is:
@@ -468,7 +469,8 @@ State residence:
 | global-load fetch vectors | per-thread transit registers until committed to shared memory |
 | Q tile | double-buffered shared memory, then distributed per-thread MMA fragment registers |
 | K/V tile | one shared-memory region reused V-then-K; fragments retained in registers across owned Q tiles |
-| score and GEMM accumulators | Tensor Core accumulator registers |
+| score $S$ and GEMM accumulators | distributed FP32 Tensor Core accumulator/register state |
+| probability $P$ | packed FP16/BF16 per-thread fragments consumed directly by PV; optional global return only when requested |
 | row reduction scratch | registers plus shared memory |
 | current-tile partial O | one distributed FP32 accumulator per warp, then four slices in shared memory |
 | partial normalized O and LSE | FP32 global buffers between K/V-tile steps when required |
@@ -1178,6 +1180,33 @@ A shared-memory bank conflict is not an L1 cache-set conflict: shared accesses
 have explicit addresses and bank service rules, while L1 performs tag lookup
 and cache-line replacement.
 
+The simplest useful A100 teaching model starts from the flat physical
+shared-memory byte address after the layout transform:
+
+```text
+word_index = floor(byte_address / 4)
+bank       = word_index mod 32
+```
+
+A100 shared memory has 32 banks in this model. Bytes 0--3 map to bank 0,
+bytes 4--7 to bank 1, and bytes 124--127 to bank 31; bytes 128--131 wrap back
+to bank 0. Therefore one warp instruction reading words 0, 1, 2, ... hits
+different banks, while different addresses at words 0, 32, 64, ... contend
+for bank 0 and require multiple service rounds. All lanes reading exactly the
+same address is a broadcast special case rather than the different-address
+conflict case. BF16 packing, vector width, and `ldmatrix` transaction rules add
+detail, but they do not change the basic question: which physical shared
+addresses does one warp instruction request, and which banks serve them?
+
+A minimal four-bank analogy makes the XOR intent visible. Four lanes reading
+logical `(row, col=0)` from a row-major 4-by-4 array request word addresses
+0, 4, 8, and 12, which all map to bank 0 modulo four. With the toy mapping
+`physical_col = col XOR row`, those logical values live at words 0, 5, 10,
+and 15 and reach banks 0, 1, 2, and 3. Store and load both apply the same
+mapping, so the logical matrix is unchanged. FA1 uses a more specific
+padding/XOR-derived layout matched to its `ldsm`/`ldsmt` fragment pattern; the
+toy formula is explanatory rather than a literal reconstruction.
+
 ##### 5. Shared-to-register fragment formation
 
 After shared stores become visible, Q/K use `ldsm`-style loads and V uses a
@@ -1203,6 +1232,40 @@ this K/V outer step. K fragments are likewise reused by the QK operations. For
 $D=64$, QK consumes four dependent $K=16$ MMA chunks. If actual $d=40$, the
 last 24 compiled columns are predicated zeros; this is still the fixed $D=64$
 instruction path, not a special $D=40$ reduction.
+
+For the running $B_c=D=128$ BF16 case, one K row is 256 bytes, or sixteen
+16-byte global-load chunks. One 128-thread load round covers eight rows; sixteen
+rounds collectively fetch the 32 KiB K tile. Each chunk first occupies its
+thread's transit/fetch registers, is committed to a swizzled shared address,
+and is later loaded into a different per-thread MMA fragment mapping. The
+complete current tile exists only collectively across the CTA's private
+register fragments.
+
+The default shared-K/V path has this exact lifetime interpretation:
+
+```text
+global K and V -> separate fetch registers
+V -> shared K/V region -> all frag_v registers
+barrier
+K -> the same shared K/V addresses -> all frag_k registers
+barrier / completed K fragment loads
+the same shared addresses -> partial-O reduction scratch
+```
+
+Thus “K overwrites V” does mean that V has first been read from shared memory
+into registers and its shared addresses are then reused by K. After K is also
+resident in fragments, both `frag_k` and `frag_v` remain register-resident for
+the current K/V outer step even though their former shared region is available
+for `smem_o`.
+
+The score/probability path should not be added to shared-memory accounting as
+another full $B_r\times B_c$ tile. QK creates $S$ in distributed FP32
+`acc_p`/softmax register state. Row max and sum use register reductions plus a
+small shared scratch for cross-warp partials. Softmax then packs $P$ into
+FP16/BF16 `frag_p` registers consumed directly by PV. Only the optional
+`Return_softmax` path writes those values to global memory. PV produces FP32
+`acc_o` registers; the four warp-local partial outputs then use `smem_o` for
+the fixed CTA-local combine.
 
 ##### 6. Software pipeline, synchronization, and reuse
 
