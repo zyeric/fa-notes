@@ -1220,24 +1220,24 @@
       <div class="kicker">Is each P tile normalized before PV? · direct answer: no</div>
       <div class="content vcenter">
         <div class="timeline" style="--steps:3">
-          <div class="time-item"><strong>1 · before PV</strong><span>merge max<br>m′=max(m,m_tile)<br>P̃=exp(S_tile−m′)</span></div>
-          <div class="time-item"><strong>2 · PV</strong><span>no denominator division<br>C_tile=P̃V_tile</span></div>
+          <div class="time-item"><strong>1 · choose coordinates</strong><span>m′=max(m,m_tile)<br>P̃_tile=exp(S_tile−m′)</span></div>
+          <div class="time-item"><strong>2 · PV</strong><span>P̃ is not normalized P<br>C_tile=P̃_tile V_tile</span></div>
           <div class="time-item"><strong>3 · after PV</strong><span>merge old numerator/sum<br>then divide by ℓ′</span></div>
         </div>
         <div class="grid-2">
           <div class="card green-edge">
-            <h3>Mathematical (m,ℓ,u) view</h3>
-            <span class="equation">α = exp(m − m′)</span>
-            <span class="equation">u′ = αu + P̃V<sub>tile</sub></span>
-            <span class="equation">ℓ′ = αℓ + ΣP̃</span>
-            <span class="equation">O′ = u′ / ℓ′</span>
+            <h3>What exactly is P̃?</h3>
+            <span class="equation">P̃<sub>tile,j</sub> = exp(S<sub>tile,j</sub>−m′)</span>
+            <p class="small"><code>P̃_tile</code> 只包含当前 tile 的 <strong>unnormalized exponential weights</strong>：每项非负，但 row sum 通常不等于 1。它不是最终 probability tile，也不会写回旧 P。</p>
+            <span class="equation">α=exp(m−m′)<br>u′=αu+P̃<sub>tile</sub>V<sub>tile</sub><br>ℓ′=αℓ+ΣP̃<sub>tile</sub> · O′=u′/ℓ′</span>
           </div>
           <div class="card cyan-edge">
-            <h3>v1.0.9 stored-state view</h3>
+            <h3>Source uses another legal origin</h3>
+            <span class="equation">LSE<sub>old</sub> = m<sub>old</sub>+log ℓ<sub>old</sub> = log Z<sub>old</sub></span>
             <span class="equation">a = max(LSE<sub>old</sub>, max S<sub>tile</sub>)</span>
             <span class="equation">w<sub>old</sub> = exp(LSE<sub>old</sub>−a)<br>W<sub>tile</sub> = exp(S<sub>tile</sub>−a)</span>
             <span class="equation">O′ = (w<sub>old</sub>O<sub>old</sub> + W<sub>tile</sub>V<sub>tile</sub>)<br>/ (w<sub>old</sub> + ΣW<sub>tile</sub>)</span>
-            <p class="small">source 保存 normalized <code>O_old</code> 与 <code>LSE_old=logΣ_seen exp(S)</code>；不用恢复旧 row max。下一页按实际 memory lifetime 展开。</p>
+            <p class="small"><span class="red"><code>max S_tile=m_tile</code>；因 <code>ℓ_old≥1</code>，<code>LSE_old≥m_old</code>，所以 <code>a</code> 一般不等于 <code>m′</code>。</span> <code>a</code> 只是 common exponent origin，使 <code>w_old≤1</code> 且每个 <code>W_tile≤1</code>。</p>
           </div>
         </div>
         <p class="lead center"><span class="red">不回头更新 old P elements。</span> 新 tile 只触发 aggregate old state 的 rescale；每次得到的是“seen prefix 的 normalized O”，最后一个 tile 后才是完整 attention O。</p>
@@ -1279,7 +1279,7 @@
           <div class="codebox">load <span class="warn">O_old[i], LSE_old[i]</span> from global   # j=0: 0,−∞
 S_ij = Q_i K_j^T                         # acc_p registers
 tile_max[row] = max_key_in_tile(S_ij[row,:])
-a[row] = max(LSE_old[row], tile_max[row])
+a[row] = max(LSE_old[row], tile_max[row]) # common exponent origin
 w_old = exp(LSE_old - a)
 W_tile = exp(S_ij - a)                   # no denominator yet
 C_tile = fixed_combine_4warps(W_tile V_j)
@@ -1292,7 +1292,7 @@ store <span class="hi">O_new[i], LSE_new[i]</span> to global/HBM</div>
         <div>
           <div class="card cyan-edge">
             <h3>“Global” means prefix-global</h3>
-            <p>对每个 S row，先 reduce 当前 128 个 scores 得到 <code>tile_max</code>。<code>W_tile</code> 与 <code>C_tile</code> 都未除 denominator；但 <code>O_new</code> 已除过新的 <code>denom</code>，所以它是截至当前 j 的正确 normalized prefix output。</p>
+            <p>对每个 S row，先 reduce 当前 128 个 scores 得到 <code>tile_max=m_tile</code>。这里 <code>a</code> 是 common exponent origin，不是 <code>max(m_old,m_tile)</code>；<code>W_tile</code> 与 <code>C_tile</code> 都未除 denominator，但 <code>O_new</code> 已除过新的 <code>denom</code>。</p>
           </div>
           <div class="card amber-edge">
             <h3>Prefix state, not global sync</h3>
