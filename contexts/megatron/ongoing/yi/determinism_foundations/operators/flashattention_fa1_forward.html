@@ -1278,7 +1278,8 @@
           <p class="small muted center">one owner CTA · one owned Q tile i · current K/V tile j</p>
           <div class="codebox">load <span class="warn">O_old[i], LSE_old[i]</span> from global   # j=0: 0,−∞
 S_ij = Q_i K_j^T                         # acc_p registers
-a = max(LSE_old, max(S_ij))
+tile_max[row] = max_key_in_tile(S_ij[row,:])
+a[row] = max(LSE_old[row], tile_max[row])
 w_old = exp(LSE_old - a)
 W_tile = exp(S_ij - a)                   # no denominator yet
 C_tile = fixed_combine_4warps(W_tile V_j)
@@ -1291,11 +1292,11 @@ store <span class="hi">O_new[i], LSE_new[i]</span> to global/HBM</div>
         <div>
           <div class="card cyan-edge">
             <h3>“Global” means prefix-global</h3>
-            <p>对这一行来说，<code>O_old/LSE_old</code> 已总结 <code>j=0…j−1</code>；当前 CTA 只把 tile <code>j</code> 合进去。它是数学上覆盖 seen prefix 的状态，不是跨 CTA collective。</p>
+            <p>对每个 S row，先 reduce 当前 128 个 scores 得到 <code>tile_max</code>。<code>W_tile</code> 与 <code>C_tile</code> 都未除 denominator；但 <code>O_new</code> 已除过新的 <code>denom</code>，所以它是截至当前 j 的正确 normalized prefix output。</p>
           </div>
           <div class="card amber-edge">
-            <h3>Why HBM between j steps?</h3>
-            <p>outer loop 固定一个 K/V tile 后要遍历 owner CTA 的许多 Q tiles；所有 Q-row state 无法同时留在 register/shared，所以 v1.0.9 把 normalized partial O 和 LSE round-trip 到 global。</p>
+            <h3>Prefix state, not global sync</h3>
+            <p><code>O_old/LSE_old</code> 已总结此前访问的 K/V tiles；当前 owner CTA 只把 tile j 合进去。outer loop 还要遍历许多 Q tiles，无法让所有 row state 同时驻留片上，所以 normalized partial O/LSE 在 j steps 间 round-trip global/HBM。</p>
           </div>
           <div class="config-strip">
             <span><strong>o_tmp</strong> FP32 [B,H,N,D] ≈ 128 MiB</span>
@@ -1435,14 +1436,15 @@ for K/V tile j:                 <span class="hi"># all 4 warps enter</span>
       <div class="kicker">What R would the running A100 example choose? · binary occupancy is still an input</div>
       <div class="content grid-2 wide-left">
         <div>
-          <div class="equation">waves(R) = B·H·R / (SMs · CTAs/SM)</div>
-          <div class="equation">efficiency(R) = waves / ceil(waves)</div>
-          <ol class="compact">
-            <li>selected D128 binary requests 128 threads and 40.625 KiB dynamic shared/CTA；</li>
-            <li>CUDA occupancy API combines shared, compiled registers/thread and other limits to return <code>ctas_per_sm</code>；</li>
-            <li>v1.0.9 tests <code>R=1…30</code>, finds best wave efficiency, then chooses the smallest R above 95% of that best；</li>
-            <li>smaller acceptable R avoids unnecessary duplicate K/V and state traffic。</li>
-          </ol>
+          <div class="equation">slots = SMs × CTAs/SM<br>work = B×H×R CTAs<br>waves = work / slots</div>
+          <div class="equation">efficiency = work / (ceil(waves) × slots)<br>= waves / ceil(waves)</div>
+          <p class="small"><code>ceil(waves)</code> 是完成整个 grid 至少需要的 CTA waves 数；最后一 wave 往往装不满。这个指标把所有空 slot 平均进去，不是单个 CTA 的执行效率。</p>
+          <div class="grid-3 compact" style="height:auto">
+            <article class="card cyan-edge"><h3>Assume 216 slots</h3><p>108 SMs × 2 CTA/SM</p></article>
+            <article class="card amber-edge"><h3>R=4</h3><p>128 CTAs<br>0.593/1 = <strong>59.3%</strong></p></article>
+            <article class="card green-edge"><h3>R=13</h3><p>416 CTAs<br>1.926/2 = <strong>96.3%</strong></p></article>
+          </div>
+          <p class="small muted">v1.0.9 tests R=1…30 and chooses the smallest R within 95% of the best estimated efficiency，避免为了填 wave 引入更多不必要的 K/V duplicate traffic。</p>
         </div>
         <div class="card">
           <h3>B·H=32, A100=108 SMs</h3>
@@ -1512,7 +1514,41 @@ for K/V tile j:                 <span class="hi"># all 4 warps enter</span>
     </section>
 
     <section class="slide" data-section="Memory movement">
-      <div class="kicker">Collective global load · one 16-byte chunk per active thread per round</div>
+      <div class="kicker">Real K-tile path first · then zoom into each arrow</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="flow">
+            <span class="node violet-node">logical Kⱼ in HBM<br>[128,128] BF16</span><span class="arrow">→</span>
+            <span class="node amber-node">LDG 16B<br>fetch registers</span><span class="arrow">→</span>
+            <span class="node cyan-node">STS to swizzled<br>shared address</span><span class="arrow">→</span>
+            <span class="node green-node">fragment-load<br>MMA registers</span>
+          </div>
+          <table class="dense" style="margin-top:1em">
+            <thead><tr><th>Arrow</th><th>Main performance question</th><th>Shared bank?</th></tr></thead>
+            <tbody>
+              <tr><td>HBM → fetch regs</td><td>global coalescing, cache, 16B vector requests</td><td class="green">No</td></tr>
+              <tr><td>fetch regs → smem</td><td>swizzled shared-store addresses</td><td class="amber">Shared-store pattern matters</td></tr>
+              <tr><td>smem → fragment regs</td><td>ldsm/ldsmt pattern feeding MMA</td><td class="red">Yes: bank conflicts matter</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h3>Swizzle happens at the middle arrow</h3>
+          <ol class="compact">
+            <li>HBM keeps the ordinary logical tensor layout；</li>
+            <li><code>gmem_k.load</code> fetches one logical 16B chunk into lane-private transit registers；</li>
+            <li><code>gmem_k.commit(smem_k)</code> computes the swizzled physical shared address and stores there；</li>
+            <li>CTA barrier proves all shared producers finished；</li>
+            <li><code>smem_k.load</code> uses the matching layout to form MMA operand fragments。</li>
+          </ol>
+          <p class="small amber">下一页只放大第一个箭头：HBM → LDG → fetch registers。那里讨论 global coalescing，不讨论 shared-memory bank conflict。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>global coalescing and shared-bank conflicts belong to different arrows</span><span class="section-name">Memory movement</span></footer>
+    </section>
+
+    <section class="slide" data-section="Memory movement">
+      <div class="kicker">Zoom into arrow 1 · HBM → LDG → fetch registers; no shared bank yet</div>
       <div class="content grid-2">
         <div>
           <h3>One D128 BF16 row = 16 chunks</h3>
@@ -1524,94 +1560,107 @@ for K/V tile j:                 <span class="hi"># all 4 warps enter</span>
           <p class="small"><strong>不是一个 lane 取一整行：</strong>threads 0…15 在同一 load round 里各取 row 0 的一个相邻 16-byte chunk；threads 16…31 同样覆盖 row 1。</p>
         </div>
         <div>
-          <h3>One formula explains every round</h3>
-          <div class="codebox">r = 0..15
-row(t,r) = floor(t/16)+8r · chunk(t,r) = t mod16
+          <h3>What do t, r, row(t,r) mean?</h3>
+          <div class="codebox">t = threadIdx.x = 0..127
+warp = floor(t/32) · lane = t mod32
+r = software load-loop round = 0..15
+row(t,r) = floor(t/16)+8r
+chunk(t,r) = t mod16
 
 t0   -> rows 0,8,…,120   · chunk 0
 t15  -> rows 0,8,…,120   · chunk 15
 t16  -> rows 1,9,…,121   · chunk 0
 t127 -> rows 7,15,…,127  · chunk 15</div>
           <ul class="compact">
-            <li>128 threads/round × 16 bytes = 2 KiB = 8 complete rows；</li>
+            <li>一轮中 16 threads × 16B = 256B，正好合作读完一行 128 BF16；</li>
+            <li>CTA 的 128 threads 同轮覆盖 128/16 = 8 行，也就是 2 KiB；</li>
             <li>Q [16,128] needs 2 rounds；K and V [128,128] each need 16 rounds；</li>
-            <li>tail/varlen predicates may disable a request, but do not change the ownership formula。</li>
+            <li>这一页尚未访问 shared memory；相关性能词是 global coalescing/L1/L2/HBM，不是 bank conflict。</li>
           </ul>
         </div>
       </div>
-      <footer class="footer"><span>thread id chooses a chunk; the repeated round chooses the next group of eight rows</span><span class="section-name">Memory movement</span></footer>
-    </section>
-
-    <section class="slide" data-section="Memory movement">
-      <div class="kicker">Real K-tile path · swizzle happens while storing into shared memory</div>
-      <div class="content grid-2 wide-left">
-        <div>
-          <div class="flow">
-            <span class="node violet-node">logical Kⱼ in HBM<br>[128,128] BF16</span><span class="arrow">→</span>
-            <span class="node amber-node">LDG 16B<br>fetch registers</span><span class="arrow">→</span>
-            <span class="node cyan-node">STS to swizzled<br>shared address</span><span class="arrow">→</span>
-            <span class="node green-node">fragment-load<br>lane registers</span>
-          </div>
-          <table class="dense" style="margin-top:1em">
-            <thead><tr><th>Step</th><th>What the lane owns</th><th>Address meaning</th></tr></thead>
-            <tbody>
-              <tr><td>LDG</td><td>one 16B transit vector</td><td>ordinary logical/global row chunk</td></tr>
-              <tr><td>shared store</td><td>same values leaving fetch regs</td><td>helper computes padded/XOR-swizzled physical slot</td></tr>
-              <tr><td>fragment load</td><td>several packed operand values</td><td>matching layout maps logical values back into MMA fragments</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="card">
-          <h3>Swizzle is not a later rearrangement pass</h3>
-          <ol class="compact">
-            <li>HBM keeps the normal logical tensor layout；</li>
-            <li><code>gmem_k.load</code> puts this thread's chunk in private fetch registers；</li>
-            <li><code>gmem_k.commit(smem_k)</code> computes the swizzled shared address and stores there immediately；</li>
-            <li>CTA barrier proves all producers finished；</li>
-            <li><code>smem_k.load</code>/<code>ldsm</code>-style code uses the matching address rule to form compute fragments。</li>
-          </ol>
-          <p class="small amber">所以可以理解成“从 HBM 搬进 smem 时已经按 swizzle 摆好”。logical value 没变，只有 shared physical slot 改了。</p>
-          <p class="small">fetch registers 与 fragment registers 是不同 lifetime/布局的角色；没有任何一个 thread 持有完整 K row 或完整 tile。</p>
-        </div>
-      </div>
-      <footer class="footer"><span>logical global layout → swizzled shared placement → MMA-specific distributed fragments</span><span class="section-name">Memory movement</span></footer>
+      <footer class="footer"><span>t chooses one chunk within an eight-row group; r advances to the next eight rows</span><span class="section-name">Memory movement</span></footer>
     </section>
 
     <section class="slide" data-section="Warp execution">
-      <div class="kicker">Fragment load and MMA · one warp instruction consumes distributed lane registers</div>
+      <div class="kicker">Register versus fragment · storage versus a distributed MMA role</div>
       <div class="content grid-2">
         <div>
           <div class="flow">
-            <span class="node cyan-node">swizzled smem</span><span class="arrow">→</span>
-            <span class="node amber-node">ldsm / ldsmt-style<br>warp instruction</span><span class="arrow">→</span>
-            <span class="node violet-node">A/B fragments across<br>32 lane-private registers</span>
+            <span class="node violet-node">LDG</span><span class="arrow">→</span>
+            <span class="node amber-node">fetch registers<br>transit role</span><span class="arrow">→</span>
+            <span class="node cyan-node">shared memory</span>
           </div>
           <div class="flow">
-            <span class="node violet-node">A registers<br>+ B registers</span><span class="arrow">→</span>
+            <span class="node cyan-node">shared memory</span><span class="arrow">→</span>
+            <span class="node amber-node">ldsm / ldsmt</span><span class="arrow">→</span>
+            <span class="node violet-node">fragment registers<br>MMA operand role</span>
+          </div>
+          <div class="flow">
+            <span class="node violet-node">A/B fragment tuples<br>across 32 lanes</span><span class="arrow">→</span>
             <span class="node green-node">mma.sync<br>warp-wide Tensor Core op</span><span class="arrow">→</span>
             <span class="node amber-node">FP32 accumulator<br>registers per lane</span>
           </div>
-          <p class="small muted center">一条 <code>mma.sync</code> 类似一条低层 warp instruction，但它的完整矩阵 operand/result 分散在 32 个 lanes 的 register tuples 中。</p>
         </div>
-        <div class="card">
-          <h3>Registers are the handoff point to compute</h3>
-          <table class="dense">
-            <thead><tr><th>Register state</th><th>Consumer / purpose</th></tr></thead>
-            <tbody>
-              <tr><td>Q/K or P/V operand fragments</td><td>Tensor Core MMA input</td></tr>
-              <tr><td><code>acc_p</code> FP32 fragments</td><td>QK result S; CUDA/SFU instructions do mask, max, exp, sum</td></tr>
-              <tr><td><code>frag_p</code> packed BF16/FP16</td><td>PV MMA input</td></tr>
-              <tr><td><code>acc_o</code> FP32 fragments</td><td>PV partial output; later stored to shared for four-warp combine</td></tr>
-            </tbody>
-          </table>
+        <div>
+          <div class="card cyan-edge">
+            <h3>Register is physical storage</h3>
+            <p>每个 lane/thread 的 register 都在 SM register file 中，lane-private。fetch、pointer、predicate、fragment、accumulator 只是不同 values/lifetimes；GPU 没有一块独立的“fragment memory”。</p>
+          </div>
+          <div class="card violet-edge">
+            <h3>Fragment is a logical contract</h3>
+            <p>某条 MMA 规定 32 lanes 各自要在若干 registers 中提供哪些 A/B elements，并在哪些 FP32 registers 接收 C/D elements。所有 lane tuples 合起来才是一块矩阵 fragment；单 lane 的 elements 不保证在原矩阵中形成完整或连续的一行/列。</p>
+          </div>
+          <div class="card amber-edge">
+            <h3>Warp instruction ≠ one physical Tensor Core</h3>
+            <p><code>mma.sync</code> 由整个 warp 的 32 lanes 一致执行。A100 每个 SM 有 <strong>4 个 third-generation Tensor Cores</strong>，合计每 clock 1024 dense FP16/FP32 FMAs（BF16 同速）；不应把“一条 logical MMA”建模成固定绑定一个 Tensor Core。</p>
+          </div>
           <ul class="compact">
-            <li>lane/thread 不是“矩阵的一行”；它只持有硬件 mapping 分给它的 fragment elements；</li>
-            <li>lanes 不能直接任意寻址彼此的 registers；warp shuffle、shared memory 或规定的 collective instruction 负责交流；</li>
-            <li>Tensor Cores 做 warp-level matrix multiply；CUDA cores/SFUs 仍执行地址、mask、max/exp/sum、scale 等 scalar/vector instructions。</li>
+            <li>Tensor Cores 做 warp-level matrix multiply；CUDA cores/SFUs 做地址、mask、max/exp/sum、scale；</li>
+            <li>lane 不能任意寻址别的 lane registers；collective instruction、shuffle 或 shared memory 负责协作。</li>
           </ul>
         </div>
       </div>
-      <footer class="footer"><span>shared memory organizes operands; lane registers are the explicit interface to MMA and scalar math</span><span class="section-name">Warp execution</span></footer>
+      <footer class="footer"><span>fragment describes how lane-private registers collectively represent one matrix operand or result</span><span class="section-name">Warp execution</span></footer>
+    </section>
+
+    <section class="slide" data-section="Warp execution">
+      <div class="kicker">Concrete SM80 fragment · it is neither one full row nor one full column per lane</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="equation">mma.sync.aligned.m16n8k16.row.col<br>.f32.bf16.bf16.f32</div>
+          <div class="grid-3 compact" style="height:auto">
+            <article class="card cyan-edge"><h3>A</h3><p>16×16 · row-major<br>8 BF16/lane<br>4 packed 32b regs</p></article>
+            <article class="card violet-edge"><h3>B</h3><p>16×8 · col-major<br>4 BF16/lane<br>2 packed 32b regs</p></article>
+            <article class="card amber-edge"><h3>C/D</h3><p>16×8<br>4 FP32/lane<br>4 accumulator regs</p></article>
+          </div>
+          <p class="small"><code>group = lane_id/4</code>，<code>thread_in_group = lane_id%4</code>。硬件文档用这两个值定义每个 register element 对应的 matrix coordinate。</p>
+          <table class="dense">
+            <thead><tr><th>lane 0 fragment</th><th>logical coordinates held by its registers</th></tr></thead>
+            <tbody>
+              <tr><td>A elements</td><td>(0,0),(0,1),(8,0),(8,1),(0,8),(0,9),(8,8),(8,9)</td></tr>
+              <tr><td>B elements</td><td>(0,0),(1,0),(8,0),(9,0)</td></tr>
+              <tr><td>C/D elements</td><td>(0,0),(0,1),(8,0),(8,1)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <div class="card green-edge">
+            <h3>Interpret B as Kᵀ in QK</h3>
+            <p><code>A=Q [query,k]</code>，<code>B=Kᵀ [k,key]</code>。因此上表 lane 0 的 B fragment 对应 original K 的 <code>K[key=0, d={0,1,8,9}]</code>：只是同一 K row 的几个小 pairs，不是完整 row。</p>
+          </div>
+          <div class="card cyan-edge">
+            <h3>Does MMA take a transpose flag?</h3>
+            <p>不是 runtime boolean。PTX opcode 的 <code>.row.col</code> qualifiers 已规定 A/B 的 logical layout；shared layout 与 <code>ldsm/ldsmt</code>-style load 必须把 values 装进匹配的 register slots。其他 opcode/shape 可以有不同 layout contract。</p>
+          </div>
+          <div class="card amber-edge">
+            <h3>Why Kᵀ need not exist in HBM</h3>
+            <p>K 在 HBM 仍按 <code>[key,d]</code> 保存。把它作为 column-major B 来解释，并在 shared→register 路径形成正确 B fragment，就能计算 <code>QKᵀ</code>，无需先 materialize 一个 global transposed tensor。</p>
+          </div>
+          <p class="tiny muted">Concrete mapping: NVIDIA PTX ISA 7.0, “Matrix Fragments for mma.m16n8k16 with floating point type”.</p>
+        </div>
+      </div>
+      <footer class="footer"><span>the opcode defines a distributed coordinate map; no lane owns the whole operand tile</span><span class="section-name">Warp execution</span></footer>
     </section>
 
     <section class="slide" data-section="Shared-memory layout">
@@ -2284,6 +2333,10 @@ acc = MMA(Q[112:128],K[112:128],acc)</div>
             <a href="https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/gpu-execution-model.md">GPU execution model</a>
             ·
             <a href="https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/gpu-memory-hierarchy.md">GPU memory hierarchy</a>
+            ·
+            <a href="https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/nvidia-ampere-architecture-whitepaper.pdf">A100 whitepaper</a>
+            ·
+            <a href="https://docs.nvidia.com/cuda/archive/11.0/parallel-thread-execution/index.html#matrix-fragments-for-mma-m16n8k16-with-floating-point-type">PTX m16n8k16 fragments</a>
           </p>
         </div>
         <div class="card amber-edge compact">

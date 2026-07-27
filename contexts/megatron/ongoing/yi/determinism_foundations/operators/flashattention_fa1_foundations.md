@@ -29,7 +29,11 @@ Pinned evidence:
   arXiv:2205.14135v2](https://arxiv.org/abs/2205.14135v2);
 - historical FA1 implementation:
   [Dao-AILab/flash-attention v1.0.9,
-  commit `6d48e14a6c2f551db96f0badc658a6279a929df3`](https://github.com/Dao-AILab/flash-attention/tree/6d48e14a6c2f551db96f0badc658a6279a929df3).
+  commit `6d48e14a6c2f551db96f0badc658a6279a929df3`](https://github.com/Dao-AILab/flash-attention/tree/6d48e14a6c2f551db96f0badc658a6279a929df3);
+- hardware/ISA references:
+  [NVIDIA A100 Tensor Core GPU Architecture whitepaper](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/nvidia-ampere-architecture-whitepaper.pdf)
+  and
+  [CUDA 11.0 PTX ISA: `mma.m16n8k16` fragments and `mma.sync`](https://docs.nvidia.com/cuda/archive/11.0/parallel-thread-execution/index.html#matrix-fragments-for-mma-m16n8k16-with-floating-point-type).
 
 The paper and the implementation are separate evidence. The paper proves that
 the tiled algorithm computes the same mathematical attention function. The
@@ -431,7 +435,8 @@ For current K/V tile $j$, that owner:
 loads O_old[i] and LSE_old[i] from global memory
                                                     # first j means O=0,LSE=-inf
 computes current S_ij in acc_p registers
-chooses a = max(LSE_old, max(S_ij)) as a common exponent origin
+reduces each current S_ij row to tile_max[row]
+chooses a[row] = max(LSE_old[row], tile_max[row])
 forms old_weight = exp(LSE_old - a)
 forms P_tilde = exp(S_ij - a) in registers            # no denominator yet
 computes C_tile = P_tilde V_j as four warp partials
@@ -441,6 +446,13 @@ O_new = (old_weight O_old + C_tile) / denom
 LSE_new = a + log(denom)
 stores O_new[i] and LSE_new[i] back to global memory
 ```
+
+Thus the current-tile weights `P_tilde` and current numerator `C_tile` are
+not normalized by the new denominator. After the CTA combines the four PV
+partials, however, `O_new` divides the old-plus-current numerator by
+`denom`. It is already the exact normalized attention output over the K/V
+tiles visited so far. It becomes the full attention output only after the
+last K/V tile.
 
 Here "global" means that `O_old/LSE_old` summarize every key position already
 seen in the row prefix $0,\ldots,j-1$. It does not mean that all 64 K/V tiles
@@ -682,6 +694,32 @@ It chooses the smallest split count within 95% of the best estimated wave
 efficiency. The variable does not reserve $R$ physical SMs for one attention
 matrix; it creates $R$ independently schedulable CTA work units, which the GPU
 may place on any SM.
+
+More explicitly, define:
+
+$$
+\text{slots}=\text{SMs}\times\text{active CTAs/SM},\qquad
+\text{work}=BHR,\qquad
+\text{waves}=\frac{\text{work}}{\text{slots}}.
+$$
+
+Completing the grid needs at least $\lceil\text{waves}\rceil$ CTA waves. The
+last wave can be only partly full, so the source estimates average slot
+utilization as:
+
+$$
+\text{efficiency}
+=\frac{\text{work}}
+       {\lceil\text{waves}\rceil\text{slots}}
+=\frac{\text{waves}}{\lceil\text{waves}\rceil}.
+$$
+
+This is a grid-shape utilization estimate, not the execution efficiency of one
+CTA. For example, if occupancy returns 2 CTAs/SM on an A100, there are
+$108\times2=216$ slots per wave. With $B H=32$, $R=4$ creates 128 CTAs:
+`waves=0.593`, so estimated efficiency is 59.3%. $R=13$ creates 416 CTAs:
+`waves=1.926`, requiring two waves and yielding $1.926/2=96.3\%$ estimated
+efficiency.
 
 For the running $B\cdot H=32$ example on an A100 with 108 SMs, the exact
 source heuristic gives the following conditional results when testing
@@ -1167,7 +1205,11 @@ such rows in one load round. Larger $B_c$ uses several rounds per thread.
 For the running $D=128$ BF16 example, one row is 256 bytes and therefore has
 sixteen 16-byte chunks. In one round, threads 0--15 fetch chunks 0--15 of row
 0, threads 16--31 fetch row 1, and so on through threads 112--127 for row 7.
-For K/V load round $r=0,\ldots,15$:
+Here $t=\texttt{threadIdx.x}\in[0,127]$ is one CTA thread identity; its warp
+is $\lfloor t/32\rfloor$ and its warp-relative lane is $t\bmod32$. The
+variable $r$ is the software global-load loop iteration, `row(t,r)` is the
+logical K/V tile row fetched by thread $t$ in round $r$, and `chunk(t,r)` is
+that row's 16-byte chunk index. For K/V load round $r=0,\ldots,15$:
 
 ```text
 row(t,r)   = floor(t / 16) + 8r
@@ -1188,6 +1230,17 @@ This layout is designed for coalesced transactions, while the row/head strides,
 alignment, varlen tail, and $d<D$ predicate determine which requests are
 active. The source establishes the address pattern; final transaction counts
 remain a profiler/SASS question.
+
+This step is only the first path arrow:
+
+```text
+logical K/V in HBM -> LDG -> lane-private fetch registers
+```
+
+No shared-memory bank is involved yet. Its performance vocabulary is global
+coalescing, cache service, and HBM/global transactions. Bank conflicts become
+relevant only when lanes store to or load from shared-memory physical
+addresses, especially on the later shared-to-fragment path.
 
 ##### 2. L1 and L2 are opportunities, not owned state
 
@@ -1407,6 +1460,14 @@ swizzled shared tile
   -> FP32 accumulator fragments distributed over lane-private registers
 ```
 
+Register and fragment are not two physical storage tiers. A register is
+lane-private storage allocated from the SM register file. "Fetch register,"
+"fragment register," and "accumulator register" name different data roles,
+layouts, and lifetimes in that same physical register system. A fragment is
+the logical contract saying which register elements across all 32 lanes
+collectively represent an MMA operand or result; there is no separate
+fragment memory.
+
 An MMA operand or result is therefore not one matrix row per lane. The complete
 logical matrix fragment exists only across all participating lanes. Q/K or
 P/V fragment registers feed Tensor Core matrix multiplies. QK produces FP32
@@ -1416,6 +1477,50 @@ packs the current weights into `frag_p` registers for PV, whose FP32 result is
 distributed `acc_o`. Lanes cannot arbitrarily address another lane's private
 registers; shuffle instructions, shared memory, or the hardware-defined
 collective instruction mapping provide the required exchange.
+
+`mma.sync` is a warp-wide instruction: all 32 lanes must execute the same MMA
+with the same qualifiers, and their register tuples collectively supply the
+matrices. It should not be modeled as one lane calling a matrix unit, or as
+one logical instruction permanently bound to one physical Tensor Core. The
+A100 SM has four third-generation Tensor Cores, together rated for 1024 dense
+FP16/FP32 FMAs per clock; BF16 runs at the same mixed-precision rate. The SM
+routes/decomposes warp-level MMA work through those Tensor Core pipelines;
+exact issue and latency are microarchitectural/SASS questions beyond the
+logical PTX contract.
+
+For a concrete SM80 BF16 example, PTX defines:
+
+```text
+mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
+```
+
+as one warp computing $D=A B+C$, where $A$ is $16\times16$ row-major, $B$ is
+$16\times8$ column-major, and $C/D$ are $16\times8$. Per lane:
+
+- the A fragment has eight BF16 values packed into four 32-bit registers;
+- the B fragment has four BF16 values packed into two 32-bit registers;
+- the C/D fragment has four FP32 accumulator registers.
+
+Let `group = lane_id >> 2` and `thread_in_group = lane_id % 4`. The PTX ISA
+defines exact coordinate formulas from those values. For lane 0:
+
+| Fragment | Logical coordinates in lane 0 registers |
+| --- | --- |
+| A | `(0,0),(0,1),(8,0),(8,1),(0,8),(0,9),(8,8),(8,9)` |
+| B | `(0,0),(1,0),(8,0),(9,0)` |
+| C/D | `(0,0),(0,1),(8,0),(8,1)` |
+
+Thus one lane's fragment is neither a complete row nor a complete column, and
+need not be one long contiguous slice. In QK, interpret $A=Q[\text{query},k]$
+and $B=K^\top[k,\text{key}]$. Lane 0's example B fragment corresponds to
+original-K values `K[key=0,d={0,1,8,9}]`: several short pairs from one K row
+for this micro-MMA, not the full row.
+
+MMA does not take a runtime transpose boolean. The PTX opcode's `.row.col`
+qualifiers are part of its static layout contract. The shared layout and
+`ldsm`/`ldsmt`-style load path arrange values into the required register
+slots. This lets QK consume K as column-major $K^\top$ without materializing
+a separate transposed K tensor in HBM.
 
 The K/V-shared region is reused in this order:
 
