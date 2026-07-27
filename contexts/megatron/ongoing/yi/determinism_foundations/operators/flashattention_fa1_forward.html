@@ -1663,6 +1663,38 @@ t127 -> rows 7,15,…,127  · chunk 15</div>
       <footer class="footer"><span>the opcode defines a distributed coordinate map; no lane owns the whole operand tile</span><span class="section-name">Warp execution</span></footer>
     </section>
 
+    <section class="slide" data-section="Warp execution">
+      <div class="kicker">Kᵀ in the equation ≠ a transposed K tensor in HBM</div>
+      <div class="content grid-2">
+        <div>
+          <span class="equation">Q [Bᵣ,D] @ Kᵀ [D,B꜀]<br>P [Bᵣ,B꜀] @ V [B꜀,D]</span>
+          <table class="dense" style="margin-top:1em">
+            <thead><tr><th></th><th>K path</th><th>V path</th></tr></thead>
+            <tbody>
+              <tr><td>math B operand</td><td>Kᵀ [D,B꜀]</td><td>V [B꜀,D]</td></tr>
+              <tr><td>HBM tensor</td><td>row-major K [key,D]</td><td>row-major V [key,D]</td></tr>
+              <tr><td>global fetch</td><td>16B chunks along D</td><td>16B chunks along D</td></tr>
+              <tr><td>shared → fragment</td><td><code>ldsm</code>-style</td><td><code>ldsmt</code>-style</td></tr>
+            </tbody>
+          </table>
+          <p class="lead center"><span class="green">HBM load pattern is similar</span><br>fragment formation is different。</p>
+        </div>
+        <div>
+          <div class="card green-edge">
+            <h3>K · mathematical transpose already lines up</h3>
+            <span class="equation">row-major K bytes<br>[k00,k01,k10,k11]<br>= column-major Kᵀ bytes</span>
+            <p class="small">原始 K 的一行就是 Kᵀ 的一列，所以 QK 可以把普通 row-major K 解释为 column-major B operand；不需要 materialize global Kᵀ。</p>
+          </div>
+          <div class="card amber-edge">
+            <h3>V · no mathematical transpose</h3>
+            <span class="equation">row-major V: [v00,v01,v10,v11]<br>column-major V: [v00,v10,v01,v11]</span>
+            <p class="small"><code>ldsmt</code> 在 shared→lane-register fragment 这一步做局部 layout conversion，使 V 满足 MMA B-operand contract；它不表示公式变成 PVᵀ，也不产生 HBM Vᵀ。</p>
+          </div>
+        </div>
+      </div>
+      <footer class="footer"><span>mathematical orientation, HBM layout, and fragment-load orientation are three different layers</span><span class="section-name">Warp execution</span></footer>
+    </section>
+
     <section class="slide" data-section="Shared-memory layout">
       <div class="kicker">Shared-memory address → bank · flatten first, then choose one of 32 banks</div>
       <div class="content grid-2">

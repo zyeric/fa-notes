@@ -1460,6 +1460,42 @@ transposed `ldsmt`-style path to construct each thread's fragment registers.
 No thread holds the whole tile; the warp's distributed fragments collectively
 describe the MMA operands.
 
+The word "transpose" must be qualified by layer here. For logical
+$K,V\in\mathbb{R}^{B_c\times D}$ stored row-major, FA1's global-load stage
+uses the same kind of coalesced row chunks for both operands. It does not
+materialize either $K^\top$ or $V^\top$ in HBM. The difference appears when
+the shared tile is converted into the B-operand fragment required by the two
+MMA operations:
+
+| Operand | Mathematical B operand | HBM/global fetch | Shared-to-fragment path |
+| --- | --- | --- | --- |
+| K | $K^\top[D,B_c]$ in $QK^\top$ | row-major K `[key,D]`, vector loads along D | `ldsm`-style |
+| V | $V[B_c,D]$ in $PV$ | row-major V `[key,D]`, vector loads along D | transposed `ldsmt`-style |
+
+The K case works without a physical global transpose because the contiguous
+bytes of one row-major K row are exactly one contiguous column of
+column-major $K^\top$. A $2\times2$ flattened example makes the equivalence
+visible:
+
+```text
+row-major K bytes:            [k00, k01, k10, k11]
+column-major K^T bytes:       [k00, k01, k10, k11]
+```
+
+V has no mathematical transpose in $PV$. Its row-major bytes do not directly
+have the column-major B-operand ordering:
+
+```text
+row-major V bytes:            [v00, v01, v10, v11]
+column-major V bytes:         [v00, v10, v01, v11]
+```
+
+The `t` in the V `ldsmt`-style path describes this local
+shared-to-distributed-register layout conversion. It does **not** mean that
+the high-level operator computes $PV^\top$, nor that FA1 writes a materialized
+$V^\top$ tensor to HBM. Thus "K is transposed in the equation" and "V uses a
+transposed fragment load" are both true, but they refer to different layers.
+
 This is the register-level contract around Tensor Core work:
 
 ```text
