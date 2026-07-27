@@ -1514,6 +1514,27 @@ the logical contract saying which register elements across all 32 lanes
 collectively represent an MMA operand or result; there is no separate
 fragment memory.
 
+The lane-private rule is logical, not a claim that hardware gives each lane a
+contiguous private SRAM array. A useful SASS-level model is `Rk[lane]`: when
+one warp instruction names `R8`, every active lane accesses its own `R8`
+value. The backing storage is one SM-level banked/partitioned register file;
+adjacent logical register numbers do not prove adjacent physical cells. The
+compiler maps source values to machine register numbers, keeps simultaneously
+live values distinct, and may reuse the same numbers after an earlier value's
+lifetime ends. See the reusable
+[`gpu-memory-hierarchy.md` register model](https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/gpu-memory-hierarchy.md#registers)
+for the generic hardware account.
+
+In this FA1 path, QK writes distributed FP32 `acc_p` values, and ordinary
+CUDA-core/SFU instructions subsequently read each lane's own accumulator
+registers for mask, max, exponential, and sum work. Cross-lane or cross-warp
+row reductions still need shuffle/shared communication. The resulting
+softmax-derived weights are converted and packed into FP16/BF16 `frag_p`
+operand-register tuples for PV. `acc_p -> frag_p` is therefore a
+dtype/layout/role transition inside the register system, not a copy from
+"accumulator memory" into a separate "fragment memory"; physical register
+reuse remains a compiler/liveness decision.
+
 An MMA operand or result is therefore not one matrix row per lane. The complete
 logical matrix fragment exists only across all participating lanes. Q/K or
 P/V fragment registers feed Tensor Core matrix multiplies. QK produces FP32

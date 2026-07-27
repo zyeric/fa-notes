@@ -1625,6 +1625,47 @@ t127 -> rows 7,15,…,127  · chunk 15</div>
     </section>
 
     <section class="slide" data-section="Warp execution">
+      <div class="kicker">Register space · a per-lane logical namespace over one SM-level physical file</div>
+      <div class="content grid-2">
+        <div>
+          <p class="small muted center">one warp instruction names the same register index for all active lanes</p>
+          <table class="dense">
+            <thead><tr><th></th><th>R0</th><th>R1</th><th>…</th><th>R8</th><th>…</th><th>Rn</th></tr></thead>
+            <tbody>
+              <tr><td>lane 0</td><td>R0₀</td><td>R1₀</td><td>…</td><td class="cyan">R8₀</td><td>…</td><td>Rn₀</td></tr>
+              <tr><td>lane 1</td><td>R0₁</td><td>R1₁</td><td>…</td><td class="cyan">R8₁</td><td>…</td><td>Rn₁</td></tr>
+              <tr><td>…</td><td>…</td><td>…</td><td>…</td><td>…</td><td>…</td><td>…</td></tr>
+              <tr><td>lane 31</td><td>R0₃₁</td><td>R1₃₁</td><td>…</td><td class="cyan">R8₃₁</td><td>…</td><td>Rn₃₁</td></tr>
+            </tbody>
+          </table>
+          <div class="flow" style="margin-top:1em">
+            <span class="node">SASS names R8</span><span class="arrow">→</span>
+            <span class="node cyan-node">each active lane uses<br>its private R8 value</span>
+          </div>
+          <p class="small amber"><strong>这张表是 namespace，不是物理 floorplan：</strong>不能由它推断每个 lane 有一段独立连续 SRAM，或 R8/R9 位于相邻 physical cells。底层是 SM 级 banked/partitioned register file。</p>
+        </div>
+        <div>
+          <div class="card violet-edge">
+            <h3>Compiler assigns and reuses numbers</h3>
+            <p>source variable name 在 SASS 前已消失。pointer 可占多个 32-bit registers，两个 BF16 可 packed 在一个 register，fragment 则跨每 lane 的一组 registers。</p>
+            <div class="timeline" style="--steps:3">
+              <div class="time-item"><strong>QK</strong><span>FP32 acc_p<br>live</span></div>
+              <div class="time-item"><strong>Softmax</strong><span>read/transform<br>same lane values</span></div>
+              <div class="time-item"><strong>PV</strong><span>BF16/FP16<br>frag_p live</span></div>
+            </div>
+          </div>
+          <div class="card green-edge">
+            <h3>acc_p → frag_p is a role/layout transition</h3>
+            <p>Tensor Core 写 FP32 <code>acc_p</code>；CUDA-core/SFU instructions 消费这些 lane-private registers；结果 convert/pack 成 PV 的 <code>frag_p</code> operand tuple。它们仍在同一 register system。</p>
+            <p class="small">同时 live 的 values 必须占不同 storage；旧 value 死亡后，compiler 才可能复用其 machine-register numbers。源码变量名本身不能证明是否复用。</p>
+          </div>
+          <p class="tiny muted"><a href="https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/gpu-memory-hierarchy.md#registers">Reusable physical register model in gpu-hardware-notes</a></p>
+        </div>
+      </div>
+      <footer class="footer"><span>thread-private semantics do not imply a physically contiguous per-lane SRAM allocation</span><span class="section-name">Warp execution</span></footer>
+    </section>
+
+    <section class="slide" data-section="Warp execution">
       <div class="kicker">Concrete SM80 fragment · it is neither one full row nor one full column per lane</div>
       <div class="content grid-2 wide-left">
         <div>
