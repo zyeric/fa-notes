@@ -1166,12 +1166,17 @@
       <div class="kicker">The catch · softmax couples all K/V tiles in one row</div>
       <div class="content grid-2">
         <div>
-          <div class="matrix cells-4">
-            <span class="cell c0">scores<br>j=0</span><span class="cell c1">scores<br>j=1</span><span class="cell c2">scores<br>j=2</span><span class="cell c3">scores<br>j=3…63</span>
-          </div>
           <div class="flow">
-            <span class="node">tile-local max/sum</span><span class="arrow">?</span>
-            <span class="node red-node">one row-wide softmax</span>
+            <span class="node cyan-node">K/V tile j=0</span><span class="arrow">→</span>
+            <span class="node">j=1</span><span class="arrow">→</span>
+            <span class="node">…</span><span class="arrow">→</span>
+            <span class="node">j=62</span><span class="arrow">→</span>
+            <span class="node amber-node">j=63</span>
+          </div>
+          <p class="small muted center"><strong>64 个 sequential K/V-tile steps</strong>，因为 8192/128=64。这里的 j 是 outer-loop tile index，与 CTA 里的 4 个 warps 无关。</p>
+          <div class="flow">
+            <span class="node">each j produces one<br>Sᵢⱼ [16,128]</span><span class="arrow">→</span>
+            <span class="node red-node">merge one row prefix<br>across all 64 steps</span>
           </div>
           <span class="equation">Pᵢⱼ = exp(Sᵢⱼ) / Σ<sub>t=0…8191</sub> exp(Sᵢₜ)</span>
         </div>
@@ -1183,6 +1188,7 @@
             <li>后面的 tile 可能出现更大的 row max；</li>
             <li>早先的 exponential sum 与 output numerator 必须按新 max 重标定。</li>
           </ul>
+          <p class="small"><strong>三个不要混：</strong>64 是 K/V tiles/head；4 是同一 CTA 内协作的 warps；每个当前 score tile 有 16×128=2048 个 scores。</p>
           <p class="lead"><span class="cyan">online softmax</span> 就是让 row state 可以一块一块地精确合并。</p>
         </div>
       </div>
@@ -1228,14 +1234,15 @@
           </div>
           <div class="card cyan-edge">
             <h3>v1.0.9 stored-state view</h3>
-            <span class="equation">old numerator in new scale<br>= exp(LSE<sub>old</sub>−m′) · O<sub>old</sub></span>
-            <span class="equation">O′ = (old scaled numerator + C<sub>tile</sub>) / ℓ′</span>
-            <p class="small">source 跨 K/V outer steps 保存 normalized partial <code>O_old</code> 和 <code>LSE_old=m+logℓ</code>，而不是直接保存 u。</p>
+            <span class="equation">a = max(LSE<sub>old</sub>, max S<sub>tile</sub>)</span>
+            <span class="equation">w<sub>old</sub> = exp(LSE<sub>old</sub>−a)<br>W<sub>tile</sub> = exp(S<sub>tile</sub>−a)</span>
+            <span class="equation">O′ = (w<sub>old</sub>O<sub>old</sub> + W<sub>tile</sub>V<sub>tile</sub>)<br>/ (w<sub>old</sub> + ΣW<sub>tile</sub>)</span>
+            <p class="small">source 保存 normalized <code>O_old</code> 与 <code>LSE_old=logΣ_seen exp(S)</code>；不用恢复旧 row max。下一页按实际 memory lifetime 展开。</p>
           </div>
         </div>
         <p class="lead center"><span class="red">不回头更新 old P elements。</span> 新 tile 只触发 aggregate old state 的 rescale；每次得到的是“seen prefix 的 normalized O”，最后一个 tile 后才是完整 attention O。</p>
       </div>
-      <footer class="footer"><span>m affects P̃ before PV; ℓ normalizes the combined output after PV</span><span class="section-name">Algorithm</span></footer>
+      <footer class="footer"><span>choose one common exponent origin; divide only after current PV joins the old aggregate</span><span class="section-name">Algorithm</span></footer>
     </section>
 
     <section class="slide" data-section="Algorithm">
@@ -1264,26 +1271,75 @@
       <footer class="footer"><span>the invariant survives one tile merge; induction handles all tiles</span><span class="section-name">Algorithm</span></footer>
     </section>
 
-    <section class="slide" data-section="Ownership">
-      <div class="kicker">Before reading the source loop · R creates Q-tile owner lanes</div>
-      <div class="content vcenter">
-        <div class="flow">
-          <span class="node violet-node">R = num_splits</span><span class="arrow">→</span>
-          <span class="node amber-node">r = blockIdx.z<br>0…R−1</span><span class="arrow">→</span>
-          <span class="node cyan-node">owned Q tiles<br>i = r, r+R, r+2R,…</span>
+    <section class="slide" data-section="Algorithm">
+      <div class="kicker">Physical online step · no GPU-global softmax synchronization</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <p class="small muted center">one owner CTA · one owned Q tile i · current K/V tile j</p>
+          <div class="codebox">load <span class="warn">O_old[i], LSE_old[i]</span> from global   # j=0: 0,−∞
+S_ij = Q_i K_j^T                         # acc_p registers
+a = max(LSE_old, max(S_ij))
+w_old = exp(LSE_old - a)
+W_tile = exp(S_ij - a)                   # no denominator yet
+C_tile = fixed_combine_4warps(W_tile V_j)
+denom = w_old + sum(W_tile)
+O_new = (w_old * O_old + C_tile) / denom
+LSE_new = a + log(denom)
+store <span class="hi">O_new[i], LSE_new[i]</span> to global/HBM</div>
+          <p class="lead center"><span class="red">没有先把 64 个 tile 的 m/ℓ/u 做一次 GPU-wide reduce，再回来做 PV。</span></p>
         </div>
-        <div class="grid-3 compact">
-          <article class="card cyan-edge"><h3>Grid identity</h3><p>每个 CTA 的 identity 是 <code>(batch b, head h, split r)</code>；grid shape 是 <code>(B,H,R)</code>。</p></article>
-          <article class="card green-edge"><h3>Unique row owner</h3><p>一个 Q tile index <code>i</code> 只属于满足 <code>i mod R = r</code> 的那个 CTA，所以对应 O rows 不跨 CTA combine。</p></article>
-          <article class="card red-edge"><h3>Not split-K</h3><p>每个 r 仍为自己的 Q rows 顺序访问全部 K/V tiles；R 不拆开同一 row 的 softmax/PV reduction。</p></article>
+        <div>
+          <div class="card cyan-edge">
+            <h3>“Global” means prefix-global</h3>
+            <p>对这一行来说，<code>O_old/LSE_old</code> 已总结 <code>j=0…j−1</code>；当前 CTA 只把 tile <code>j</code> 合进去。它是数学上覆盖 seen prefix 的状态，不是跨 CTA collective。</p>
+          </div>
+          <div class="card amber-edge">
+            <h3>Why HBM between j steps?</h3>
+            <p>outer loop 固定一个 K/V tile 后要遍历 owner CTA 的许多 Q tiles；所有 Q-row state 无法同时留在 register/shared，所以 v1.0.9 把 normalized partial O 和 LSE round-trip 到 global。</p>
+          </div>
+          <div class="config-strip">
+            <span><strong>o_tmp</strong> FP32 [B,H,N,D] ≈ 128 MiB</span>
+            <span><strong>softmax_lse</strong> FP32 [B,H,N] ≈ 1 MiB</span>
+            <span><strong>final j</strong>: O cast/store to requested dtype in HBM</span>
+          </div>
         </div>
-        <div class="config-strip">
-          <span><strong>R=1</strong>: one CTA/head owns all 512 Q tiles</span>
-          <span><strong>R=4</strong>: four CTAs/head own 128 Q tiles each</span>
-        </div>
-        <p class="small muted center">这里先定义符号；后面的 <code>num_splits</code> 页面再解释 host 为什么为了 wave utilization 自动选择某个 R，以及它造成的 K/V duplicate traffic。</p>
       </div>
-      <footer class="footer"><span>R partitions Q ownership by congruence class; r names one owner CTA</span><span class="section-name">Ownership</span></footer>
+      <footer class="footer"><span>same row owner, sequential K/V steps, global-memory persistence—not a grid-wide barrier</span><span class="section-name">Algorithm</span></footer>
+    </section>
+
+    <section class="slide" data-section="Ownership">
+      <div class="kicker">Forward num_splits · split Q ownership, not one row's K reduction</div>
+      <div class="content grid-2">
+        <div>
+          <p class="quote"><code>R=num_splits</code><br><span class="cyan">CTA r owns i=r,r+R,…</span></p>
+          <ul class="compact">
+            <li>grid 是 <code>(B,H,R)</code>，<code>r=blockIdx.z</code> 是 CTA 的 split identity；</li>
+            <li>增加 <code>batch×heads×R</code> 个可调度 CTA；</li>
+            <li>每个 O row 仍只有一个 CTA owner；</li>
+            <li>每个 owner 仍按固定次序扫完全部 K/V tiles，不拆同一 row 的 softmax/PV reduction；</li>
+            <li>代价是不同 CTA 重复读取相同 K/V；</li>
+            <li><code>R=0</code> 让 host heuristic 根据 SM 数、occupancy 与 wave efficiency 选择。</li>
+          </ul>
+          <p class="small amber">下面取 <code>R=4</code> 只为数数：它表示<strong>每个 (batch,head) 有 4 个 CTAs</strong>，不是整个模型只有 4 个；也不声称 A100 一定选 4。</p>
+        </div>
+        <div>
+          <div class="config-strip"><span><strong>B</strong>=1</span><span><strong>H</strong>=32</span><span><strong>N</strong>=8192</span><span><strong>R</strong>=4 (illustrative)</span></div>
+          <span class="equation">T<sub>q</sub> = ceil(N / Bᵣ) = 8192 / 16 = 512 Q tiles/head<br>512 tiles / 4 split owners = 128 Q tiles/CTA</span>
+          <div class="grid-3 compact" style="height:auto">
+            <article class="card cyan-edge"><h3>Whole grid</h3><p><strong>1×32×4</strong><br>= 128 CTAs</p></article>
+            <article class="card amber-edge"><h3>Per CTA</h3><p><strong>128</strong><br>owned Q tiles</p></article>
+            <article class="card violet-edge"><h3>Per (b,h)</h3><p><strong>4 CTAs</strong><br>one for each r</p></article>
+          </div>
+          <div class="flow">
+            <span class="node cyan-node">CTA r=0<br>Q 0,4,…,508</span>
+            <span class="node green-node">CTA r=1<br>Q 1,5,…,509</span>
+            <span class="node amber-node">CTA r=2<br>Q 2,6,…,510</span>
+            <span class="node violet-node">CTA r=3<br>Q 3,7,…,511</span>
+          </div>
+          <p class="small muted center">若不能整除，不同 r 最多相差一个 Q tile。本例正好整除；同一 head 的 4 CTAs 各自遍历全部 64 个 K/V tiles。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>more parallel work ↔ duplicated K/V traffic</span><span class="section-name">Ownership</span></footer>
     </section>
 
     <section class="slide" data-section="Ownership">
@@ -1376,39 +1432,6 @@ for K/V tile j:                 <span class="hi"># all 4 warps enter</span>
     </section>
 
     <section class="slide" data-section="Ownership">
-      <div class="kicker">Forward num_splits · split Q ownership, not one row's K reduction</div>
-      <div class="content grid-2">
-        <div>
-          <p class="quote"><code>R=num_splits</code><br><span class="cyan">CTA r owns i=r,r+R,…</span></p>
-          <ul class="compact">
-            <li>增加 <code>batch×heads×R</code> 个可调度 CTA；</li>
-            <li>每个 O row 仍只有一个 CTA owner；</li>
-            <li>代价是不同 CTA 重复读取相同 K/V；</li>
-            <li><code>R=0</code> 让 host heuristic 根据 SM 数、occupancy 与 wave efficiency 选择。</li>
-          </ul>
-          <p class="small amber">下面取 <code>R=4</code> 只为数数：它表示<strong>每个 (batch,head) 有 4 个 CTAs</strong>，不是整个模型只有 4 个；也不声称 A100 一定选 4。</p>
-        </div>
-        <div>
-          <div class="config-strip"><span><strong>B</strong>=1</span><span><strong>H</strong>=32</span><span><strong>N</strong>=8192</span><span><strong>R</strong>=4 (illustrative)</span></div>
-          <span class="equation">T<sub>q</sub> = ceil(N / Bᵣ) = 8192 / 16 = 512 Q tiles/head<br>512 tiles / 4 split owners = 128 Q tiles/CTA</span>
-          <div class="grid-3 compact" style="height:auto">
-            <article class="card cyan-edge"><h3>Whole grid</h3><p><strong>1×32×4</strong><br>= 128 CTAs</p></article>
-            <article class="card amber-edge"><h3>Per CTA</h3><p><strong>128</strong><br>owned Q tiles</p></article>
-            <article class="card violet-edge"><h3>Per (b,h)</h3><p><strong>4 CTAs</strong><br>one for each r</p></article>
-          </div>
-          <div class="flow">
-            <span class="node cyan-node">CTA r=0<br>Q 0,4,…,508</span>
-            <span class="node green-node">CTA r=1<br>Q 1,5,…,509</span>
-            <span class="node amber-node">CTA r=2<br>Q 2,6,…,510</span>
-            <span class="node violet-node">CTA r=3<br>Q 3,7,…,511</span>
-          </div>
-          <p class="small muted center">若不能整除，不同 r 最多相差一个 Q tile。本例正好整除；同一 head 的 4 CTAs 各自遍历全部 64 个 K/V tiles。</p>
-        </div>
-      </div>
-      <footer class="footer"><span>more parallel work ↔ duplicated K/V traffic</span><span class="section-name">Ownership</span></footer>
-    </section>
-
-    <section class="slide" data-section="Ownership">
       <div class="kicker">What R would the running A100 example choose? · binary occupancy is still an input</div>
       <div class="content grid-2 wide-left">
         <div>
@@ -1486,6 +1509,109 @@ for K/V tile j:                 <span class="hi"># all 4 warps enter</span>
         <p class="lead center" style="margin-top:.8em"><span class="red">SM80 有 cp.async</span>，不代表这份 FA1 source 自动使用它；本路径是普通 LDG → registers → shared store。</p>
       </div>
       <footer class="footer"><span>hardware capability does not prove the selected implementation uses it</span><span class="section-name">Memory movement</span></footer>
+    </section>
+
+    <section class="slide" data-section="Memory movement">
+      <div class="kicker">Collective global load · one 16-byte chunk per active thread per round</div>
+      <div class="content grid-2">
+        <div>
+          <h3>One D128 BF16 row = 16 chunks</h3>
+          <div class="matrix cells-8">
+            <span class="cell c0">chunk 0<br>t0 · 16B</span><span class="cell c0">chunk 1<br>t1</span><span class="cell c0">chunk 2<br>t2</span><span class="cell c0">chunk 3<br>t3</span><span class="cell c0">chunk 4<br>t4</span><span class="cell c0">chunk 5<br>t5</span><span class="cell c0">chunk 6<br>t6</span><span class="cell c0">chunk 7<br>t7</span>
+            <span class="cell c0">chunk 8<br>t8</span><span class="cell c0">chunk 9<br>t9</span><span class="cell c0">chunk 10<br>t10</span><span class="cell c0">chunk 11<br>t11</span><span class="cell c0">chunk 12<br>t12</span><span class="cell c0">chunk 13<br>t13</span><span class="cell c0">chunk 14<br>t14</span><span class="cell c0">chunk 15<br>t15</span>
+          </div>
+          <span class="equation">128 BF16 × 2 bytes = 256 bytes/row<br>16 chunks × 16 bytes = one complete row</span>
+          <p class="small"><strong>不是一个 lane 取一整行：</strong>threads 0…15 在同一 load round 里各取 row 0 的一个相邻 16-byte chunk；threads 16…31 同样覆盖 row 1。</p>
+        </div>
+        <div>
+          <h3>One formula explains every round</h3>
+          <div class="codebox">r = 0..15
+row(t,r) = floor(t/16)+8r · chunk(t,r) = t mod16
+
+t0   -> rows 0,8,…,120   · chunk 0
+t15  -> rows 0,8,…,120   · chunk 15
+t16  -> rows 1,9,…,121   · chunk 0
+t127 -> rows 7,15,…,127  · chunk 15</div>
+          <ul class="compact">
+            <li>128 threads/round × 16 bytes = 2 KiB = 8 complete rows；</li>
+            <li>Q [16,128] needs 2 rounds；K and V [128,128] each need 16 rounds；</li>
+            <li>tail/varlen predicates may disable a request, but do not change the ownership formula。</li>
+          </ul>
+        </div>
+      </div>
+      <footer class="footer"><span>thread id chooses a chunk; the repeated round chooses the next group of eight rows</span><span class="section-name">Memory movement</span></footer>
+    </section>
+
+    <section class="slide" data-section="Memory movement">
+      <div class="kicker">Real K-tile path · swizzle happens while storing into shared memory</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="flow">
+            <span class="node violet-node">logical Kⱼ in HBM<br>[128,128] BF16</span><span class="arrow">→</span>
+            <span class="node amber-node">LDG 16B<br>fetch registers</span><span class="arrow">→</span>
+            <span class="node cyan-node">STS to swizzled<br>shared address</span><span class="arrow">→</span>
+            <span class="node green-node">fragment-load<br>lane registers</span>
+          </div>
+          <table class="dense" style="margin-top:1em">
+            <thead><tr><th>Step</th><th>What the lane owns</th><th>Address meaning</th></tr></thead>
+            <tbody>
+              <tr><td>LDG</td><td>one 16B transit vector</td><td>ordinary logical/global row chunk</td></tr>
+              <tr><td>shared store</td><td>same values leaving fetch regs</td><td>helper computes padded/XOR-swizzled physical slot</td></tr>
+              <tr><td>fragment load</td><td>several packed operand values</td><td>matching layout maps logical values back into MMA fragments</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h3>Swizzle is not a later rearrangement pass</h3>
+          <ol class="compact">
+            <li>HBM keeps the normal logical tensor layout；</li>
+            <li><code>gmem_k.load</code> puts this thread's chunk in private fetch registers；</li>
+            <li><code>gmem_k.commit(smem_k)</code> computes the swizzled shared address and stores there immediately；</li>
+            <li>CTA barrier proves all producers finished；</li>
+            <li><code>smem_k.load</code>/<code>ldsm</code>-style code uses the matching address rule to form compute fragments。</li>
+          </ol>
+          <p class="small amber">所以可以理解成“从 HBM 搬进 smem 时已经按 swizzle 摆好”。logical value 没变，只有 shared physical slot 改了。</p>
+          <p class="small">fetch registers 与 fragment registers 是不同 lifetime/布局的角色；没有任何一个 thread 持有完整 K row 或完整 tile。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>logical global layout → swizzled shared placement → MMA-specific distributed fragments</span><span class="section-name">Memory movement</span></footer>
+    </section>
+
+    <section class="slide" data-section="Warp execution">
+      <div class="kicker">Fragment load and MMA · one warp instruction consumes distributed lane registers</div>
+      <div class="content grid-2">
+        <div>
+          <div class="flow">
+            <span class="node cyan-node">swizzled smem</span><span class="arrow">→</span>
+            <span class="node amber-node">ldsm / ldsmt-style<br>warp instruction</span><span class="arrow">→</span>
+            <span class="node violet-node">A/B fragments across<br>32 lane-private registers</span>
+          </div>
+          <div class="flow">
+            <span class="node violet-node">A registers<br>+ B registers</span><span class="arrow">→</span>
+            <span class="node green-node">mma.sync<br>warp-wide Tensor Core op</span><span class="arrow">→</span>
+            <span class="node amber-node">FP32 accumulator<br>registers per lane</span>
+          </div>
+          <p class="small muted center">一条 <code>mma.sync</code> 类似一条低层 warp instruction，但它的完整矩阵 operand/result 分散在 32 个 lanes 的 register tuples 中。</p>
+        </div>
+        <div class="card">
+          <h3>Registers are the handoff point to compute</h3>
+          <table class="dense">
+            <thead><tr><th>Register state</th><th>Consumer / purpose</th></tr></thead>
+            <tbody>
+              <tr><td>Q/K or P/V operand fragments</td><td>Tensor Core MMA input</td></tr>
+              <tr><td><code>acc_p</code> FP32 fragments</td><td>QK result S; CUDA/SFU instructions do mask, max, exp, sum</td></tr>
+              <tr><td><code>frag_p</code> packed BF16/FP16</td><td>PV MMA input</td></tr>
+              <tr><td><code>acc_o</code> FP32 fragments</td><td>PV partial output; later stored to shared for four-warp combine</td></tr>
+            </tbody>
+          </table>
+          <ul class="compact">
+            <li>lane/thread 不是“矩阵的一行”；它只持有硬件 mapping 分给它的 fragment elements；</li>
+            <li>lanes 不能直接任意寻址彼此的 registers；warp shuffle、shared memory 或规定的 collective instruction 负责交流；</li>
+            <li>Tensor Cores 做 warp-level matrix multiply；CUDA cores/SFUs 仍执行地址、mask、max/exp/sum、scale 等 scalar/vector instructions。</li>
+          </ul>
+        </div>
+      </div>
+      <footer class="footer"><span>shared memory organizes operands; lane registers are the explicit interface to MMA and scalar math</span><span class="section-name">Warp execution</span></footer>
     </section>
 
     <section class="slide" data-section="Shared-memory layout">
@@ -1643,45 +1769,6 @@ row 3: [a33, a32, a31, a30]</div>
         </div>
       </div>
       <footer class="footer"><span>swizzle spreads lane addresses across banks; it does not change the mathematical tile</span><span class="section-name">Shared-memory layout</span></footer>
-    </section>
-
-    <section class="slide" data-section="Memory movement">
-      <div class="kicker">Real K-tile path · global → fetch registers → swizzled shared → fragment registers</div>
-      <div class="content grid-2 wide-left">
-        <div>
-          <div class="flow">
-            <span class="node violet-node">Kⱼ in global<br>[128,128] BF16</span><span class="arrow">→</span>
-            <span class="node amber-node">16-byte fetch<br>per thread/round</span><span class="arrow">→</span>
-            <span class="node cyan-node">swizzled smem K<br>32 KiB</span><span class="arrow">→</span>
-            <span class="node green-node">distributed<br>frag_k registers</span>
-          </div>
-          <table class="dense" style="margin-top:1em">
-            <thead><tr><th>Quantity</th><th>D128 BF16 value</th><th>Meaning</th></tr></thead>
-            <tbody>
-              <tr><td>one K row</td><td>128×2 B = 256 B</td><td>16 adjacent 16-byte chunks</td></tr>
-              <tr><td>128 threads / round</td><td>128×16 B = 2 KiB</td><td>collectively cover 8 K rows</td></tr>
-              <tr><td>16 load rounds</td><td>16×8 rows = 128 rows</td><td>collectively fetch the 32 KiB tile</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="card">
-          <h3>Zoom into one round</h3>
-          <div class="codebox">thread   0..15  -> row 0, chunks 0..15
-thread  16..31  -> row 1, chunks 0..15
-...
-thread 112..127 -> row 7, chunks 0..15
-
-next round      -> rows 8..15</div>
-          <ol class="compact">
-            <li>LDG 把每个 16-byte chunk 暂存到该 thread 的 fetch registers；</li>
-            <li>shared-store helper 根据 logical row/column 计算 swizzled physical address；</li>
-            <li>CTA barrier 保证完整 tile 已写好；</li>
-            <li><code>ldsm</code>-style loads 按 MMA 需要的 pattern 读 shared，生成另一组 <code>frag_k</code> registers。</li>
-          </ol>
-          <p class="small amber">fetch registers 和 compute-fragment registers 是两个角色；“经过 register”不代表一次把整个 tile 放进一个 thread。</p>
-        </div>
-      </div>
-      <footer class="footer"><span>swizzle acts at the shared address; fragment mapping decides which values each lane receives</span><span class="section-name">Memory movement</span></footer>
     </section>
 
     <section class="slide" data-section="Memory movement">
@@ -1913,42 +2000,6 @@ next round      -> rows 8..15</div>
         <p class="small muted center" style="margin-top:.8em">thread 不是纯 controller：它既参与控制流/地址，也会在 CUDA cores/SFUs/Tensor Core warp instruction 中贡献计算。</p>
       </div>
       <footer class="footer"><span>logical roles change by phase; no dedicated producer warp in FA1</span><span class="section-name">Warp execution</span></footer>
-    </section>
-
-    <section class="slide" data-section="Warp execution">
-      <div class="kicker">Collective load mapping · running Bᵣ=16, B꜀=128, D=128, BF16 example</div>
-      <div class="content grid-2">
-        <div>
-          <h3>One D128 row needs 16 threads</h3>
-          <div class="matrix cells-8">
-            <span class="cell c0">t0<br>16B</span><span class="cell c0">t1</span><span class="cell c0">t2</span><span class="cell c0">t3</span><span class="cell c0">t4</span><span class="cell c0">t5</span><span class="cell c0">t6</span><span class="cell c0">t7</span>
-            <span class="cell c0">t8</span><span class="cell c0">t9</span><span class="cell c0">t10</span><span class="cell c0">t11</span><span class="cell c0">t12</span><span class="cell c0">t13</span><span class="cell c0">t14</span><span class="cell c0">t15</span>
-            <span class="cell c1">t16</span><span class="cell c1">t17</span><span class="cell c1">t18</span><span class="cell c1">t19</span><span class="cell c1">t20</span><span class="cell c1">t21</span><span class="cell c1">t22</span><span class="cell c1">t23</span>
-            <span class="cell c1">t24</span><span class="cell c1">t25</span><span class="cell c1">t26</span><span class="cell c1">t27</span><span class="cell c1">t28</span><span class="cell c1">t29</span><span class="cell c1">t30</span><span class="cell c1">t31</span>
-          </div>
-          <span class="equation">128 BF16 × 2 bytes = 256 bytes/row<br>16 threads × 16 bytes = one complete row</span>
-          <p class="small muted center">图中 t0…t15 共同搬 Q row 0；t16…t31 共同搬 Q row 1。</p>
-        </div>
-        <div>
-          <h3>128 threads repeat load rounds</h3>
-          <div class="codebox">Q [16,128]: two rounds
-  linear = thread + 128 * round
-  row    = floor(linear / 16)
-  vector = linear mod 16
-
-K/V [128,128]: sixteen rounds
-  row    = floor(thread / 16) + 8 * round
-  vector = thread mod 16
-  LDG 16 bytes</div>
-          <ul class="compact">
-            <li>每一轮，128 threads 共同覆盖 8 个 D128 rows；</li>
-            <li>Q 有 16 rows → 2 rounds；K/V 各有 128 rows → 16 rounds；</li>
-            <li>fetch register 只负责 transit；shared→MMA 时会形成另一套 distributed fragment registers；</li>
-            <li>alignment、tail 与 varlen predicates 决定哪些 request active。</li>
-          </ul>
-        </div>
-      </div>
-      <footer class="footer"><span>all 128 threads collectively construct the tile</span><span class="section-name">Warp execution</span></footer>
     </section>
 
     <section class="slide" data-section="Warp execution">

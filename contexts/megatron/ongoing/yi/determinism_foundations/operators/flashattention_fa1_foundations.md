@@ -410,12 +410,55 @@ for each K/V tile j:
 At no point does the full $S$ or $P$ matrix need to reside in HBM. A
 $B_r\times B_c$ score/probability tile exists transiently on chip.
 
+For the running $N=8192,B_r=16,B_c=128$ example, each head has 512 Q
+tiles and **64 sequential K/V-tile steps**. The K/V index
+$j=0,\ldots,63$ is the outer-loop tile index; it is unrelated to the four
+warps cooperating inside one CTA. At each $(i,j)$ interaction, those warps
+jointly process one $16\times128$ score tile, containing 2048 current scores.
+
 The word "running" does not imply that every row's state stays on chip across
 the complete K/V traversal. In the paper's K/V-tile-outer loop, one K/V tile
 is reused over many Q tiles. The running $O_i,\ell_i,m_i$ for all those Q
 tiles cannot remain in the limited SRAM simultaneously, so the pseudocode
 loads and writes them in HBM at each K/V-tile step. The state has a stable
 logical owner, but its residence can be global memory between steps.
+
+Nor does "global row state" imply a GPU-global synchronization or a
+cross-CTA softmax collective. One CTA is the unique owner of each Q-row tile.
+For current K/V tile $j$, that owner:
+
+```text
+loads O_old[i] and LSE_old[i] from global memory
+                                                    # first j means O=0,LSE=-inf
+computes current S_ij in acc_p registers
+chooses a = max(LSE_old, max(S_ij)) as a common exponent origin
+forms old_weight = exp(LSE_old - a)
+forms P_tilde = exp(S_ij - a) in registers            # no denominator yet
+computes C_tile = P_tilde V_j as four warp partials
+combines those partials through CTA shared memory
+denom = old_weight + sum(P_tilde)
+O_new = (old_weight O_old + C_tile) / denom
+LSE_new = a + log(denom)
+stores O_new[i] and LSE_new[i] back to global memory
+```
+
+Here "global" means that `O_old/LSE_old` summarize every key position already
+seen in the row prefix $0,\ldots,j-1$. It does not mean that all 64 K/V tiles
+first compute local summaries, synchronize across the grid, and then return
+to perform PV. The same row owner advances its state sequentially. In
+v1.0.9, intermediate normalized O uses an FP32 `o_tmp` global buffer and LSE
+uses FP32 `softmax_lse`; the final step writes O in the requested output dtype.
+For $B=1,H=32,N=8192,D=128$, these allocations are approximately 128 MiB and
+1 MiB respectively.
+
+This source representation is equivalent to the proof's $(m,\ell,u)$ state,
+but it does not save the old row maximum separately. Since
+`LSE_old = log(sum_seen(exp(S)))`, the implementation may use
+$a=\max(\operatorname{LSE}_{old},\max S_{ij})$ as a numerically safe common
+exponent origin. It rescales the old normalized aggregate with
+$\exp(\operatorname{LSE}_{old}-a)$ and the current scores with
+$\exp(S_{ij}-a)$. Any common origin gives the same ratio in exact arithmetic;
+this choice avoids reconstructing the proof representation.
 
 The paper proves:
 
@@ -1121,6 +1164,26 @@ row cover adjacent vectors, and the CTA repeats that pattern across tile rows.
 For $D=64$, eight threads cover one 128-byte row; 128 CTA threads can cover 16
 such rows in one load round. Larger $B_c$ uses several rounds per thread.
 
+For the running $D=128$ BF16 example, one row is 256 bytes and therefore has
+sixteen 16-byte chunks. In one round, threads 0--15 fetch chunks 0--15 of row
+0, threads 16--31 fetch row 1, and so on through threads 112--127 for row 7.
+For K/V load round $r=0,\ldots,15$:
+
+```text
+row(t,r)   = floor(t / 16) + 8r
+chunk(t,r) = t mod 16
+
+t0   -> (row 0,chunk 0), (row 8,chunk 0), ..., (row 120,chunk 0)
+t15  -> (row 0,chunk15), (row 8,chunk15), ..., (row 120,chunk15)
+t16  -> (row 1,chunk 0), (row 9,chunk 0), ..., (row 121,chunk 0)
+t127 -> (row 7,chunk15), (row15,chunk15), ..., (row 127,chunk15)
+```
+
+Thus 128 threads fetch eight complete rows per round. Q $[16,128]$ needs two
+rounds; K and V $[128,128]$ each need sixteen. A lane does not load one whole
+matrix row, and a row is not subsequently split into bank words by the lane:
+each issued global load already names one explicit 16-byte chunk.
+
 This layout is designed for coalesced transactions, while the row/head strides,
 alignment, varlen tail, and $d<D$ predicate determine which requests are
 active. The source establishes the address pattern; final transaction counts
@@ -1166,7 +1229,7 @@ gmem_q/k/v.load()
 
 gmem_q/k/v.commit(...)
     per-thread shared-memory stores
-    -> CTA shared-memory tile
+    -> padded/XOR-swizzled physical addresses in the CTA shared-memory tile
 ```
 
 This is not a direct bulk copy. Each thread owns only a vector subset; all 128
@@ -1178,6 +1241,14 @@ register roles must not be collapsed:
 transit/fetch registers: global -> registers -> shared
 compute fragments:       shared -> registers -> MMA
 ```
+
+The swizzle is applied while the global chunk is committed into shared
+memory, not as a separate rearrangement pass after a row-major shared tile has
+already been written. HBM keeps the ordinary logical tensor layout;
+`gmem_k.load()` fetches a logical row chunk into lane-private transit
+registers, `gmem_k.commit(smem_k)` computes its swizzled physical shared
+address, and the later `smem_k.load()` path uses the matching layout rule.
+The value is unchanged; only its shared-memory physical slot differs.
 
 A100/SM80 supports `cp.async`, and H100/SM90 supports TMA, but this historical
 source explicitly uses neither. Running the same implementation on H100 does
@@ -1325,6 +1396,26 @@ After shared stores become visible, Q/K use `ldsm`-style loads and V uses a
 transposed `ldsmt`-style path to construct each thread's fragment registers.
 No thread holds the whole tile; the warp's distributed fragments collectively
 describe the MMA operands.
+
+This is the register-level contract around Tensor Core work:
+
+```text
+swizzled shared tile
+  -> ldsm/ldsmt-style warp instruction
+  -> A/B operand fragments distributed over 32 lane-private register tuples
+  -> mma.sync warp instruction
+  -> FP32 accumulator fragments distributed over lane-private registers
+```
+
+An MMA operand or result is therefore not one matrix row per lane. The complete
+logical matrix fragment exists only across all participating lanes. Q/K or
+P/V fragment registers feed Tensor Core matrix multiplies. QK produces FP32
+`acc_p` registers containing distributed S elements; ordinary CUDA-core/SFU
+instructions then perform masking, row max, exponential, and sum. Softmax
+packs the current weights into `frag_p` registers for PV, whose FP32 result is
+distributed `acc_o`. Lanes cannot arbitrarily address another lane's private
+registers; shuffle instructions, shared memory, or the hardware-defined
+collective instruction mapping provide the required exchange.
 
 The K/V-shared region is reused in this order:
 
