@@ -1,0 +1,1176 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FlashAttention-1 Backward · From Gradients To Determinism</title>
+  <style>
+    :root {
+      --bg:#06111e; --panel:#0b1b2b; --panel2:#10263a; --line:#27435a;
+      --text:#edf6ff; --muted:#9eb2c5; --cyan:#55d9fb; --green:#70e3aa;
+      --amber:#ffc66f; --violet:#b8a2ff; --red:#ff7e8b; --blue:#619dff;
+    }
+    * { box-sizing:border-box; }
+    html,body { margin:0; width:100%; height:100%; overflow:hidden; background:var(--bg); color:var(--text); font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+    body { background:radial-gradient(circle at 85% 10%,rgba(85,217,251,.11),transparent 26%),radial-gradient(circle at 8% 90%,rgba(184,162,255,.10),transparent 30%),var(--bg); }
+    a { color:var(--cyan); }
+    code,.mono { font-family:"SFMono-Regular",Consolas,monospace; }
+    main { width:100%; height:100%; }
+    .slide {
+      position:absolute; inset:0; display:none; grid-template-rows:auto 1fr auto;
+      gap:clamp(10px,1.5vh,18px); padding:clamp(28px,4.1vh,50px) clamp(34px,5.3vw,84px) clamp(25px,3.5vh,42px);
+    }
+    .slide.active { display:grid; }
+    .slide::before { content:attr(data-number); position:absolute; right:2.2vw; top:1.8vh; color:#567087; font:700 clamp(11px,.85vw,15px)/1 monospace; }
+    .kicker { color:var(--cyan); font-weight:800; letter-spacing:.04em; text-transform:uppercase; font-size:clamp(14px,1.22vw,22px); }
+    h1 { margin:.1em 0; font-size:clamp(42px,5.6vw,86px); line-height:1.02; letter-spacing:-.045em; }
+    h2 { margin:.05em 0 .4em; font-size:clamp(30px,3.1vw,54px); line-height:1.08; letter-spacing:-.025em; }
+    h3 { margin:0 0 .42em; color:var(--text); font-size:clamp(16px,1.35vw,24px); }
+    p,li,td,th { font-size:clamp(13px,1.02vw,18px); line-height:1.42; }
+    p { margin:.45em 0; }
+    ul,ol { margin:.45em 0; padding-left:1.35em; }
+    li+li { margin-top:.3em; }
+    .small { font-size:clamp(11px,.84vw,15px); line-height:1.38; }
+    .tiny { font-size:clamp(9px,.68vw,12px); line-height:1.3; }
+    .muted { color:var(--muted); }
+    .lead { font-size:clamp(17px,1.45vw,26px); line-height:1.35; }
+    .center { text-align:center; }
+    .cyan { color:var(--cyan); } .green { color:var(--green); } .amber { color:var(--amber); } .red { color:var(--red); } .violet { color:var(--violet); }
+    .content { min-height:0; align-self:stretch; display:grid; align-content:center; gap:clamp(10px,1.4vh,18px); }
+    .grid-2 { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .grid-2.wide-left { grid-template-columns:1.18fr .82fr; }
+    .grid-3 { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .grid-4 { grid-template-columns:repeat(4,minmax(0,1fr)); }
+    .grid-2,.grid-3,.grid-4 { display:grid; gap:clamp(10px,1.25vw,18px); min-width:0; align-items:stretch; }
+    .card { min-width:0; padding:clamp(12px,1.25vw,20px); border:1px solid var(--line); border-radius:15px; background:linear-gradient(145deg,rgba(17,39,58,.93),rgba(8,25,40,.96)); }
+    .compact { padding:clamp(9px,.9vw,14px); }
+    .cyan-edge { border-top:3px solid var(--cyan); } .green-edge { border-top:3px solid var(--green); }
+    .amber-edge { border-top:3px solid var(--amber); } .violet-edge { border-top:3px solid var(--violet); } .red-edge { border-top:3px solid var(--red); }
+    .tag { display:inline-block; padding:.22em .58em; border:1px solid var(--line); border-radius:999px; color:var(--muted); font:700 clamp(10px,.72vw,13px)/1.2 monospace; margin-bottom:.6em; }
+    .equation { display:block; margin:.45em 0; padding:.55em .7em; border:1px solid rgba(85,217,251,.24); border-radius:10px; background:#071827; color:#e8f9ff; text-align:center; font:650 clamp(14px,1.18vw,21px)/1.38 "SFMono-Regular",Consolas,monospace; }
+    .codebox { white-space:pre-wrap; padding:clamp(12px,1.2vw,18px); border:1px solid var(--line); border-radius:13px; background:#04101b; color:#dbe9f5; font:600 clamp(10px,.78vw,14px)/1.43 "SFMono-Regular",Consolas,monospace; overflow:hidden; }
+    .hi { color:var(--cyan); } .warn { color:var(--amber); } .bad { color:var(--red); } .ok { color:var(--green); }
+    .flow { display:flex; align-items:stretch; justify-content:center; gap:8px; margin:.55em 0; min-width:0; }
+    .node { flex:1 1 0; min-width:0; display:grid; place-items:center; padding:.65em .55em; border:1px solid var(--line); border-radius:11px; background:#0b2134; text-align:center; color:#dceaf6; font-size:clamp(11px,.85vw,16px); line-height:1.25; }
+    .cyan-node { border-color:var(--cyan); color:var(--cyan); } .green-node { border-color:var(--green); color:var(--green); }
+    .amber-node { border-color:var(--amber); color:var(--amber); } .violet-node { border-color:var(--violet); color:var(--violet); }
+    .red-node { border-color:var(--red); color:var(--red); }
+    .arrow { display:grid; place-items:center; color:var(--muted); font-size:clamp(17px,1.5vw,28px); }
+    table { width:100%; border-collapse:collapse; overflow:hidden; border:1px solid var(--line); border-radius:12px; background:rgba(5,18,30,.72); }
+    th,td { padding:.55em .65em; border-bottom:1px solid rgba(39,67,90,.78); text-align:left; vertical-align:top; }
+    th { color:var(--cyan); background:rgba(85,217,251,.07); }
+    tr:last-child td { border-bottom:0; }
+    .dense td,.dense th { padding:.38em .52em; font-size:clamp(10px,.77vw,14px); line-height:1.3; }
+    .matrix { display:grid; gap:4px; padding:10px; border:1px solid var(--line); border-radius:13px; background:#071522; }
+    .cols-2 { grid-template-columns:repeat(2,1fr); } .cols-4 { grid-template-columns:repeat(4,1fr); } .cols-8 { grid-template-columns:repeat(8,1fr); }
+    .cell { display:grid; place-items:center; min-height:clamp(39px,5vh,62px); padding:6px; border-radius:8px; background:#163149; text-align:center; font:650 clamp(10px,.76vw,14px)/1.2 monospace; }
+    .c0 { background:rgba(85,217,251,.18); color:var(--cyan); } .c1 { background:rgba(112,227,170,.17); color:var(--green); }
+    .c2 { background:rgba(255,198,111,.17); color:var(--amber); } .c3 { background:rgba(184,162,255,.18); color:var(--violet); }
+    .timeline { display:grid; grid-template-columns:repeat(var(--steps,5),1fr); gap:5px; }
+    .time-item { position:relative; padding:1.45em .45em .45em; border-top:3px solid var(--line); text-align:center; }
+    .time-item::before { content:""; position:absolute; top:-7px; left:calc(50% - 6px); width:12px; height:12px; border-radius:50%; background:var(--cyan); }
+    .time-item strong { display:block; color:var(--cyan); font-size:clamp(11px,.8vw,15px); }
+    .time-item span { display:block; margin-top:.35em; color:var(--muted); font-size:clamp(9px,.68vw,12px); line-height:1.25; }
+    .config { display:flex; flex-wrap:wrap; justify-content:center; gap:7px; }
+    .config span { padding:.38em .65em; border:1px solid var(--line); border-radius:999px; background:#091b2b; color:var(--muted); font-size:clamp(10px,.72vw,14px); }
+    .memory { display:grid; gap:8px; }
+    .mem { padding:.65em .8em; border-radius:10px; border:1px solid var(--line); font-size:clamp(11px,.82vw,15px); }
+    .global { border-color:var(--violet); } .shared { border-color:var(--cyan); } .reg { border-color:var(--amber); }
+    .footer { display:flex; justify-content:space-between; gap:16px; color:#698299; font-size:clamp(9px,.68vw,12px); border-top:1px solid rgba(39,67,90,.55); padding-top:.7em; }
+    .section-slide .content { place-content:center; text-align:center; }
+    .section-slide h2 { font-size:clamp(44px,5.4vw,84px); }
+    .controls { position:fixed; right:1.2vw; bottom:1.2vh; z-index:10; display:flex; align-items:center; gap:6px; padding:6px; border:1px solid var(--line); border-radius:999px; background:rgba(5,16,27,.88); backdrop-filter:blur(8px); }
+    .controls button { width:32px; height:32px; border:0; border-radius:50%; background:#12283b; color:var(--text); cursor:pointer; }
+    .counter { min-width:62px; text-align:center; color:var(--muted); font:700 11px monospace; }
+    .progress { position:fixed; left:0; bottom:0; height:3px; width:0; background:linear-gradient(90deg,var(--cyan),var(--violet)); z-index:20; }
+    .help { position:fixed; right:1.2vw; bottom:62px; display:none; z-index:20; width:min(360px,80vw); padding:14px; border:1px solid var(--line); border-radius:13px; background:#071522; }
+    .help.show { display:block; }
+    .help p { font-size:12px; }
+    body.overview { overflow:auto; }
+    body.overview main { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; height:auto; padding:18px; }
+    body.overview .slide { position:relative; display:grid; min-height:220px; padding:18px; border:1px solid var(--line); border-radius:12px; overflow:hidden; cursor:pointer; }
+    body.overview .slide .content { transform:scale(.42); transform-origin:top left; width:238%; height:180%; pointer-events:none; }
+    body.overview .slide .footer { display:none; }
+    @media (max-width:900px) {
+      .slide { padding:28px 30px 34px; overflow:auto; }
+      .grid-2,.grid-2.wide-left,.grid-3,.grid-4 { grid-template-columns:1fr; }
+      .flow { flex-wrap:wrap; }
+      .arrow { transform:rotate(90deg); }
+    }
+    @media print {
+      body { overflow:visible; }
+      .slide { position:relative; display:grid; width:100vw; height:100vh; page-break-after:always; }
+      .controls,.progress,.help { display:none!important; }
+    }
+  </style>
+</head>
+<body>
+  <main id="deck">
+    <section class="slide" data-section="Title">
+      <div class="kicker">FlashAttention-1 · historical v1.0.9 source study</div>
+      <div class="content">
+        <h1>FA1 Backward</h1>
+        <h2 class="muted">From Gradient Equations To Determinism</h2>
+        <div class="flow">
+          <span class="node cyan-node">derive gradients</span><span class="arrow">→</span>
+          <span class="node violet-node">find reduction axes</span><span class="arrow">→</span>
+          <span class="node amber-node">assign CTA/warp owners</span><span class="arrow">→</span>
+          <span class="node red-node">inspect cross-CTA combine</span>
+        </div>
+        <p class="lead">同一套 backward 数学，因为 <code>dQ</code> ownership 不同，可以走 deterministic serial-K path，也可以走 atomic sequence-K path。</p>
+      </div>
+      <footer class="footer"><span>B=1 · H=32 · N=8192 · D=128 walkthrough</span><span>2026-07-27</span></footer>
+    </section>
+
+    <section class="slide" data-section="Reading contract">
+      <div class="kicker">What this deck assumes—and what it rebuilds</div>
+      <div class="content grid-2">
+        <div class="card green-edge">
+          <h3>从 forward 直接继承</h3>
+          <ul>
+            <li>grid / CTA / warp / lane / SM；</li>
+            <li>global、shared、register 与 fragment；</li>
+            <li>Q tile <code>[16,D]</code>、K/V tile <code>[B꜀,D]</code>；</li>
+            <li>online softmax、LSE 与固定 local reduction order。</li>
+          </ul>
+          <p class="small"><a href="flashattention_fa1_forward.html">Open the FA1 forward visual map</a></p>
+        </div>
+        <div class="card cyan-edge">
+          <h3>Backward 要重新建立</h3>
+          <ul>
+            <li>每个 gradient 的公式和 reduction axis；</li>
+            <li>为什么 recompute P 而不是保存 N² tensor；</li>
+            <li>为什么 P/dS 需要 transpose fragment layout；</li>
+            <li>为什么 dK/dV single-owned，而 dQ mode-dependent；</li>
+            <li><code>deterministic=True</code> 实际关闭了什么。</li>
+          </ul>
+        </div>
+      </div>
+      <footer class="footer"><span>Markdown remains the source of truth; this HTML is a reading surface</span><span>Reading contract</span></footer>
+    </section>
+
+    <section class="slide" data-section="Running example">
+      <div class="kicker">One representative training shape for every physical example</div>
+      <div class="content">
+        <div class="config">
+          <span><strong>B</strong>=1</span><span><strong>H</strong>=32</span><span><strong>Nq=Nk</strong>=8192</span>
+          <span><strong>D</strong>=128</span><span><strong>Br</strong>=16</span><span><strong>Bc</strong>=128</span>
+          <span><strong>CTA</strong>=8 warps=256 threads</span>
+        </div>
+        <div class="grid-3">
+          <article class="card cyan-edge"><h3>Q tiles/head</h3><span class="equation">8192 / 16 = 512</span><p>每个 I 表示 16 个 query rows。</p></article>
+          <article class="card amber-edge"><h3>K/V tiles/head</h3><span class="equation">8192 / 128 = 64</span><p>每个 J 表示 128 个 key/value rows。</p></article>
+          <article class="card violet-edge"><h3>One score tile</h3><span class="equation">Sᵢⱼ [16,128]</span><p>2048 个 transient scores；不保存完整 N²。</p></article>
+        </div>
+        <p class="small muted center">先用 2×2 tiles 解释 ownership，再回到 512×64 的真实数量。非 causal、无 dropout 是第一条主线。</p>
+      </div>
+      <footer class="footer"><span>same symbols and dimensions as the forward deck</span><span>Running example</span></footer>
+    </section>
+
+    <section class="slide" data-section="Forward checkpoint">
+      <div class="kicker">What forward leaves behind for backward</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="flow">
+            <span class="node">Q,K,V</span><span class="arrow">→</span>
+            <span class="node cyan-node">S=τQKᵀ</span><span class="arrow">→</span>
+            <span class="node amber-node">P=softmax(S)</span><span class="arrow">→</span>
+            <span class="node green-node">O=PV</span>
+          </div>
+          <div class="equation">backward receives G = dO = ∂φ/∂O</div>
+          <table class="dense">
+            <thead><tr><th>Available</th><th>Why backward needs it</th></tr></thead>
+            <tbody>
+              <tr><td>Q,K,V</td><td>recompute S/P; form dP,dQ,dK,dV</td></tr>
+              <tr><td>O</td><td>compute row scalar Dᵢ = GᵢᵀOᵢ</td></tr>
+              <tr><td>LSE</td><td>reconstruct Pᵢⱼ = exp(Sᵢⱼ−LSEᵢ)</td></tr>
+              <tr><td>RNG state</td><td>replay dropout mask when enabled</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card red-edge">
+          <h3>Intentionally not saved</h3>
+          <p class="lead center"><span class="red">full S or full P</span></p>
+          <span class="equation">8192² BF16 ≈ 128 MiB/head<br>× 32 heads ≈ 4 GiB</span>
+          <p>Backward trades extra QK recomputation for avoiding an N² global tensor.</p>
+        </div>
+      </div>
+      <footer class="footer"><span>linear-sized saved state is enough to reconstruct probability tiles</span><span>Forward checkpoint</span></footer>
+    </section>
+
+    <section class="slide section-slide" data-section="Part I">
+      <div class="kicker">Part I · mathematics before CUDA</div>
+      <div class="content">
+        <h2>Five Equations,<br>Five Reduction Questions</h2>
+        <p class="lead muted">先判断“对哪个 axis 求和”，再判断“谁拥有完整的和”。</p>
+      </div>
+      <footer class="footer"><span>formula → contributors → owner/combine</span><span>Part I</span></footer>
+    </section>
+
+    <section class="slide" data-section="Gradient graph">
+      <div class="kicker">Backward graph · follow gradients from O back to Q,K,V</div>
+      <div class="content">
+        <div class="flow">
+          <span class="node green-node">G=dO</span><span class="arrow">→</span>
+          <span class="node">dV=PᵀG</span>
+          <span class="node">dP=GVᵀ</span><span class="arrow">→</span>
+          <span class="node amber-node">dS=P⊙(dP−D)</span><span class="arrow">→</span>
+          <span class="node cyan-node">dQ=τdSK</span>
+          <span class="node violet-node">dK=τdSᵀQ</span>
+        </div>
+        <div class="grid-3">
+          <article class="card green-edge"><h3>Through O=PV</h3><p>一个 branch 给 V gradient；另一个 branch 把 gradient 传回 P。</p></article>
+          <article class="card amber-edge"><h3>Through softmax</h3><p>每个 query row 有一个 correction scalar Dᵢ。</p></article>
+          <article class="card cyan-edge"><h3>Through S=τQKᵀ</h3><p>dS 再分别乘 K 和 Q，得到 dQ/dK。</p></article>
+        </div>
+        <p class="lead center">kernel 会 fuse/reorder/recompute，但不能改变这个 dependency graph。</p>
+      </div>
+      <footer class="footer"><span>the implementation changes grouping and residence, not the gradient contract</span><span>Gradient graph</span></footer>
+    </section>
+
+    <section class="slide" data-section="dV and dP">
+      <div class="kicker">First branch · dV and dP come from O=PV</div>
+      <div class="content grid-2">
+        <div class="card green-edge">
+          <h3>dV = PᵀG</h3>
+          <span class="equation">dVⱼᵣ = Σᵢ Pᵢⱼ Gᵢᵣ</span>
+          <ul>
+            <li>output row belongs to key/value row j；</li>
+            <li>reduction axis is all query rows i；</li>
+            <li>natural owner: one K/V-tile work unit loops all Q tiles。</li>
+          </ul>
+        </div>
+        <div class="card violet-edge">
+          <h3>dP = GVᵀ</h3>
+          <span class="equation">dPᵢⱼ = Σᵣ Gᵢᵣ Vⱼᵣ</span>
+          <ul>
+            <li>output has score-tile shape [Br,Bc]；</li>
+            <li>reduction axis is head dimension r；</li>
+            <li>produced by one CTA-local Tensor Core GEMM fragment。</li>
+          </ul>
+        </div>
+      </div>
+      <footer class="footer"><span>same matrix product notation; different output owner and reduction axis</span><span>Mathematics</span></footer>
+    </section>
+
+    <section class="slide" data-section="Softmax backward">
+      <div class="kicker">Softmax Jacobian · why one row scalar D appears</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <span class="equation">dSᵢ = (diag(Pᵢ) − PᵢPᵢᵀ) dPᵢ</span>
+          <span class="equation">Dᵢ = Pᵢᵀ dPᵢ = Σⱼ Pᵢⱼ dPᵢⱼ</span>
+          <span class="equation">dSᵢⱼ = Pᵢⱼ (dPᵢⱼ − Dᵢ)</span>
+        </div>
+        <div class="card amber-edge">
+          <h3>Interpretation</h3>
+          <ol>
+            <li><code>dPᵢⱼ</code> 是每个 probability element 收到的 gradient；</li>
+            <li><code>Dᵢ</code> 是整行共享的 weighted mean correction；</li>
+            <li>减掉 Dᵢ 保证 gradient respects softmax row coupling；</li>
+            <li>乘 Pᵢⱼ 后得到 scaled-score gradient dS。</li>
+          </ol>
+          <p class="small muted">dS 这里是对 scaled score S=τQKᵀ 的 gradient；τ 在 dQ/dK epilogue 中乘回。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>the nonlinear row coupling is compressed into one scalar per query row</span><span>Mathematics</span></footer>
+    </section>
+
+    <section class="slide" data-section="D identity">
+      <div class="kicker">The useful identity · Dᵢ does not require materializing the P row</div>
+      <div class="content grid-2">
+        <div>
+          <span class="equation">Dᵢ = Σⱼ Pᵢⱼ dPᵢⱼ</span>
+          <span class="equation">dPᵢⱼ = GᵢᵀVⱼ</span>
+          <div class="flow"><span class="node">substitute</span><span class="arrow">→</span><span class="node cyan-node">reassociate real-number sums</span></div>
+          <span class="equation">Dᵢ = Gᵢᵀ (ΣⱼPᵢⱼVⱼ) = GᵢᵀOᵢ</span>
+        </div>
+        <div class="card green-edge">
+          <h3>Implementation consequence</h3>
+          <span class="equation">Dᵢ = Σᵣ Gᵢᵣ Oᵢᵣ</span>
+          <ul>
+            <li>只需 forward saved O 和 incoming G；</li>
+            <li>每个 query row 做一个 D-wide dot product；</li>
+            <li>结果保存为 FP32 <code>softmax_d</code>；</li>
+            <li>所有 K/V-tile workers 都需要同一个 Dᵢ。</li>
+          </ul>
+        </div>
+      </div>
+      <footer class="footer"><span>forward output replaces a sequence-wide probability reduction</span><span>Mathematics</span></footer>
+    </section>
+
+    <section class="slide" data-section="Recompute P">
+      <div class="kicker">Recompute one P tile · Q,K plus saved LSE are sufficient</div>
+      <div class="content">
+        <div class="timeline" style="--steps:5">
+          <div class="time-item"><strong>Load</strong><span>Qᵢ, Kⱼ<br>LSEᵢ</span></div>
+          <div class="time-item"><strong>QK</strong><span>Sᵢⱼ=τQᵢKⱼᵀ</span></div>
+          <div class="time-item"><strong>Mask</strong><span>causal/tail<br>−∞</span></div>
+          <div class="time-item"><strong>Exp</strong><span>Pᵢⱼ=exp<br>(Sᵢⱼ−LSEᵢ)</span></div>
+          <div class="time-item"><strong>Consume</strong><span>dS,dV<br>dropout replay</span></div>
+        </div>
+        <div class="grid-3">
+          <article class="card cyan-edge"><h3>Transient</h3><p>S/P 主要位于 distributed registers；P 还会经过 shared transpose buffer。</p></article>
+          <article class="card amber-edge"><h3>No online merge</h3><p>LSE 已经是完整 row normalizer，因此当前 P tile 可直接得到其最终 probability values。</p></article>
+          <article class="card red-edge"><h3>Tradeoff</h3><p>多做一次 QK，换掉数 GiB 的 full-P HBM storage。</p></article>
+        </div>
+      </div>
+      <footer class="footer"><span>backward recomputation is exact with respect to the saved forward normalization state</span><span>Mathematics</span></footer>
+    </section>
+
+    <section class="slide" data-section="dQ and dK">
+      <div class="kicker">Cross the score GEMM · dQ and dK expose the ownership asymmetry</div>
+      <div class="content grid-2">
+        <div class="card cyan-edge">
+          <h3>dQ = τ dS K</h3>
+          <span class="equation">dQᵢᵣ = τ Σⱼ dSᵢⱼ Kⱼᵣ</span>
+          <p class="lead"><span class="cyan">one Q row needs all K rows</span></p>
+          <p>如果不同 K/V tiles 并行成为不同 CTAs，它们会贡献到同一个 dQ element。</p>
+        </div>
+        <div class="card violet-edge">
+          <h3>dK = τ dSᵀ Q</h3>
+          <span class="equation">dKⱼᵣ = τ Σᵢ dSᵢⱼ Qᵢᵣ</span>
+          <p class="lead"><span class="violet">one K row needs all Q rows</span></p>
+          <p>让一个 K-tile owner 顺序遍历全部 Q tiles，就能在 registers 中完成这一整条 reduction。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>the formulas are symmetric; the chosen parallel work unit makes ownership asymmetric</span><span>Mathematics</span></footer>
+    </section>
+
+    <section class="slide" data-section="Reduction ledger">
+      <div class="kicker">Reduction ledger · this table predicts the determinism result</div>
+      <div class="content">
+        <table>
+          <thead><tr><th>Value</th><th>Reduction axis</th><th>Natural implementation owner/combine</th></tr></thead>
+          <tbody>
+            <tr><td>dPᵢⱼ</td><td>head dimension D</td><td>one CTA-local GEMM accumulator chain</td></tr>
+            <tr><td>Dᵢ</td><td>head dimension D</td><td>one row dot product; FP32 softmax_d</td></tr>
+            <tr><td>dSᵢⱼ</td><td>none after dP/D</td><td>pointwise register tile</td></tr>
+            <tr><td class="cyan">dQᵢ</td><td class="cyan">all K/V rows</td><td class="cyan">serial K-tile owner or cross-CTA atomic combine</td></tr>
+            <tr><td>dKⱼ</td><td>all Q rows</td><td>one K-tile owner loops Q tiles</td></tr>
+            <tr><td>dVⱼ</td><td>all Q rows</td><td>one V-tile owner loops Q tiles</td></tr>
+          </tbody>
+        </table>
+        <p class="lead center">v1.0.9 两种 launch mode 中，只有 <span class="cyan">dQ 的 sequence-wide owner/combine</span> 会改变。</p>
+      </div>
+      <footer class="footer"><span>many-to-one is not automatically nondeterministic; shared concurrent ownership is the next question</span><span>Reduction ledger</span></footer>
+    </section>
+
+    <section class="slide section-slide" data-section="Part II">
+      <div class="kicker">Part II · make ownership visible</div>
+      <div class="content">
+        <h2>Two Q Tiles ×<br>Two K/V Tiles</h2>
+        <p class="lead muted">先数 contributor，再讨论 CTA。</p>
+      </div>
+      <footer class="footer"><span>toy example before the 512×64 running shape</span><span>Part II</span></footer>
+    </section>
+
+    <section class="slide" data-section="Toy ownership">
+      <div class="kicker">Toy work matrix · each cell is one (Q tile I, K/V tile J) interaction</div>
+      <div class="content grid-2 wide-left">
+        <div class="matrix cols-2">
+          <span class="cell c0">I₀ × J₀<br>P₀₀,dS₀₀<br>partial dQ₀←J₀</span>
+          <span class="cell c1">I₀ × J₁<br>P₀₁,dS₀₁<br>partial dQ₀←J₁</span>
+          <span class="cell c0">I₁ × J₀<br>P₁₀,dS₁₀<br>partial dQ₁←J₀</span>
+          <span class="cell c1">I₁ × J₁<br>P₁₁,dS₁₁<br>partial dQ₁←J₁</span>
+        </div>
+        <div>
+          <div class="card cyan-edge"><h3>J₀ work unit</h3><p>visit I₀,I₁；完整累加 dK_J0/dV_J0；贡献 dQ_I0 和 dQ_I1。</p></div>
+          <div class="card green-edge"><h3>J₁ work unit</h3><p>visit I₀,I₁；完整累加 dK_J1/dV_J1；也贡献 dQ_I0 和 dQ_I1。</p></div>
+          <p class="lead">每个 dK/dV tile 有一个 owner；每个 dQ tile 有两个 J contributors。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>partitioning by K/V tile makes dK/dV outputs disjoint and dQ shared</span><span>Toy ownership</span></footer>
+    </section>
+
+    <section class="slide" data-section="Toy ownership">
+      <div class="kicker">Same local math, two legal outer schedules</div>
+      <div class="content grid-2">
+        <div class="card green-edge">
+          <span class="tag">serial K/V ownership</span>
+          <h3>One CTA does J₀ then J₁</h3>
+          <div class="codebox">CTA(b,h):
+  J0: visit I0,I1
+  J1: visit I0,I1
+
+dQ_I = contribution(J0)
+     + contribution(J1)</div>
+          <p>同一个 owner 固定跨 J 的 update order。</p>
+        </div>
+        <div class="card red-edge">
+          <span class="tag">sequence-K parallel</span>
+          <h3>CTA J₀ and CTA J₁ run concurrently</h3>
+          <div class="codebox">CTA_J0: visit I0,I1
+CTA_J1: visit I0,I1
+
+both contribute to shared
+FP32 dq_tmp[I]</div>
+          <p>必须增加 cross-CTA combine protocol；local formulas 没变。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>determinism changes at the ownership boundary, not in the gradient equations</span><span>Toy ownership</span></footer>
+    </section>
+
+    <section class="slide section-slide" data-section="Part III">
+      <div class="kicker">Part III · one K/V-tile computation body</div>
+      <div class="content">
+        <h2>One CTA,<br>Eight Warps,<br>Many Q Tiles</h2>
+        <p class="lead muted">先理解 common body；两种 launch mode 只改变它外面的 owner。</p>
+      </div>
+      <footer class="footer"><span>source: fmha_dgrad_kernel_1xN_loop.h</span><span>Part III</span></footer>
+    </section>
+
+    <section class="slide" data-section="Dispatch">
+      <div class="kicker">Host-to-device path · mode selection surrounds one shared computation body</div>
+      <div class="content">
+        <div class="flow">
+          <span class="node violet-node">Python backward<br>deterministic flag</span><span class="arrow">→</span>
+          <span class="node">API rounds shapes<br>allocates workspaces</span><span class="arrow">→</span>
+          <span class="node amber-node">host chooses<br>num_splits mode</span><span class="arrow">→</span>
+          <span class="node cyan-node">selected D/Bc<br>8-warp kernel</span><span class="arrow">→</span>
+          <span class="node green-node">one_iter(J)<br>common body</span>
+        </div>
+        <div class="grid-3">
+          <article class="card green-edge"><h3>num_splits=1</h3><p>grid (B,H,1)；one CTA calls one_iter for J=0…63。</p></article>
+          <article class="card red-edge"><h3>num_splits&gt;1</h3><p>selects sequence-K mode；main grid has one CTA per actual K/V tile。</p></article>
+          <article class="card amber-edge"><h3>Misleading name</h3><p>value 4 不表示正好 4 CTAs；它是 mode selector once greater than 1。</p></article>
+        </div>
+      </div>
+      <footer class="footer"><span>public deterministic=True maps to backward num_splits=1</span><span>Dispatch</span></footer>
+    </section>
+
+    <section class="slide" data-section="Tile family">
+      <div class="kicker">Backward tile family · CTA size is not inherited from forward</div>
+      <div class="content grid-2">
+        <div>
+          <table>
+            <thead><tr><th>compiled D</th><th>short K</th><th>long K</th></tr></thead>
+            <tbody>
+              <tr><td>32</td><td>Bc=128</td><td>Bc=256</td></tr>
+              <tr><td>64</td><td>Bc=128</td><td>Bc=256</td></tr>
+              <tr><td class="cyan">128</td><td class="cyan">Bc=128</td><td class="cyan">Bc=128</td></tr>
+            </tbody>
+          </table>
+          <div class="config"><span>Br=16</span><span>Bc=128/256</span><span>CTA=8 warps</span><span>256 threads</span></div>
+        </div>
+        <div class="card amber-edge">
+          <h3>Why not four warps?</h3>
+          <ul>
+            <li>backward 同时有 QK、dP、dQ、dK、dV 多个 matrix products；</li>
+            <li>dQ reduction 需要 8 份 warp partials；</li>
+            <li>dK/dV 又需要 partition output K/V rows；</li>
+            <li>更多 warps 增加 CTA 内 parallel work，也提高资源 footprint。</li>
+          </ul>
+          <p class="small muted">forward 128 threads 与 backward 256 threads 是两个独立编译的 kernels，不存在“一个 CTA 永远四个 warps”。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>running D128 example selects Br=16, Bc=128, eight warps</span><span>Tile family</span></footer>
+    </section>
+
+    <section class="slide" data-section="Eight warps">
+      <div class="kicker">The same eight warps change interpretation by phase</div>
+      <div class="content">
+        <div class="matrix cols-8">
+          <span class="cell c0">warp 0<br>J[0:16]</span><span class="cell c1">warp 1<br>J[16:32]</span>
+          <span class="cell c2">warp 2<br>J[32:48]</span><span class="cell c3">warp 3<br>J[48:64]</span>
+          <span class="cell c0">warp 4<br>J[64:80]</span><span class="cell c1">warp 5<br>J[80:96]</span>
+          <span class="cell c2">warp 6<br>J[96:112]</span><span class="cell c3">warp 7<br>J[112:128]</span>
+        </div>
+        <table>
+          <thead><tr><th>Phase</th><th>Eight-warp interpretation for Bc=128</th></tr></thead>
+          <tbody>
+            <tr><td>QK and dP=GVᵀ</td><td>split 128 score columns into 8×16 key positions</td></tr>
+            <tr><td>dQ=dSK</td><td>each warp reduces its 16-key slice and emits one partial dQ</td></tr>
+            <tr><td>dK/dV</td><td>each warp owns 16 output K/V rows and accumulates them across Q tiles</td></tr>
+          </tbody>
+        </table>
+        <p class="small muted center">不是 warp 0 专门 load、warp 1 专门 QK；all eight warps participate, and roles change by phase。</p>
+      </div>
+      <footer class="footer"><span>key-position partition becomes output ownership or reduction ownership depending on the GEMM</span><span>Eight warps</span></footer>
+    </section>
+
+    <section class="slide" data-section="Common body">
+      <div class="kicker">One K/V-tile body · fixed J outside, increasing Q tiles inside</div>
+      <div class="content grid-2 wide-left">
+        <div class="codebox"><span class="hi">fix J</span>: load K_J,V_J; initialize acc_dK_J,acc_dV_J
+for Q tile I in increasing order:
+  load Q_I,G_I,LSE_I; load/compute D_I per mode
+  P_IJ = exp(mask(τ Q_I K_J^T) - LSE_I)
+  dP_IJ = G_I V_J^T
+  dS_IJ = P_IJ * (dP_IJ - D_I)
+  partial_dQ_I_from_J = τ dS_IJ K_J
+  acc_dV_J += P_IJ^T G_I; acc_dK_J += τ dS_IJ^T Q_I
+  reduce/write J's contribution to dQ_I
+write final dK_J,dV_J once</div>
+        <div>
+          <div class="card green-edge"><h3>Kept across Q loop</h3><p>fixed K/V fragments and FP32 dK_J/dV_J accumulators。</p></div>
+          <div class="card cyan-edge"><h3>Recreated per (I,J)</h3><p>S、P、dP、dS 和 current partial dQ。</p></div>
+          <div class="card red-edge"><h3>Mode-dependent boundary</h3><p>“write this J contribution to dQ” 在 serial mode 是 owner update，在 parallel mode 是 atomic contribution。</p></div>
+        </div>
+      </div>
+      <footer class="footer"><span>one_iter(J) is reused by both launch modes</span><span>Common body</span></footer>
+    </section>
+
+    <section class="slide" data-section="State residence">
+      <div class="kicker">State residence · name the scope and lifetime, not just “on chip”</div>
+      <div class="content grid-2">
+        <div class="memory">
+          <div class="mem global"><strong>Global/HBM</strong><br>Q,K,V,O,G,LSE,D/softmax_d · dq_tmp · final dQ,dK,dV</div>
+          <div class="mem shared"><strong>CTA shared memory</strong><br>double-buffered Q and G · K/V staging · P and dS transpose tiles · eight dQ partials</div>
+          <div class="mem reg"><strong>Distributed registers</strong><br>fetch vectors · Q/K/V/P/dS fragments · dP/dQ/dK/dV FP32 accumulators</div>
+        </div>
+        <div>
+          <table class="dense">
+            <thead><tr><th>State</th><th>Lifetime</th></tr></thead>
+            <tbody>
+              <tr><td>K/V fragments</td><td>current J while visiting many Q tiles</td></tr>
+              <tr><td>dK_J,dV_J accumulators</td><td>entire inner Q loop</td></tr>
+              <tr><td>S/P/dP/dS</td><td>one current (I,J) interaction</td></tr>
+              <tr><td>eight partial dQ</td><td>current I; then shared combine</td></tr>
+              <tr><td>dq_tmp[I]</td><td>across K/V tiles or K-tile CTAs</td></tr>
+            </tbody>
+          </table>
+          <p class="lead center">logical owner 可以稳定，physical residence 仍在 register/shared/global 间切换。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>scope × lifetime × dtype × replication controls both resource pressure and races</span><span>State residence</span></footer>
+    </section>
+
+    <section class="slide" data-section="Fragment transpose">
+      <div class="kicker">Why a live fragment cannot usually be reused as its transpose</div>
+      <div class="content grid-2">
+        <div class="card violet-edge">
+          <span class="tag">first GEMM orientation</span>
+          <h3>P in score layout</h3>
+          <div class="flow"><span class="node">P [query,key]</span><span class="arrow">→</span><span class="node violet-node">lane register tuples<br>for dS / score use</span></div>
+          <p>每个 lane 持有 MMA mapping 分给它的一些 P coordinates；完整 tile 分布在 8 warps。</p>
+        </div>
+        <div class="card amber-edge">
+          <span class="tag">later GEMM orientation</span>
+          <h3>Pᵀ in dV=PᵀG</h3>
+          <div class="flow"><span class="node">need Pᵀ [key,query]</span><span class="arrow">→</span><span class="node amber-node">different lane/register<br>coordinate mapping</span></div>
+          <p>原来属于一个 lane 的 P values，转置后可能应由其他 lanes 提供；“data still in registers” 不等于“fragment tuple directly reusable”。</p>
+        </div>
+        <div class="card red-edge" style="grid-column:1/-1">
+          <p class="lead center"><code>A@B → C@Bᵀ</code>：除非两个 MMA 的 fragment contracts 恰好兼容，否则需要 lane permutation、special matrix move，或更常见的 <span class="red">shared store → transposed reload</span>。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>register is storage; fragment is an instruction-specific distributed layout</span><span>Fragment transpose</span></footer>
+    </section>
+
+    <section class="slide" data-section="P transpose">
+      <div class="kicker">P transpose path · registers → swizzled shared → new fragment registers</div>
+      <div class="content">
+        <div class="flow">
+          <span class="node violet-node">recomputed Pᵢⱼ<br>[Br,Bc] registers</span><span class="arrow">→</span>
+          <span class="node">store using shared<br>score-tile layout</span><span class="arrow">→</span>
+          <span class="node cyan-node">CTA/warp handoff<br>+ swizzle</span><span class="arrow">→</span>
+          <span class="node amber-node">reload transposed<br>Pᵀ fragments</span><span class="arrow">→</span>
+          <span class="node green-node">dV += PᵀG</span>
+        </div>
+        <div class="grid-3">
+          <article class="card cyan-edge"><h3>Not global transpose</h3><p>只有当前 16×Bc P tile 经过 shared memory；不会写 N×N P。</p></article>
+          <article class="card amber-edge"><h3>New fragment role</h3><p>reload 后仍是 register values，但 coordinate ownership 已匹配 Pᵀ operand。</p></article>
+          <article class="card red-edge"><h3>Correctness boundary</h3><p>barrier/sync 必须证明所有 stores 可见且旧 readers 已结束。</p></article>
+        </div>
+        <p class="small muted center">这个具体路径就是上一页 fragment-reuse rule 在 FA1 backward 中的实现。</p>
+      </div>
+      <footer class="footer"><span>shared memory is an explicit layout-conversion and communication boundary</span><span>P transpose</span></footer>
+    </section>
+
+    <section class="slide" data-section="dS transpose">
+      <div class="kicker">dS needs the same trick for dK = dSᵀQ</div>
+      <div class="content grid-2">
+        <div>
+          <div class="flow"><span class="node">dP registers</span><span class="arrow">→</span><span class="node amber-node">dS=P⊙(dP−D)</span></div>
+          <div class="flow"><span class="node amber-node">dS [query,key]</span><span class="arrow">→</span><span class="node cyan-node">shared transpose tile</span></div>
+          <div class="flow"><span class="node cyan-node">reload dSᵀ [key,query]</span><span class="arrow">→</span><span class="node violet-node">dK += τdSᵀQ</span></div>
+        </div>
+        <div class="card violet-edge">
+          <h3>Two orientations, two consumers</h3>
+          <table class="dense">
+            <tbody>
+              <tr><td>dS [I,J]</td><td>dQ = dS K</td><td>query rows × key reduction</td></tr>
+              <tr><td>dSᵀ [J,I]</td><td>dK = dSᵀ Q</td><td>key rows × query reduction</td></tr>
+            </tbody>
+          </table>
+          <p>同一 mathematical values 服务两个不同 GEMMs；fragment layout 不能只按 tensor 名字判断是否可复用。</p>
+          <p class="small amber">审核新 kernel 时要问：第二个 consumer 需要相同 operand role/shape/layout 吗？如果不是，重排在哪里完成？</p>
+        </div>
+      </div>
+      <footer class="footer"><span>P and dS each cross shared memory to become transposed MMA operands</span><span>dS transpose</span></footer>
+    </section>
+
+    <section class="slide" data-section="One iteration">
+      <div class="kicker">One Q-tile iteration · approximate dependency timeline</div>
+      <div class="content">
+        <div class="timeline" style="--steps:7">
+          <div class="time-item"><strong>QK</strong><span>recompute S<br>rebuild P</span></div>
+          <div class="time-item"><strong>P store</strong><span>prepare Pᵀ<br>for dV</span></div>
+          <div class="time-item"><strong>dP</strong><span>GVᵀ<br>then dS</span></div>
+          <div class="time-item"><strong>dS store</strong><span>prepare dSᵀ<br>for dK</span></div>
+          <div class="time-item"><strong>dQ</strong><span>8 warp<br>partials</span></div>
+          <div class="time-item"><strong>dV</strong><span>reload Pᵀ<br>accumulate</span></div>
+          <div class="time-item"><strong>dK</strong><span>reload dSᵀ<br>accumulate</span></div>
+        </div>
+        <div class="grid-3">
+          <article class="card"><h3>Overlap</h3><p>next Q/G ordinary global prefetch can overlap independent compute via warp issue/scoreboard。</p></article>
+          <article class="card"><h3>CTA barriers</h3><p>protect Q/G buffer generations and smem_dq reuse。</p></article>
+          <article class="card"><h3>Warp sync</h3><p>protect score-tile transpose handoffs when communication scope is one warp。</p></article>
+        </div>
+        <p class="small muted center">源码 interleave 比这张图更细；timeline 表示 true dependency and lifetime boundaries，不伪造逐 cycle schedule。</p>
+      </div>
+      <footer class="footer"><span>software pipelining overlaps independent work but does not remove true gradient dependencies</span><span>One iteration</span></footer>
+    </section>
+
+    <section class="slide" data-section="dQ local combine">
+      <div class="kicker">Why one CTA produces eight partial dQ tiles</div>
+      <div class="content">
+        <div class="grid-4">
+          <article class="card cyan-edge"><h3>warps 0–1</h3><p>dS[:,J0/J1] @ K[J0/J1,:]</p></article>
+          <article class="card green-edge"><h3>warps 2–3</h3><p>dS[:,J2/J3] @ K[J2/J3,:]</p></article>
+          <article class="card amber-edge"><h3>warps 4–5</h3><p>dS[:,J4/J5] @ K[J4/J5,:]</p></article>
+          <article class="card violet-edge"><h3>warps 6–7</h3><p>dS[:,J6/J7] @ K[J6/J7,:]</p></article>
+        </div>
+        <div class="flow">
+          <span class="node">8 × [Br,D]<br>FP32 acc_dQ</span><span class="arrow">→</span>
+          <span class="node cyan-node">store 8 slices<br>in smem_dq</span><span class="arrow">→</span>
+          <span class="node amber-node">barrier</span><span class="arrow">→</span>
+          <span class="node green-node">reload/add<br>partial 0→7</span>
+        </div>
+        <p class="lead center">这是 <span class="green">CTA-local fixed-order reduction</span>，不是后面 sequence-K mode 的 cross-CTA atomic。</p>
+      </div>
+      <footer class="footer"><span>Bc is the dQ reduction dimension; eight warps each own one slice</span><span>dQ local combine</span></footer>
+    </section>
+
+    <section class="slide" data-section="dK dV ownership">
+      <div class="kicker">Why dK and dV do not need the same eight-way output combine</div>
+      <div class="content grid-2">
+        <div class="card green-edge">
+          <h3>Output rows are partitioned</h3>
+          <div class="matrix cols-4">
+            <span class="cell c0">warp 0<br>dK/dV rows 0:16</span><span class="cell c1">warp 1<br>16:32</span>
+            <span class="cell c2">…</span><span class="cell c3">warp 7<br>112:128</span>
+          </div>
+          <p>每个 output element 只有一个 warp owner；warps 不产生同一 dK/dV element 的八份副本。</p>
+        </div>
+        <div class="card violet-edge">
+          <h3>Reduction happens across Q iterations</h3>
+          <div class="codebox">acc_dV_J[owned rows] += P_IJ^T G_I
+acc_dK_J[owned rows] += dS_IJ^T Q_I
+
+I = first, next, ... last
+then store final rows once</div>
+          <p>同一个 owner warp 按 increasing I order 更新 FP32 registers。</p>
+        </div>
+        <p class="lead center" style="grid-column:1/-1">同样是 many-to-one sum；选择 output-row ownership 后，dK/dV 不再需要跨 warp 或跨 CTA 的同地址 combine。</p>
+      </div>
+      <footer class="footer"><span>partition output rows for dK/dV; partition the reduction axis for dQ</span><span>dK/dV ownership</span></footer>
+    </section>
+
+    <section class="slide" data-section="Resources">
+      <div class="kicker">Backward shared-memory ledger · D128/Bc128 is already near the A100 limit</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <table>
+            <thead><tr><th>Shared allocation</th><th>D128 value</th></tr></thead>
+            <tbody>
+              <tr><td>Q and G double-buffer systems</td><td>16 KiB</td></tr>
+              <tr><td>K/V staging, V not retained</td><td>64 KiB</td></tr>
+              <tr><td>8 × FP32 partial dQ [16,128]</td><td>64 KiB</td></tr>
+              <tr><td>P and dS transpose buffers</td><td>8 KiB</td></tr>
+              <tr><td><strong>Total</strong></td><td><strong>152 KiB/CTA</strong></td></tr>
+            </tbody>
+          </table>
+          <p class="small muted">Source-selected D128/Bc128 specialization does not retain V fragments across the whole Q loop.</p>
+        </div>
+        <div>
+          <div class="equation">A100 max shared/SM ≈ 164 KiB<br>this CTA requests 152 KiB</div>
+          <ul>
+            <li>shared capacity alone strongly suggests at most one such CTA resident/SM；</li>
+            <li>8 warps、registers、barriers and allocation granularity still matter；</li>
+            <li>large workspace explains why backward tile/warp choices differ from forward；</li>
+            <li>D=512 cannot simply recompile this FA1 layout。</li>
+          </ul>
+          <p class="small amber">这是 source-level capacity bound，不是 measured occupancy；最终仍要看 selected binary metadata/runtime。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>backward pays for transpose buffers and replicated partial dQ state</span><span>Resources</span></footer>
+    </section>
+
+    <section class="slide section-slide" data-section="Part IV">
+      <div class="kicker">Part IV · same body, different outer owner</div>
+      <div class="content">
+        <h2>Serial K/V<br>versus<br>Sequence-K Parallel</h2>
+        <p class="lead muted">determinism 的分界发生在 dQ 的 cross-J combine。</p>
+      </div>
+      <footer class="footer"><span>num_splits=1 versus num_splits&gt;1</span><span>Part IV</span></footer>
+    </section>
+
+    <section class="slide" data-section="num_splits semantics">
+      <div class="kicker">Backward num_splits · do not reuse the forward meaning</div>
+      <div class="content grid-2">
+        <div class="card green-edge">
+          <span class="tag">num_splits = 1</span>
+          <h3>Disable sequence-K parallelism</h3>
+          <span class="equation">grid = (B,H,1)</span>
+          <p>每个 (batch,head) 一个 CTA；它顺序执行全部 64 个 K/V tiles。</p>
+        </div>
+        <div class="card red-edge">
+          <span class="tag">num_splits &gt; 1</span>
+          <h3>Select sequence-K mode</h3>
+          <span class="equation">main grid = (B,H,ceil(Nk/Bc))</span>
+          <p>running example 是 1×32×64 = 2048 CTAs；不是数值 4 就只有四份。</p>
+        </div>
+        <div class="card amber-edge" style="grid-column:1/-1">
+          <p><strong>num_splits=0</strong>：host heuristic 在两种模式间选择。它比较 wave utilization，同时给 parallel mode 的 D kernel、dq_tmp zero、atomic、final copy/cast 计入折扣。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>same parameter name, materially different scheduling semantics from forward</span><span>num_splits</span></footer>
+    </section>
+
+    <section class="slide" data-section="Serial mode">
+      <div class="kicker">num_splits=1 · one CTA owns the complete cross-K dQ chain</div>
+      <div class="content grid-2 wide-left">
+        <div class="codebox">CTA(batch b, head h):
+  for J = 0,1,2,...,63:
+    run common one_iter(J)
+      for I in increasing Q order:
+        compute local contribution dQ_I_from_J
+        combine 8 warp partials in fixed order
+        merge with prior dq_tmp[I]
+
+    write final dK_J and dV_J
+
+  last J casts/writes final dQ</div>
+        <div>
+          <div class="card green-edge"><h3>One cross-J owner</h3><p>只有这一 CTA 读写该 (b,h) 的 in-progress dQ。</p></div>
+          <div class="card cyan-edge"><h3>Fixed J traversal</h3><p>J0 → J1 → … → J63 是同一 thread block 的 program order。</p></div>
+          <div class="card violet-edge"><h3>Fixed local order</h3><p>每个 J 内又按 partial 0→7 合并八个 warp contributors。</p></div>
+        </div>
+      </div>
+      <footer class="footer"><span>unique owner plus fixed local and outer orders—not merely “no atomic”</span><span>Serial mode</span></footer>
+    </section>
+
+    <section class="slide" data-section="Serial dQ order">
+      <div class="kicker">The effective dQ accumulation order is nested and explicit</div>
+      <div class="content">
+        <div class="timeline" style="--steps:4">
+          <div class="time-item"><strong>J0</strong><span>partial0 + … + partial7<br>write FP32 state</span></div>
+          <div class="time-item"><strong>J1</strong><span>load prior J0<br>+ partial0…7</span></div>
+          <div class="time-item"><strong>…</strong><span>same CTA<br>same order</span></div>
+          <div class="time-item"><strong>J63</strong><span>load prior<br>add/cast final dQ</span></div>
+        </div>
+        <div class="equation">(((partials of J0) + partials of J1) + …) + partials of J63</div>
+        <div class="grid-3">
+          <article class="card green-edge"><h3>Scheduler freedom</h3><p>warp 可以暂停或与其他 warps interleave，但 dependent update 不能越过 predecessor。</p></article>
+          <article class="card cyan-edge"><h3>Other heads</h3><p>其他 CTAs 可以任意完成，因为写入 disjoint batch/head regions。</p></article>
+          <article class="card amber-edge"><h3>Scope</h3><p>fixed binary/shape/dtype/mask/RNG 内 repeatable；不保证与另一个 tile plan bits 相同。</p></article>
+        </div>
+      </div>
+      <footer class="footer"><span>the arithmetic parenthesization is fixed inside one resolved implementation</span><span>Serial mode</span></footer>
+    </section>
+
+    <section class="slide" data-section="dq_tmp">
+      <div class="kicker">Why serial mode still uses global dq_tmp without creating a race</div>
+      <div class="content grid-2">
+        <div class="memory">
+          <div class="mem reg"><strong>Current I,J</strong><br>eight local partial dQ fragments in registers</div>
+          <div class="mem shared"><strong>Current I,J CTA combine</strong><br>eight FP32 slices in smem_dq</div>
+          <div class="mem global"><strong>Across J steps</strong><br>FP32 dq_tmp for all Q rows in this head</div>
+        </div>
+        <div class="card cyan-edge">
+          <h3>Global residence ≠ shared ownership</h3>
+          <ul>
+            <li>one CTA cannot keep 8192 rows of dQ live in registers/shared；</li>
+            <li>it spills the completed prefix state for Q tile I to dq_tmp；</li>
+            <li>later J iteration by the same CTA reloads and updates it；</li>
+            <li>no second CTA touches that head's in-progress dQ。</li>
+          </ul>
+          <p class="lead center"><span class="green">global memory can be race-free when ownership remains unique</span></p>
+        </div>
+      </div>
+      <footer class="footer"><span>residence answers capacity; ownership answers race and order</span><span>dq_tmp</span></footer>
+    </section>
+
+    <section class="slide" data-section="D serial mode">
+      <div class="kicker">Dᵢ in serial mode · first J computes it, later J reuses it</div>
+      <div class="content">
+        <div class="flow">
+          <span class="node green-node">J0 iteration<br>load Gᵢ,Oᵢ</span><span class="arrow">→</span>
+          <span class="node amber-node">Dᵢ=GᵢᵀOᵢ</span><span class="arrow">→</span>
+          <span class="node violet-node">store FP32<br>softmax_d[i]</span><span class="arrow">→</span>
+          <span class="node cyan-node">J1…J63<br>reload Dᵢ</span>
+        </div>
+        <div class="grid-2">
+          <div class="card green-edge"><h3>Program-order publication</h3><p>同一个 CTA 先完成 J0 的 D store，随后才进入 J1；不需要 grid barrier。</p></div>
+          <div class="card red-edge"><h3>Why this cannot be copied to parallel mode</h3><p>不同 K/V-tile CTAs 没有普通 CTA barrier；不能假设 CTA J0 会先发布 D，再让所有其他 J consumers 安全读取。</p></div>
+        </div>
+      </div>
+      <footer class="footer"><span>one CTA can establish producer-before-consumer order across its own loop iterations</span><span>D state</span></footer>
+    </section>
+
+    <section class="slide" data-section="Deterministic flag">
+      <div class="kicker">What deterministic=True actually guarantees in this historical path</div>
+      <div class="content">
+        <div class="flow">
+          <span class="node violet-node">Python<br>deterministic=True</span><span class="arrow">→</span>
+          <span class="node amber-node">backward<br>num_splits=1</span><span class="arrow">→</span>
+          <span class="node green-node">disable sequence-K<br>atomic dQ path</span>
+        </div>
+        <div class="grid-3">
+          <article class="card green-edge"><h3>It does</h3><p>select one CTA owner for cross-K dQ and fixed J order。</p></article>
+          <article class="card red-edge"><h3>It does not</h3><p>ask CUDA for a universal deterministic mode or audit unrelated operators。</p></article>
+          <article class="card amber-edge"><h3>Scoped verdict</h3><p>expected bitwise repeatability under fixed binary, architecture, inputs, metadata and RNG。</p></article>
+        </div>
+        <p class="lead center">slower path 的本质是 <span class="amber">放弃 64-way K/V-tile CTA parallelism</span>，同时省掉 parallel protocol 的额外 kernels/workspace traffic。</p>
+      </div>
+      <footer class="footer"><span>the flag disables one known nondeterministic ownership plan</span><span>Deterministic flag</span></footer>
+    </section>
+
+    <section class="slide" data-section="Parallel mode">
+      <div class="kicker">num_splits&gt;1 · every K/V tile becomes an independent CTA work unit</div>
+      <div class="content">
+        <div class="matrix cols-4">
+          <span class="cell c0">CTA J0<br>owns dK_J0,dV_J0<br>contributes all dQ_I</span>
+          <span class="cell c1">CTA J1<br>owns dK_J1,dV_J1<br>contributes all dQ_I</span>
+          <span class="cell c2">…</span>
+          <span class="cell c3">CTA J63<br>owns dK_J63,dV_J63<br>contributes all dQ_I</span>
+        </div>
+        <div class="config"><span>grid=1×32×64</span><span>2048 independent CTAs</span><span>each CTA=8 warps</span><span>one_iter(J) once</span></div>
+        <div class="grid-3">
+          <article class="card green-edge"><h3>Parallelism</h3><p>足够多 K/V work units 填满 SM waves，尤其 B×H 较小时。</p></article>
+          <article class="card violet-edge"><h3>Still single-owned</h3><p>dK_J/dV_J belong only to CTA J。</p></article>
+          <article class="card red-edge"><h3>Now shared</h3><p>all J CTAs write contributions to the same dq_tmp[I] elements。</p></article>
+        </div>
+      </div>
+      <footer class="footer"><span>outer K/V parallelism improves occupancy by turning dQ into a shared destination</span><span>Parallel mode</span></footer>
+    </section>
+
+    <section class="slide" data-section="Parallel protocol">
+      <div class="kicker">Parallel mode needs three protocol stages around the common body</div>
+      <div class="content">
+        <div class="timeline" style="--steps:5">
+          <div class="time-item"><strong>1 · D kernel</strong><span>compute all<br>Dᵢ=GᵢᵀOᵢ</span></div>
+          <div class="time-item"><strong>2 · zero</strong><span>initialize FP32<br>dq_tmp</span></div>
+          <div class="time-item"><strong>3 · main</strong><span>one CTA/J<br>run one_iter</span></div>
+          <div class="time-item"><strong>4 · atomic</strong><span>add local dQ<br>into dq_tmp</span></div>
+          <div class="time-item"><strong>5 · copy</strong><span>cast/store final<br>requested dQ</span></div>
+        </div>
+        <div class="grid-3">
+          <article class="card cyan-edge"><h3>Stream ordering</h3><p>D and zero complete before main kernel consumers；main completes before final copy。</p></article>
+          <article class="card amber-edge"><h3>More traffic</h3><p>extra kernel launches plus dq_tmp write/read and atomic RMW。</p></article>
+          <article class="card red-edge"><h3>New numeric freedom</h3><p>stream orders kernels, but not arrival order among CTAs inside the main grid。</p></article>
+        </div>
+      </div>
+      <footer class="footer"><span>parallel ownership requires publication, initialization, atomic combine, and finalization</span><span>Parallel protocol</span></footer>
+    </section>
+
+    <section class="slide" data-section="Atomic dQ">
+      <div class="kicker">AtomicAdd prevents lost updates—but does not impose J order</div>
+      <div class="content grid-2">
+        <div class="card cyan-edge">
+          <h3>One CTA first does a fixed local combine</h3>
+          <div class="codebox">local_J = partial0 + partial1
+        + ... + partial7
+
+atomicAdd(&dq_tmp[I,e], local_J)</div>
+          <p>每个 atomic read-modify-write indivisible，因此不会丢 contribution。</p>
+        </div>
+        <div class="card red-edge">
+          <h3>Different CTAs can arrive differently</h3>
+          <div class="codebox">run A: ((0 + J0) + J1) + J2
+run B: ((0 + J1) + J2) + J0
+run C: ((0 + J2) + J0) + J1</div>
+          <p>scheduler/cache/contention 改变哪一个 CTA 先执行 atomic。</p>
+        </div>
+        <div class="equation" style="grid-column:1/-1">FP32 addition is not associative → legal atomic serializations can produce different low bits</div>
+      </div>
+      <footer class="footer"><span>atomicity is a correctness guarantee, not a deterministic reduction tree</span><span>Atomic dQ</span></footer>
+    </section>
+
+    <section class="slide" data-section="Atomic subtlety">
+      <div class="kicker">Subtle contributor counts · one, two, and three are not equally diagnostic</div>
+      <div class="content grid-3">
+        <article class="card green-edge">
+          <h3>One J contributor</h3>
+          <span class="equation">0 + x</span>
+          <p>只有一个 writer；atomic path 本身没有 cross-CTA numeric order question。</p>
+        </article>
+        <article class="card amber-edge">
+          <h3>Two ordinary finite contributors</h3>
+          <span class="equation">(0+x)+y<br>versus (0+y)+x</span>
+          <p>交换 x/y 通常仍相同，因为 binary FP addition commutative；不是最清晰 probe。</p>
+        </article>
+        <article class="card red-edge">
+          <h3>Three or more contributors</h3>
+          <span class="equation">(x+y)+z<br>versus (y+z)+x</span>
+          <p>parenthesization 改变，non-associativity 明确可见；长 K sequence 是更可靠测试。</p>
+        </article>
+        <p class="lead center" style="grid-column:1/-1">不要因为一个短 sequence repeatable，就推断 sequence-parallel dQ 普遍 deterministic。</p>
+      </div>
+      <footer class="footer"><span>construct tests with enough actual K/V-tile contributors</span><span>Atomic subtlety</span></footer>
+    </section>
+
+    <section class="slide" data-section="dK dV parallel">
+      <div class="kicker">Why dK and dV remain single-owned in sequence-K mode</div>
+      <div class="content">
+        <div class="flow">
+          <span class="node cyan-node">CTA J0</span><span class="arrow">→</span><span class="node">only dK_J0,dV_J0</span>
+          <span class="node green-node">CTA J1</span><span class="arrow">→</span><span class="node">only dK_J1,dV_J1</span>
+          <span class="node violet-node">CTA J63</span><span class="arrow">→</span><span class="node">only dK_J63,dV_J63</span>
+        </div>
+        <table>
+          <thead><tr><th>Property</th><th>dQ</th><th>dK/dV</th></tr></thead>
+          <tbody>
+            <tr><td>one J CTA contribution</td><td>partial output</td><td>complete owned output rows</td></tr>
+            <tr><td>other J CTAs target same address?</td><td class="red">yes</td><td class="green">no</td></tr>
+            <tr><td>cross-CTA atomic?</td><td class="red">yes</td><td class="green">no</td></tr>
+            <tr><td>historical repeat test</td><td>tolerance / nondeterministic annotation</td><td>exact comparison</td></tr>
+          </tbody>
+        </table>
+        <p class="lead center">CTA completion order is irrelevant when each CTA writes disjoint final dK/dV regions。</p>
+      </div>
+      <footer class="footer"><span>scheduler order matters numerically only when independent workers share a floating-point destination</span><span>dK/dV parallel</span></footer>
+    </section>
+
+    <section class="slide" data-section="Performance">
+      <div class="kicker">Why parallel mode can win—and why deterministic mode can be slower</div>
+      <div class="content grid-2">
+        <div class="card green-edge">
+          <h3>Sequence-K parallel benefit</h3>
+          <ul>
+            <li>grid expands from B×H=32 CTAs to B×H×64=2048 CTAs；</li>
+            <li>D128 backward CTA is resource-heavy and likely one/SM；</li>
+            <li>more waves improve utilization and causal load balance；</li>
+            <li>each CTA owns one J, shortening its serial lifetime。</li>
+          </ul>
+        </div>
+        <div class="card red-edge">
+          <h3>Protocol cost</h3>
+          <ul>
+            <li>separate D kernel；</li>
+            <li>zero FP32 dq_tmp；</li>
+            <li>atomic RMW contention and traffic；</li>
+            <li>final copy/cast kernel；</li>
+            <li>possible cache/interference differences。</li>
+          </ul>
+        </div>
+        <p class="lead center" style="grid-column:1/-1">所以 deterministic=True 的 slowdown 主要来自 <span class="amber">减少 CTA parallelism</span>；parallel mode 也并非免费。</p>
+      </div>
+      <footer class="footer"><span>performance is a wave-utilization versus protocol-overhead tradeoff</span><span>Performance</span></footer>
+    </section>
+
+    <section class="slide" data-section="Causal">
+      <div class="kicker">Causal backward · contributor count becomes row-dependent</div>
+      <div class="content grid-2">
+        <div class="matrix cols-4">
+          <span class="cell c0">early Q row<br>J0 valid</span><span class="cell">J1 masked</span><span class="cell">J2 masked</span><span class="cell">J3 masked</span>
+          <span class="cell c0">late Q row<br>J0 valid</span><span class="cell c1">J1 valid</span><span class="cell c2">J2 valid</span><span class="cell c3">J3 valid</span>
+        </div>
+        <div class="card amber-edge">
+          <h3>Consequences</h3>
+          <ul>
+            <li>early rows may receive dQ contribution from only one K/V-tile CTA；</li>
+            <li>later rows receive several atomic contributors；</li>
+            <li>first nondeterministic row may therefore appear late in sequence；</li>
+            <li>causal K/V-tile parallelism also improves work balance, so heuristic discount differs。</li>
+          </ul>
+          <p class="small muted">A component test should not probe only early causal tokens。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>mask semantics change the contributor set, not the atomic-order argument</span><span>Causal</span></footer>
+    </section>
+
+    <section class="slide" data-section="Varlen and dropout">
+      <div class="kicker">Varlen and dropout · two different determinism obligations</div>
+      <div class="content grid-2">
+        <div class="card cyan-edge">
+          <h3>Variable lengths</h3>
+          <ul>
+            <li>packed offsets change global addresses and valid Q/K bounds；</li>
+            <li>tail predicates disable invalid tiles/elements；</li>
+            <li>actual contributor count depends on each sequence length；</li>
+            <li>padded/uninitialized workspace bytes are not semantic outputs。</li>
+          </ul>
+        </div>
+        <div class="card violet-edge">
+          <h3>Dropout replay</h3>
+          <ul>
+            <li>backward must regenerate the exact forward keep mask；</li>
+            <li>v1.0.9 saves Philox state and maps counters from logical coordinates；</li>
+            <li>same mask is required before judging arithmetic repeatability；</li>
+            <li>RNG mismatch and atomic dQ mismatch are separate failure signatures。</li>
+          </ul>
+        </div>
+      </div>
+      <footer class="footer"><span>fix semantic domains and RNG before attributing a mismatch to reduction order</span><span>Modes</span></footer>
+    </section>
+
+    <section class="slide section-slide" data-section="Part V">
+      <div class="kicker">Part V · turn the source model into checks</div>
+      <div class="content">
+        <h2>Predict The<br>First Mismatch</h2>
+        <p class="lead muted">forward equal → dQ first differs → inspect sequence-K atomic ownership。</p>
+      </div>
+      <footer class="footer"><span>verification follows the ownership graph</span><span>Part V</span></footer>
+    </section>
+
+    <section class="slide" data-section="Verification">
+      <div class="kicker">Component probe · capture enough state to make the hypothesis falsifiable</div>
+      <div class="content grid-2">
+        <div class="card cyan-edge">
+          <h3>Capture boundary</h3>
+          <ul>
+            <li>Q,K,V,O,LSE and incoming G=dO；</li>
+            <li>shape, strides, cu_seqlens, mask/causal mode；</li>
+            <li>dtype, scale, dropout p, Philox seed/offset；</li>
+            <li>public deterministic and resolved num_splits；</li>
+            <li>source commit, binary hash, GPU/CUDA/driver。</li>
+          </ul>
+        </div>
+        <div class="card green-edge">
+          <h3>Fingerprint outputs</h3>
+          <ul>
+            <li>dQ,dK,dV exact byte hashes；</li>
+            <li>softmax_d and dq_tmp at useful internal boundaries；</li>
+            <li>exclude padding/uninitialized regions；</li>
+            <li>after mismatch, report max/mean delta only as characterization。</li>
+          </ul>
+        </div>
+      </div>
+      <footer class="footer"><span>exact hashes locate a repeatability failure; tolerances describe it afterward</span><span>Verification</span></footer>
+    </section>
+
+    <section class="slide" data-section="Expected signature">
+      <div class="kicker">Expected diagnostic signature for the pinned v1.0.9 path</div>
+      <div class="content">
+        <table>
+          <thead><tr><th>Boundary</th><th>num_splits=1</th><th>sequence-K mode</th></tr></thead>
+          <tbody>
+            <tr><td>captured Q,K,V,O,LSE,G,RNG</td><td class="green">identical</td><td class="green">identical</td></tr>
+            <tr><td>D / softmax_d</td><td class="green">identical</td><td class="green">identical</td></tr>
+            <tr><td>dK</td><td class="green">expected repeat</td><td class="green">expected repeat</td></tr>
+            <tr><td>dV</td><td class="green">expected repeat</td><td class="green">expected repeat</td></tr>
+            <tr><td>dQ / dq_tmp</td><td class="green">expected repeat</td><td class="red">first likely exact mismatch</td></tr>
+          </tbody>
+        </table>
+        <div class="flow">
+          <span class="node green-node">inputs/RNG equal</span><span class="arrow">→</span>
+          <span class="node green-node">forward state equal</span><span class="arrow">→</span>
+          <span class="node red-node">dQ first differs</span><span class="arrow">→</span>
+          <span class="node amber-node">inspect K-tile parallelism<br>and atomic arrival order</span>
+        </div>
+      </div>
+      <footer class="footer"><span>a source hypothesis is useful when it predicts the first divergent tensor</span><span>Expected signature</span></footer>
+    </section>
+
+    <section class="slide" data-section="Verdict">
+      <div class="kicker">Scoped backward determinism verdict</div>
+      <div class="content">
+        <table>
+          <thead><tr><th>Path</th><th>Verdict</th><th>Reason</th></tr></thead>
+          <tbody>
+            <tr><td><code>deterministic=True</code><br><code>num_splits=1</code></td><td class="green">expected deterministic in fixed envelope</td><td>one cross-K dQ owner; fixed J and local partial order</td></tr>
+            <tr><td>default/parallel<br><code>num_splits&gt;1</code></td><td class="red">do not assume bitwise dQ repeatability</td><td>independent K-tile CTAs atomically combine into dq_tmp</td></tr>
+            <tr><td>dK,dV in studied parallel path</td><td class="green">historically exact-repeated</td><td>each K/V output tile remains single-owned</td></tr>
+          </tbody>
+        </table>
+        <div class="grid-3">
+          <article class="card"><h3>Fixed envelope</h3><p>same source/binary, architecture, shape, dtype, metadata and RNG。</p></article>
+          <article class="card"><h3>Not cross-kernel equality</h3><p>two deterministic tile plans can produce different bits。</p></article>
+          <article class="card"><h3>Not whole-model proof</h3><p>upstream/downstream operators and communication still require their own ownership audit。</p></article>
+        </div>
+      </div>
+      <footer class="footer"><span>repeatability, numerical closeness, and reference equality are different contracts</span><span>Verdict</span></footer>
+    </section>
+
+    <section class="slide" data-section="Audit map">
+      <div class="kicker">Source landmarks and remaining GPU evidence</div>
+      <div class="content grid-2">
+        <div class="card compact">
+          <h3>Pinned source map</h3>
+          <table class="dense">
+            <tbody>
+              <tr><td><code>fmha_api.cpp</code></td><td>workspace allocation, zero/copy orchestration</td></tr>
+              <tr><td><code>fmha_bwd_launch_template.h</code></td><td>mode heuristic and grids</td></tr>
+              <tr><td><code>fmha_bwd_hdim*.cu</code></td><td>tile family, eight-warps, V-in-register choice</td></tr>
+              <tr><td><code>fmha_dgrad_kernel_1xN_loop.h</code></td><td>common body, serial/parallel entry</td></tr>
+              <tr><td><code>gmem_tile.h</code></td><td>FP32 atomicAdd path</td></tr>
+              <tr><td><code>tests/test_flash_attn.py</code></td><td>historical repeatability expectations</td></tr>
+            </tbody>
+          </table>
+          <p class="small"><a href="flashattention_fa1_foundations.md">Open full Markdown source audit</a></p>
+        </div>
+        <div class="card amber-edge">
+          <h3>GPU validation queue</h3>
+          <ol>
+            <li>observe selected mode and exact CTA grid；</li>
+            <li>record registers/thread, 152 KiB shared and achieved occupancy；</li>
+            <li>profile atomic dq_tmp traffic and extra kernels；</li>
+            <li>exact-repeat long-K noncausal and late causal rows；</li>
+            <li>confirm P/dS transpose and dQ combine instructions in SASS。</li>
+          </ol>
+          <p class="tiny muted">Pinned implementation: Dao-AILab/flash-attention commit 6d48e14a6c2f551db96f0badc658a6279a929df3.</p>
+        </div>
+      </div>
+      <footer class="footer"><span>CPU-only source reasoning narrows what future GPU evidence must prove</span><span>Audit map</span></footer>
+    </section>
+
+    <section class="slide section-slide" data-section="Checkpoint">
+      <div class="kicker">One-screen checkpoint</div>
+      <div class="content">
+        <h2>记住这六句话</h2>
+        <div class="grid-2">
+          <div class="card cyan-edge">
+            <ol>
+              <li>backward 用 Q,K,LSE recompute P，用 GᵀO 得到 row scalar D。</li>
+              <li>一个 K/V-tile body 顺序扫 Q tiles，完整拥有该 J 的 dK/dV。</li>
+              <li>P 和 dS 的原 fragment 不能直接当 transpose 用；shared memory 完成 layout conversion。</li>
+            </ol>
+          </div>
+          <div class="card green-edge">
+            <ol start="4">
+              <li>八个 warps 对 dQ 产生八份 local partial，并在 CTA 内固定顺序合并。</li>
+              <li>num_splits=1 用一个 CTA 固定顺序扫 J；global dq_tmp 仍是 single-owned。</li>
+              <li>sequence-K mode 让 J CTAs atomic-add 同一个 dQ；arrival order 使 dQ nondeterministic。</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+      <footer class="footer"><span>next comparison: ask FA2 how each of these ownership and movement choices changes</span><span>Checkpoint</span></footer>
+    </section>
+
+  </main>
+  <div class="controls">
+    <button id="prev" title="Previous">←</button>
+    <span class="counter" id="counter">1 / 1</span>
+    <button id="next" title="Next">→</button>
+    <button id="overview" title="Overview">▦</button>
+    <button id="fullscreen" title="Fullscreen">⛶</button>
+    <button id="helpButton" title="Help">?</button>
+  </div>
+  <div class="progress" id="progress"></div>
+  <aside class="help" id="help">
+    <p><strong>← / → · PageUp / PageDown · Space</strong>：翻页</p>
+    <p><strong>O</strong>：overview；<strong>F</strong>：全屏；<strong>?</strong>：帮助</p>
+    <p><strong>Home / End</strong>：第一页 / 最后一页</p>
+  </aside>
+  <script>
+    (() => {
+      const slides=[...document.querySelectorAll(".slide")];
+      const counter=document.getElementById("counter"),progress=document.getElementById("progress");
+      const help=document.getElementById("help"); let current=0;
+      slides.forEach((s,i)=>{s.dataset.number=String(i+1);s.addEventListener("click",()=>{if(document.body.classList.contains("overview")){document.body.classList.remove("overview");show(i);}});});
+      function show(i){current=Math.max(0,Math.min(slides.length-1,i));slides.forEach((s,j)=>s.classList.toggle("active",j===current));counter.textContent=`${current+1} / ${slides.length}`;progress.style.width=`${100*(current+1)/slides.length}%`;location.hash=`slide-${current+1}`;}
+      function toggleOverview(){document.body.classList.toggle("overview");if(!document.body.classList.contains("overview"))show(current);}
+      document.getElementById("prev").onclick=()=>show(current-1);
+      document.getElementById("next").onclick=()=>show(current+1);
+      document.getElementById("overview").onclick=toggleOverview;
+      document.getElementById("fullscreen").onclick=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();
+      document.getElementById("helpButton").onclick=()=>help.classList.toggle("show");
+      addEventListener("keydown",e=>{if(["ArrowRight","PageDown"," "].includes(e.key)){e.preventDefault();show(current+1);}else if(["ArrowLeft","PageUp"].includes(e.key)){e.preventDefault();show(current-1);}else if(e.key==="Home")show(0);else if(e.key==="End")show(slides.length-1);else if(e.key.toLowerCase()==="o")toggleOverview();else if(e.key.toLowerCase()==="f")document.getElementById("fullscreen").click();else if(e.key==="?")help.classList.toggle("show");});
+      const hash=Number((location.hash.match(/\d+/)||["1"])[0])-1;show(hash);
+    })();
+  </script>
+</body>
+</html>

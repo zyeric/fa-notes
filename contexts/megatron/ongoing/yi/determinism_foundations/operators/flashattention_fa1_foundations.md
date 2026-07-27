@@ -75,6 +75,16 @@ grid/CTA/warp/register/synchronization model before tiling, then follows a
 movement, shared-bank swizzles, the four-warp pipeline, modes, and the
 determinism proof. This Markdown file remains the source of truth.
 
+For the corresponding backward reading surface, open the standalone
+[FA1 backward visual map](flashattention_fa1_backward.html). It assumes the
+forward deck's CUDA vocabulary, then follows the same
+`B=1,H=32,N=8192,d=128` example from the five gradient equations through
+recomputed P, eight-warp K/V-tile ownership, shared-memory transpose
+handoffs, serial versus sequence-K `dQ` accumulation, and the scoped
+determinism verdict. It also uses the concrete `P`/`dS` transpose path to show
+why live register data is not automatically reusable under a different MMA
+fragment contract.
+
 For the completed forward track, read straight through Sections 1--9. The
 lowering path is:
 
