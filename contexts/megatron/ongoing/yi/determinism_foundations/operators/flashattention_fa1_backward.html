@@ -119,7 +119,7 @@
         </div>
         <p class="lead">同一套 backward 数学，因为 <code>dQ</code> ownership 不同，可以走 deterministic serial-K path，也可以走 atomic sequence-K path。</p>
       </div>
-      <footer class="footer"><span>B=1 · H=32 · N=8192 · D=128 walkthrough</span><span>2026-07-27</span></footer>
+      <footer class="footer"><span>B=1 · H=32 · N=8192 · D=128 walkthrough</span><span>2026-07-28</span></footer>
     </section>
 
     <section class="slide" data-section="Reading contract">
@@ -722,7 +722,7 @@ then store final rows once</div>
           <p>running example 是 1×32×64 = 2048 CTAs；不是数值 4 就只有四份。</p>
         </div>
         <div class="card amber-edge" style="grid-column:1/-1">
-          <p><strong>num_splits=0</strong>：host heuristic 在两种模式间选择。它比较 wave utilization，同时给 parallel mode 的 D kernel、dq_tmp zero、atomic、final copy/cast 计入折扣。</p>
+          <p><strong>num_splits=0</strong>：host heuristic 在两种模式间选择。它比较 wave utilization 并给 parallel path 一个经验折扣；源码注释明确点出 dq_tmp zero/final copy，实际 path 还包含 separate D kernel 和 atomic traffic。</p>
         </div>
       </div>
       <footer class="footer"><span>same parameter name, materially different scheduling semantics from forward</span><span>num_splits</span></footer>
@@ -865,6 +865,141 @@ then store final rows once</div>
       <footer class="footer"><span>parallel ownership requires publication, initialization, atomic combine, and finalization</span><span>Parallel protocol</span></footer>
     </section>
 
+    <section class="slide" data-section="Atomic source path">
+      <div class="kicker">One atomic contribution · first finish the CTA-local reduction</div>
+      <div class="content">
+        <div class="flow">
+          <span class="node amber-node">8 warp-local dQ<br>FP32 accumulators</span><span class="arrow">→</span>
+          <span class="node cyan-node">8 slices in<br>CTA-private smem_dq</span><span class="arrow">→</span>
+          <span class="node green-node">fixed partial 0→7<br>reload/reduce</span><span class="arrow">→</span>
+          <span class="node violet-node">dq_out uint4<br>per-thread registers</span><span class="arrow">→</span>
+          <span class="node red-node">global FP32<br>dq_tmp atomic</span>
+        </div>
+        <div class="grid-3">
+          <article class="card cyan-edge"><h3>Shared memory job</h3><p>只合并一个 CTA 的八个 warp partial；地址和 allocation 都是 CTA-private。</p></article>
+          <article class="card violet-edge"><h3>Global memory job</h3><p>不同 <code>blockIdx.z=J</code> CTA 才通过同一份 <code>dq_tmp</code> 合并。</p></article>
+          <article class="card amber-edge"><h3>Physical cache nuance</h3><p>目标属于 global address space；运行中可由 L2 atomic path 服务，并非每次都新访 HBM。</p></article>
+        </div>
+        <p class="lead center">先 local deterministic combine，再做 cross-CTA unordered combine。</p>
+      </div>
+      <footer class="footer"><span>residence and combine scope must be named separately</span><span>Atomic source path</span></footer>
+    </section>
+
+    <section class="slide" data-section="Atomic lane mapping">
+      <div class="kicker">D=128 · map one active thread to four scalar FP32 destinations</div>
+      <div class="content grid-2 wide-left">
+        <div>
+          <div class="equation">one dQ row = 128×4 B = 512 B<br>one thread chunk = uint4 = 16 B = 4 FP32<br>512 / 16 = 32 threads per row</div>
+          <table class="dense">
+            <thead><tr><th>threadIdx.x</th><th>local q row</th><th>d columns</th></tr></thead>
+            <tbody>
+              <tr><td>0</td><td>0</td><td>0…3</td></tr>
+              <tr><td>1</td><td>0</td><td>4…7</td></tr>
+              <tr><td>…</td><td>0</td><td>…</td></tr>
+              <tr><td>31</td><td>0</td><td>124…127</td></tr>
+              <tr><td>32</td><td>1</td><td>0…3</td></tr>
+            </tbody>
+          </table>
+          <p class="small muted">256 threads cover 8 rows/store group；the Br=16 tile uses two groups。Tail predicates disable invalid rows/columns。</p>
+        </div>
+        <div>
+          <div class="codebox">float4 value = bits(dq_out[ii]);
+float *ptr = &amp;dq_tmp[b,h,q_row,d0];
+
+#pragma unroll
+for (int k = 0; k &lt; 4; ++k)
+  atomicAdd(ptr + k, value[k]);</div>
+          <div class="card red-edge">
+            <h3>Not one vector atomic</h3>
+            <p><code>uint4</code> 只是 16-byte carrier；源码展开为四个 32-bit FP32 <code>atomicAdd</code>。</p>
+          </div>
+          <div class="card green-edge">
+            <h3>Where contention comes from</h3>
+            <p>同 warp lanes 通常写不同 word；相同地址竞争来自同一 (b,h) 的不同 J CTAs。</p>
+          </div>
+        </div>
+      </div>
+      <footer class="footer"><span>“every thread calls atomicAdd” is incomplete without predicates and address mapping</span><span>Atomic lane mapping</span></footer>
+    </section>
+
+    <section class="slide" data-section="Why FP32 dq_tmp">
+      <div class="kicker">Why dq_tmp and returned dQ are separate buffers</div>
+      <div class="content grid-2">
+        <div class="card violet-edge">
+          <h3>Accumulation surface</h3>
+          <span class="equation">dq_tmp: FP32 global workspace</span>
+          <ul>
+            <li>zero before sequence-K contributors start；</li>
+            <li>source atomic wrapper requires 4-byte elements；</li>
+            <li>all K/V-tile contributions stay FP32；</li>
+            <li>also stores serial cross-J prefix state when needed。</li>
+          </ul>
+        </div>
+        <div class="card green-edge">
+          <h3>Public gradient</h3>
+          <span class="equation">dQ: same dtype as Q<br>normally FP16/BF16</span>
+          <ul>
+            <li>main kernel finishes before the stream-ordered copy；</li>
+            <li><code>dq.copy_(dq_tmp)</code> performs the final cast；</li>
+            <li>round once after FP32 accumulation, not once per J contribution。</li>
+          </ul>
+        </div>
+        <div class="card amber-edge" style="grid-column:1/-1">
+          <p><strong>Atomic does not universally require a second buffer：</strong>if the requested output itself were compatible FP32 and zero-initialized, an implementation could target it directly。这里是 cross-CTA accumulation、FP32 precision 和 16-bit API output 共同产生了 workspace。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>separate dtype/lifetime/ownership roles explain the extra allocation</span><span>dq_tmp</span></footer>
+    </section>
+
+    <section class="slide" data-section="ATOM versus RED">
+      <div class="kicker">Is atomicAdd asynchronous for the issuing warp?</div>
+      <div class="content grid-2">
+        <div>
+          <table>
+            <thead><tr><th>Lowering</th><th>Result dependency</th></tr></thead>
+            <tbody>
+              <tr><td><code>atom ... old,[addr],x</code></td><td>returns the old value into a destination register</td></tr>
+              <tr><td><code>red ... [addr],x</code></td><td>no destination register; update only</td></tr>
+            </tbody>
+          </table>
+          <p>FA1 discards <code>atomicAdd</code>'s return value, so the compiler can use a no-return reduction。Exact PTX/SASS still belongs to the compiled binary and should be checked with <code>cuobjdump</code>/<code>nvdisasm</code>。</p>
+          <p class="small"><a href="https://docs.nvidia.com/cuda/archive/13.0.0/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-atom">PTX atom</a> · <a href="https://docs.nvidia.com/cuda/archive/13.0.0/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-red">PTX red</a></p>
+        </div>
+        <div>
+          <div class="flow">
+            <span class="node cyan-node">warp issues<br>RED request</span><span class="arrow">→</span>
+            <span class="node violet-node">L2/atomic path<br>linearizes RMW</span>
+          </div>
+          <div class="card green-edge"><h3>Async-ish</h3><p>request 被接受后，没有 old-value register dependency；later independent instructions 和其他 ready warps 可以前进。</p></div>
+          <div class="card red-edge"><h3>Not cp.async</h3><p>没有显式 completion token/group；queue full 会 backpressure，同地址仍串行，kernel completion 前必须 drain。</p></div>
+        </div>
+      </div>
+      <footer class="footer"><span>no return dependency does not mean zero latency or unlimited outstanding work</span><span>ATOM / RED</span></footer>
+    </section>
+
+    <section class="slide" data-section="Atomic contention">
+      <div class="kicker">Contention cost · serialize one word, not the whole tensor</div>
+      <div class="content">
+        <div class="grid-3">
+          <article class="card red-edge"><h3>Same FP32 word</h3><p>J0/J1/J2 对同一个 <code>dq_tmp[b,h,q,d]</code> 的 RMW 必须 linearize；这是真实吞吐代价。</p></article>
+          <article class="card green-edge"><h3>Different words</h3><p>Q rows、d columns、heads 分散出大量地址；memory system 可以保留并处理多个 independent requests。</p></article>
+          <article class="card amber-edge"><h3>Finite pipeline</h3><p>QK、softmax、dP/dS、dQ MMA 和 local reduction 让 CTA arrivals 错开；但 atomic queues 饱和后 warp 仍会 stall。</p></article>
+        </div>
+        <div class="grid-2">
+          <div class="card cyan-edge">
+            <h3>Public evidence</h3>
+            <p>NVIDIA 的 single-counter experiment 展示高碰撞下 bandwidth 下跌；现代微基准也发现 uncontended atomics 很快，但 contention scaling 和 cache/atomic-unit mapping 很复杂。</p>
+            <p class="small"><a href="https://developer.nvidia.com/blog/cuda-pro-tip-optimized-filtering-warp-aggregated-atomics/">NVIDIA warp-aggregated atomics</a> · <a href="https://publikationen.bibliothek.kit.edu/1000188141/170539767">2025 contention microbenchmarks</a></p>
+          </div>
+          <div class="card violet-edge">
+            <h3>FA1/A100 still needs measurement</h3>
+            <p>这些数字不能直接套到 FP32 dQ。未来用 Nsight 区分 <code>op_atom</code>/<code>op_red</code> requests、L2 traffic、LG throttle、achieved occupancy 和 total kernel time。</p>
+          </div>
+        </div>
+      </div>
+      <footer class="footer"><span>latency hiding reduces exposed cost; it never removes same-address serialization</span><span>Atomic contention</span></footer>
+    </section>
+
     <section class="slide" data-section="Atomic dQ">
       <div class="kicker">AtomicAdd prevents lost updates—but does not impose J order</div>
       <div class="content grid-2">
@@ -955,7 +1090,7 @@ run C: ((0 + J2) + J0) + J1</div>
             <li>possible cache/interference differences。</li>
           </ul>
         </div>
-        <p class="lead center" style="grid-column:1/-1">所以 deterministic=True 的 slowdown 主要来自 <span class="amber">减少 CTA parallelism</span>；parallel mode 也并非免费。</p>
+        <p class="lead center" style="grid-column:1/-1">所以 deterministic=True 的 slowdown 主要来自 <span class="amber">减少 CTA parallelism</span>；parallel mode 用 atomic protocol 换回更多 waves，但收益必须超过 contention 和 extra traffic。</p>
       </div>
       <footer class="footer"><span>performance is a wave-utilization versus protocol-overhead tradeoff</span><span>Performance</span></footer>
     </section>
@@ -1106,7 +1241,8 @@ run C: ((0 + J2) + J0) + J1</div>
           <ol>
             <li>observe selected mode and exact CTA grid；</li>
             <li>record registers/thread, 152 KiB shared and achieved occupancy；</li>
-            <li>profile atomic dq_tmp traffic and extra kernels；</li>
+            <li>disassemble whether unused-return <code>atomicAdd</code> becomes <code>RED</code> or <code>ATOM</code>；</li>
+            <li>profile atomic/reduction requests, L2 traffic, LG throttle and extra kernels；</li>
             <li>exact-repeat long-K noncausal and late causal rows；</li>
             <li>confirm P/dS transpose and dQ combine instructions in SASS。</li>
           </ol>
@@ -1131,8 +1267,8 @@ run C: ((0 + J2) + J0) + J1</div>
           <div class="card green-edge">
             <ol start="4">
               <li>八个 warps 对 dQ 产生八份 local partial，并在 CTA 内固定顺序合并。</li>
-              <li>num_splits=1 用一个 CTA 固定顺序扫 J；global dq_tmp 仍是 single-owned。</li>
-              <li>sequence-K mode 让 J CTAs atomic-add 同一个 dQ；arrival order 使 dQ nondeterministic。</li>
+              <li>num_splits=1 用一个 CTA 固定顺序扫 J；global FP32 dq_tmp 仍是 single-owned prefix state。</li>
+              <li>sequence-K mode 把 CTA-local dQ 拆成四标量 FP32 global atomics；J arrival order 使 dQ nondeterministic。</li>
             </ol>
           </div>
         </div>

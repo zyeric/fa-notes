@@ -2458,6 +2458,125 @@ uses FP32 `atomicAdd` on `dq_tmp`:
 dq_tmp[I] += local_dQ_from_J   # atomic per element
 ```
 
+The exact source path is:
+
+```text
+eight warp-local FP32 dQ accumulator fragments
+    -> eight CTA-private slices in smem_dq
+    -> barrier and fixed partial-index reduction
+    -> dq_out uint4 values in per-thread registers
+    -> Gmem_tile_o<Cta_tile_dq, 4>::atomic_add
+    -> four scalar FP32 atomicAdd operations per active uint4
+    -> global FP32 dq_tmp
+```
+
+`smem_dq` and `dq_tmp` solve different combine problems. The former is
+CTA-private shared memory used to reduce the eight warp partials for one
+K/V-tile work unit. The latter is a program-visible global-memory tensor used
+to combine contributions from independent K/V-tile CTAs. Its global address
+may be served or retained by the L2 path while the kernel runs; “global
+address” does not mean that every atomic read-modify-write must make a fresh
+round trip to HBM.
+
+The wrapper does not issue one 128-bit vector atomic. A `uint4` carries four
+FP32 values bitwise, and the unrolled inner loop invokes scalar
+`atomicAdd(ptr + k, value[k])` for `k=0,1,2,3`. For the representative
+`D=128` path:
+
+```text
+one FP32 dQ row                         = 128 * 4 B = 512 B
+one active thread's store/atomic chunk = 16 B = four FP32 elements
+threads needed per row                 = 512 / 16 = 32
+
+thread 0  -> local q row 0, d[0:4]
+thread 1  -> local q row 0, d[4:8]
+...
+thread 31 -> local q row 0, d[124:128]
+thread 32 -> local q row 1, d[0:4]
+```
+
+Thus one 256-thread CTA covers eight rows per store group; the 16-row `dQ`
+tile uses two such groups. Boundary-row and head-dimension predicates disable
+invalid threads. Within one full warp, lanes normally target distinct scalar
+`dQ` words. The same-word contention comes from different `blockIdx.z=J`
+CTAs for the same batch/head reaching the same Q row and feature element.
+
+##### Why `dq_tmp` is separate from the returned `dQ`
+
+The public gradient has the input dtype, normally FP16 or BF16, while
+`dq_tmp` is FP32. The source wrapper statically requires four-byte elements
+for this atomic path. Accumulating every K/V-tile contribution directly into
+a 16-bit `dQ` would round after every contribution and would also depend on
+architecture-specific 16-bit atomic support. Instead the implementation:
+
+```text
+zero FP32 dq_tmp
+    -> atomically accumulate all K/V-tile contributions in FP32
+    -> stream-ordered dq.copy_(dq_tmp)
+    -> one final FP32-to-output-dtype conversion
+```
+
+The separate workspace is therefore related to the atomic plan, but an atomic
+API does not intrinsically require a second buffer. If the requested output
+were FP32, a compatible implementation could use it directly after zeroing.
+The serial path also uses FP32 global temporary state when it must spill the
+cross-K prefix for all Q rows; there it remains single-owned and is updated by
+ordinary loads/stores rather than by a cross-CTA atomic.
+
+##### Issue, completion, and contention
+
+CUDA C++ `atomicAdd` returns the old value, but this call site discards it. A
+compiler can therefore lower it to a no-destination reduction instruction
+such as PTX/SASS `red` rather than a returning `atom`; the exact choice remains
+a compiled-binary fact to confirm with `cuobjdump` or `nvdisasm`. PTX defines
+[`atom`](https://docs.nvidia.com/cuda/archive/13.0.0/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-atom)
+with a destination register for the old value and
+[`red`](https://docs.nvidia.com/cuda/archive/13.0.0/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-red)
+without one.
+
+A no-return reduction is asynchronous only in a limited, informal sense:
+after the warp successfully issues the request, there is no old-value
+register dependency preventing later independent instructions from issuing.
+The memory/L2 atomic path can complete the operation while warp schedulers run
+other ready work. It is not an explicit `cp.async`-style protocol:
+
+- a full load/store or atomic request queue creates backpressure;
+- updates to one FP32 word still have to be serialized;
+- dependent memory ordering would require the appropriate synchronization;
+- kernel completion must drain the updates before the stream-ordered final
+  copy can consume `dq_tmp`.
+
+Therefore an atomic is neither a whole-buffer lock nor free fire-and-forget
+work. Different words can progress in parallel, and the many Q rows, features,
+heads, and staggered CTA compute provide latency-hiding opportunities. The
+same-word serialization remains a real throughput cost.
+
+Public measurements support the qualitative model but do not provide a
+portable FA1/A100 constant. NVIDIA's
+[warp-aggregated atomic example](https://developer.nvidia.com/blog/cuda-pro-tip-optimized-filtering-warp-aggregated-atomics/)
+shows a single heavily contended counter becoming a bottleneck as the atomic
+rate rises. A 2025
+[modern-GPU atomic microbenchmark study](https://publikationen.bibliothek.kit.edu/1000188141/170539767)
+finds fast uncontended operations and nontrivial hardware handling for small
+request groups, followed by scaling costs as contention grows. Its consumer
+GPUs, operation mix, and single-variable patterns are not direct performance
+numbers for FA1 on A100.
+
+For this representative shape, sequence-K parallelism expands the main grid:
+
+```text
+serial:   B * H                  = 1 * 32      = 32 CTAs
+parallel: B * H * (Nk / Bc)      = 1 * 32 * 64 = 2048 CTAs
+```
+
+That is the reason to accept the atomic protocol: 32 resource-heavy CTAs
+cannot occupy an A100's 108 SMs, while 2048 K/V-tile work units expose many
+waves and improve causal load balance. An alternative would store one complete
+partial `dQ` per K/V tile and run a deterministic reduction kernel, but that
+requires roughly `num_k_tiles * size(dQ)` workspace plus extra global writes,
+reads, and launch work. FA1 instead keeps one full-size FP32 `dq_tmp` and
+accepts contention and an unspecified cross-CTA floating-point order.
+
 The atomic makes each read-modify-write indivisible, so contributions are not
 lost. It does not impose a K/V-tile arrival order. Extend the ownership example
 to three K/V tiles. One run can serialize:
@@ -2568,8 +2687,14 @@ For a new attention kernel, ask these questions in order:
 9. **Dispatch identity:** Can shape, architecture, SM count, autotuning,
    workspace, or compiler state select another plan?
 10. **Mutable state:** Are Philox seed/offset, dropout masks, streams, or
-   workspaces replayed and initialized identically?
-11. **Claim boundary:** Is the claim same-process repeatability, fresh-process
+    workspaces replayed and initialized identically?
+11. **Atomic lowering:** What address space and scalar words are updated, what
+    local reduction precedes the atomic, is the old value consumed, and is the
+    destination a separate accumulation dtype/workspace?
+12. **Atomic performance:** Which workers actually reach the same word, can
+    independent requests hide latency, and when do queue backpressure and
+    same-address serialization outweigh the extra CTA waves?
+13. **Claim boundary:** Is the claim same-process repeatability, fresh-process
     repeatability, clean-build repeatability, or cross-hardware equality?
 
 An atomic instruction is evidence of a possible multi-writer sum, not an
@@ -2712,6 +2837,14 @@ The completed backward source pass has answered:
   literal number of CTAs;
 - why the parallel mode needs a separate $D$ kernel, zeroed FP32 workspace,
   atomic `dQ`, and a final copy/cast;
+- how 256 threads map CTA-local `dQ` fragments to four scalar FP32 global
+  atomics per active 16-byte chunk, and why same-address contention is
+  cross-CTA rather than normally cross-lane;
+- why a no-return reduction request can overlap independent warp work without
+  becoming an explicit asynchronous-copy protocol or eliminating
+  same-address serialization;
+- why `dq_tmp` is a separate FP32 accumulation surface before the final
+  output-dtype conversion;
 - why this mode leaves `dK`/`dV` single-owned but makes only the cross-CTA
   `dQ` arrival order nondeterministic;
 - what a future component and model-level verification must observe.
