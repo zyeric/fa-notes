@@ -971,6 +971,37 @@
     </section>
 
     <section class="slide" data-section="CUDA model">
+      <div class="kicker">One CTA stays on one SM · resident warps share four SMSPs</div>
+      <div class="content">
+        <div class="flow">
+          <span class="node violet-node">one forward CTA<br>4 resident warps</span><span class="arrow">→</span>
+          <span class="node cyan-node">one A100 SM<br>never split across SMs</span><span class="arrow">→</span>
+          <span class="node">SMSP 0<br>scheduler + TC</span>
+          <span class="node">SMSP 1<br>scheduler + TC</span>
+          <span class="node">SMSP 2<br>scheduler + TC</span>
+          <span class="node">SMSP 3<br>scheduler + TC</span>
+        </div>
+        <div class="grid-3 compact">
+          <article class="card cyan-edge"><h3>Resident</h3><p>warp PC、register state、active mask 已被 admit；不代表这个 cycle 正在执行。</p></article>
+          <article class="card amber-edge"><h3>Issued</h3><p>每个 SMSP scheduler 从自己的 eligible warps 选下一条 instruction；target pipeline 还必须能接收。</p></article>
+          <article class="card green-edge"><h3>In flight</h3><p>此前发射的 MMA/load 可以仍在 pipeline；多个 operations overlap 不等于增加物理 Tensor Cores。</p></article>
+        </div>
+        <div class="grid-2 compact">
+          <div class="codebox">warp 0:
+  MMA(acc)                  # accepted by TC pipeline
+  address/load next         # independent: may issue
+  MMA(..., acc)             # dependent: scoreboard wait</div>
+          <div class="card violet-edge">
+            <h3>SMSP = Streaming Multiprocessor Sub-Partition</h3>
+            <p>A100 每个 SM 有四个 partitions、四个 warp schedulers 和四个 third-generation Tensor Core pipelines。具体 warp→SMSP mapping 不是 CUDA API contract。</p>
+            <p class="tiny muted"><a href="https://developer.nvidia.com/blog/nvidia-ampere-architecture-in-depth/">NVIDIA A100 SM architecture</a></p>
+          </div>
+        </div>
+      </div>
+      <footer class="footer"><span>in-order issue can overlap completion; true register dependencies still wait</span><span class="section-name">CUDA model</span></footer>
+    </section>
+
+    <section class="slide" data-section="CUDA model">
       <div class="kicker">Warp instruction · close to assembly, but name the compiler layer</div>
       <div class="content grid-2">
         <div>
@@ -1612,8 +1643,8 @@ t127 -> rows 7,15,…,127  · chunk 15</div>
             <p>某条 MMA 规定 32 lanes 各自要在若干 registers 中提供哪些 A/B elements，并在哪些 FP32 registers 接收 C/D elements。所有 lane tuples 合起来才是一块矩阵 fragment；单 lane 的 elements 不保证在原矩阵中形成完整或连续的一行/列。</p>
           </div>
           <div class="card amber-edge">
-            <h3>Warp instruction ≠ one physical Tensor Core</h3>
-            <p><code>mma.sync</code> 由整个 warp 的 32 lanes 一致执行。A100 每个 SM 有 <strong>4 个 third-generation Tensor Cores</strong>，合计每 clock 1024 dense FP16/FP32 FMAs（BF16 同速）；不应把“一条 logical MMA”建模成固定绑定一个 Tensor Core。</p>
+            <h3>Warp instruction uses one SMSP's TC pipeline</h3>
+            <p><code>mma.sync</code> 由整个 warp 的 32 lanes 一致执行。Resident warp 由一个 SMSP 调度，其 MMA 使用该 partition 的 Tensor Core pipeline；但一条 logical MMA 会流水执行多个 cycles，不能用“一条 instruction = 独占一个 TC 一个 cycle”估时。</p>
           </div>
           <ul class="compact">
             <li>Tensor Cores 做 warp-level matrix multiply；CUDA cores/SFUs 做地址、mask、max/exp/sum、scale；</li>

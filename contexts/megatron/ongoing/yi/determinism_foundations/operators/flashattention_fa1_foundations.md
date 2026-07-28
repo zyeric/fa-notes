@@ -2185,6 +2185,67 @@ usually impose a lower bound. The complete admission and issue distinction is
 explained in
 [`gpu-execution-model.md`](https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/gpu-execution-model.md#resident-capacity-is-not-simultaneous-issue-width).
 
+#### One eight-warp CTA still resides on one SM
+
+CUDA assigns an ordinary CTA as one unit to one SM. All eight backward warps,
+their registers, CTA-private shared-memory allocation, and CTA barriers remain
+on that SM; the CTA is not divided across two SMs. This is required for
+ordinary shared-memory addressing and `__syncthreads()` to have CTA scope.
+Other SMs run other batch/head/K-tile CTAs.
+
+An A100 SM is physically divided into four **SMSPs**, conventionally expanded
+as Streaming Multiprocessor Sub-Partitions. Each sub-partition contains one
+warp scheduler and one third-generation Tensor Core pipeline; the full SM has
+four Tensor Cores. The
+[A100 architecture description](https://developer.nvidia.com/blog/nvidia-ampere-architecture-in-depth/)
+documents four Tensor Cores per SM and one per SM partition. SMSP placement is
+a microarchitectural model, not a CUDA indexing contract: source code cannot
+select a stable `warp_id -> SMSP` mapping.
+
+A useful, deliberately non-contractual picture for one eight-warp CTA is:
+
+```text
+one A100 SM
+    SMSP 0 / Tensor Core pipeline 0 <- some two resident warps
+    SMSP 1 / Tensor Core pipeline 1 <- some two resident warps
+    SMSP 2 / Tensor Core pipeline 2 <- some two resident warps
+    SMSP 3 / Tensor Core pipeline 3 <- some two resident warps
+```
+
+This picture separates three quantities:
+
+1. **resident:** all eight warp contexts can be live on the SM;
+2. **issued:** the four SMSP schedulers choose eligible warps, subject to
+   issue slots and the target execution pipeline accepting work;
+3. **in flight:** several previously issued MMA or memory operations can
+   overlap in pipelined hardware.
+
+Eight resident warps therefore do not mean eight MMA instructions start in
+one cycle. Nor does one warp-level `mma.sync` mean that the CTA acquires a new
+physical Tensor Core. A resident warp is serviced by the execution pipelines
+of its SM sub-partition, and those pipelines are time-multiplexed among ready
+warps. The exact initiation interval depends on the compiled MMA instruction,
+shape, and dtype.
+
+Warp instructions issue in program order, but completion is pipelined. After
+an MMA request is accepted, the same warp may issue later instructions whose
+source operands do not depend on the MMA result. A later MMA that reads and
+writes the same accumulator cannot proceed until the scoreboard marks that
+accumulator ready. During that wait the scheduler can choose another ready
+warp:
+
+```text
+warp 0: issue MMA(acc0) -> issue independent address/load work
+                        -> dependent MMA(acc0) waits on scoreboard
+warp 4:                                      ready work can issue instead
+```
+
+This is instruction- and warp-level latency hiding, not an explicit
+`cp.async` protocol. SM80 `mma.sync` remains a warp-scoped instruction whose
+operand and accumulator fragments are distributed across 32 lanes, as
+summarized by the
+[CUTLASS warp-level MMA guide](https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/mma_docs/wmma_programming.html).
+
 All eight warps participate in movement and compute. Their main logical
 decompositions are:
 
@@ -2360,6 +2421,50 @@ not the nondeterministic atomic reduction discussed below.
 the output K/V rows, so a warp can keep its own output fragments in registers
 and add Q tiles in increasing order. The CTA writes each final `dK_J`/`dV_J`
 tile once.
+
+#### Why forward uses four warps while backward uses eight
+
+More warps are a tradeoff, not free parallelism. For `B_c=128`, the pinned
+forward divides score columns into four 32-column slices. Those four warps
+already provide one ready-warp candidate per A100 SMSP in the simplest
+physical picture. Increasing forward to eight warps would create eight
+16-column slices, but every current K/V tile would then have:
+
+- eight rather than four partial row maxima and exponential sums to combine;
+- eight rather than four partial `O` tiles because the same K-column axis is
+  the reduction dimension of `P @ V`;
+- more cross-warp communication, synchronization, and partial-state storage.
+
+For the representative `B_r=16,D=128` case, one FP32 partial `O` is 8 KiB.
+The source-selected four-warp layout uses 32 KiB for four copies; a mechanical
+eight-warp version would need 64 KiB before accounting for the additional
+softmax partials and reduction work. The smaller forward CTA can instead gain
+more ready warps from another independent CTA when register/shared-memory
+residency and the forward `num_splits` grid permit it.
+
+Backward has a different benefit/cost ratio:
+
+| Property per current `(I,J)` tile | Four-warp forward | Eight-warp backward |
+| --- | --- | --- |
+| row normalization | cross-warp max and sum for online softmax | reconstruct `P=exp(S-LSE)` pointwise from saved LSE; no new row max/sum |
+| main reduction partial | four partial `O` tiles must combine | eight partial `dQ` tiles must combine |
+| other output work | no additional gradient outputs | `dK`/`dV` rows are partitioned and single-owned by warps |
+| matrix products | QK and PV | QK, dP, dQ, dK, and dV |
+| available second CTA in running D128 case | smaller forward footprint may permit more CTAs | 152 KiB shared request strongly limits the SM to one CTA |
+
+This does **not** mean backward has fewer barriers. It has shared-memory
+handoffs for the `P` and `dS` transpose layouts, Q/$G$ buffer generations, and
+`smem_dq` reuse. The narrower claim is:
+
+> Relative to its much larger amount of matrix work, backward has fewer
+> cross-warp **numeric reductions**: saved LSE removes the forward max/sum
+> combine, and `dK`/`dV` use disjoint output-row ownership. Only `dQ` needs the
+> eight-way numeric combine.
+
+The source proves the warp counts, ownership, barriers, and storage sizes. The
+claim that this is the optimal 4-versus-8 performance point is a design
+inference; it would require compiled variants and A100 profiling to establish
+empirically.
 
 ### 12.3 Backward with `num_splits == 1`
 
@@ -2829,6 +2934,16 @@ The completed backward source pass has answered:
   state;
 - how an eight-warp CTA processes one K/V tile, transposes $P/dS$ through
   shared memory, and accumulates `dK`/`dV` across Q tiles;
+- why all eight warps still reside on one SM, how they enlarge the ready-work
+  pool over four A100 SMSPs/Tensor Core pipelines, and why resident, issued,
+  and in-flight MMA counts differ;
+- why warp instruction issue remains in program order while independent work
+  can overlap an in-flight MMA and true accumulator dependencies wait on the
+  scoreboard;
+- why forward's max/sum and partial-`O` combines make a mechanical eight-warp
+  design expensive, while backward uses saved LSE and disjoint `dK`/`dV`
+  ownership to amortize eight warps despite having many shared-memory
+  barriers;
 - where Q, $dO$, K/V, LSE, $D$, transient score state, warp-local `dQ`,
   `dK`/`dV`, and cross-K `dq_tmp` reside;
 - why `num_splits=1` gives one batch/head CTA a fixed K/V-tile and local-warp

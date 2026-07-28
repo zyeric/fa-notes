@@ -456,8 +456,7 @@ FP32 dq_tmp[I]</div>
           <h3>Why not four warps?</h3>
           <ul>
             <li>backward 同时有 QK、dP、dQ、dK、dV 多个 matrix products；</li>
-            <li>dQ reduction 需要 8 份 warp partials；</li>
-            <li>dK/dV 又需要 partition output K/V rows；</li>
+            <li>chosen 8-way K slice 为 dQ 产生 8 份 partial，同时给 dK/dV 分出 disjoint output rows；</li>
             <li>更多 warps 增加 CTA 内 parallel work，也提高资源 footprint。</li>
           </ul>
           <p class="small muted">forward 128 threads 与 backward 256 threads 是两个独立编译的 kernels，不存在“一个 CTA 永远四个 warps”。</p>
@@ -486,6 +485,71 @@ FP32 dq_tmp[I]</div>
         <p class="small muted center">不是 warp 0 专门 load、warp 1 专门 QK；all eight warps participate, and roles change by phase。</p>
       </div>
       <footer class="footer"><span>key-position partition becomes output ownership or reduction ownership depending on the GEMM</span><span>Eight warps</span></footer>
+    </section>
+
+    <section class="slide" data-section="Eight warps on one SM">
+      <div class="kicker">Eight resident warps still belong to one CTA on one SM</div>
+      <div class="content">
+        <div class="flow">
+          <span class="node violet-node">CTA<br>8 warps / 256 threads</span><span class="arrow">→</span>
+          <span class="node cyan-node">one A100 SM<br>one shared-memory allocation</span><span class="arrow">→</span>
+          <span class="node">SMSP 0<br>TC pipeline 0<br>~2 warp candidates</span>
+          <span class="node">SMSP 1<br>TC pipeline 1<br>~2 warp candidates</span>
+          <span class="node">SMSP 2<br>TC pipeline 2<br>~2 warp candidates</span>
+          <span class="node">SMSP 3<br>TC pipeline 3<br>~2 warp candidates</span>
+        </div>
+        <p class="small amber center">“~2” 只是 useful physical picture；CUDA 不暴露稳定的 warp-id→SMSP mapping。硬语义是整个 CTA 在一个 SM，不会四个 warp 放 SM0、四个放 SM1。</p>
+        <div class="grid-3">
+          <article class="card cyan-edge"><h3>8 resident</h3><p>八份 warp execution context 都 live，可在 barrier 中合作并访问 CTA-private shared memory。</p></article>
+          <article class="card amber-edge"><h3>≤ 4 scheduler choices</h3><p>四个 SMSP schedulers 各自选择 eligible warp；是否同一周期接受 MMA 还受 instruction/pipeline throughput 限制。</p></article>
+          <article class="card green-edge"><h3>Many in flight</h3><p>Tensor Core 是 pipelined；来自不同 warps 的 MMA 可以执行期重叠，但仍共享四条 physical pipelines。</p></article>
+        </div>
+        <div class="equation">8 warps enlarge the ready-work pool; they do not create 8 Tensor Cores</div>
+      </div>
+      <footer class="footer"><span>SMSP = Streaming Multiprocessor Sub-Partition</span><span>CTA residence</span></footer>
+    </section>
+
+    <section class="slide" data-section="MMA issue">
+      <div class="kicker">MMA issue · in-order instructions, overlapped completion</div>
+      <div class="content grid-2 wide-left">
+        <div class="codebox">warp 0:
+  MMA A0,B0 -> acc0       # issue to Tensor Core pipeline
+  ptr_next += stride      # independent: may issue later
+  load next fragment      # independent request may be outstanding
+  MMA A1,B1 + acc0        # true dependency: scoreboard waits
+
+warp 4:
+  ready independent work  # scheduler may choose this warp</div>
+        <div>
+          <div class="card green-edge"><h3>What overlaps</h3><p>MMA execution、independent address/load work 和其他 warps 的 instructions 可以在时间上重叠。</p></div>
+          <div class="card red-edge"><h3>What cannot</h3><p>下一条 instruction 若读取未 ready 的 accumulator，就不能越过 dependency；scoreboard makes that warp ineligible。</p></div>
+          <div class="card amber-edge"><h3>Not explicit async copy</h3><p>这是 pipeline + scoreboard + warp switching，不是 <code>cp.async</code> 的 commit/wait protocol。</p></div>
+        </div>
+      </div>
+      <footer class="footer"><span>resident, issued, and in-flight are three different counts</span><span>MMA issue</span></footer>
+    </section>
+
+    <section class="slide" data-section="Four versus eight warps">
+      <div class="kicker">Why forward uses four warps while backward uses eight</div>
+      <div class="content">
+        <table class="dense">
+          <thead><tr><th>Per current tile</th><th>Forward · 4 warps</th><th>Backward · 8 warps</th></tr></thead>
+          <tbody>
+            <tr><td>score normalization</td><td>cross-warp row max + exp sum</td><td>P=exp(S−LSE) pointwise; saved LSE removes new max/sum</td></tr>
+            <tr><td>shared numeric output</td><td>4 partial O tiles must combine</td><td>8 partial dQ tiles must combine</td></tr>
+            <tr><td>other output work</td><td>none</td><td>dK/dV rows are disjoint warp-owned outputs</td></tr>
+            <tr><td>matrix products</td><td>QK and PV</td><td>QK, dP, dQ, dK, dV</td></tr>
+            <tr><td>D128 shared footprint</td><td>about 40.625 KiB/CTA in studied path</td><td>152 KiB/CTA; effectively one CTA/SM by shared capacity</td></tr>
+          </tbody>
+        </table>
+        <div class="grid-3">
+          <article class="card red-edge"><h3>If forward used 8 warps</h3><p>D128 partial-O scratch mechanically grows from 4×8 KiB=32 KiB to 8×8 KiB=64 KiB；max/sum contributors also double。</p></article>
+          <article class="card green-edge"><h3>Why backward amortizes 8</h3><p>more GEMMs plus dK/dV output ownership create useful independent work；one heavy CTA needs its own larger ready-warp pool。</p></article>
+          <article class="card amber-edge"><h3>Barrier nuance</h3><p>backward barriers are not fewer：P/dS transpose、Q/G generations、smem_dq reuse remain。更少的是相对 compute 的 cross-warp <em>numeric reductions</em>。</p></article>
+        </div>
+        <p class="small muted center">Source proves the ownership and storage ledger；“4 versus 8 is performance-optimal” remains a profiling hypothesis。</p>
+      </div>
+      <footer class="footer"><span>more warps help only when added ready work outweighs reduction and resource costs</span><span>Forward vs backward</span></footer>
     </section>
 
     <section class="slide" data-section="Common body">
@@ -1255,7 +1319,7 @@ run C: ((0 + J2) + J0) + J1</div>
     <section class="slide section-slide" data-section="Checkpoint">
       <div class="kicker">One-screen checkpoint</div>
       <div class="content">
-        <h2>记住这六句话</h2>
+        <h2>记住这八句话</h2>
         <div class="grid-2">
           <div class="card cyan-edge">
             <ol>
@@ -1269,6 +1333,12 @@ run C: ((0 + J2) + J0) + J1</div>
               <li>八个 warps 对 dQ 产生八份 local partial，并在 CTA 内固定顺序合并。</li>
               <li>num_splits=1 用一个 CTA 固定顺序扫 J；global FP32 dq_tmp 仍是 single-owned prefix state。</li>
               <li>sequence-K mode 把 CTA-local dQ 拆成四标量 FP32 global atomics；J arrival order 使 dQ nondeterministic。</li>
+            </ol>
+          </div>
+          <div class="card amber-edge" style="grid-column:1/-1">
+            <ol start="7">
+              <li>8 resident warps 仍全部属于一个 SM；它们在四个 SMSPs/Tensor Core pipelines 上增加 ready-work，而不是创造 8 个 Tensor Cores。</li>
+              <li>backward barriers 不一定更少；相对更多 GEMMs，它减少的是 cross-warp numeric reductions：LSE 去掉 max/sum，dK/dV 使用 disjoint owners。</li>
             </ol>
           </div>
         </div>
