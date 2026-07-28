@@ -11,6 +11,13 @@ Read the
 first. This note treats FA2 as a delta study: it does not repeat ordinary
 attention, safe softmax, CUDA hierarchy, or the full FA1 derivation.
 
+For a graphical reading surface, open the standalone
+[FA2 forward delta visual map](flashattention_fa2_forward.html). It keeps the
+same pinned source scope but reorganizes the conclusions around why FA2 is
+faster than the audited FA1 path: Q-block CTA ownership, on-chip running state,
+split-Q warp ownership, SM80 `cp.async`, causal work balance, costs, and the
+forward determinism proof. This Markdown file remains the source of truth.
+
 ## 1. Scope And Evidence
 
 Pinned evidence:

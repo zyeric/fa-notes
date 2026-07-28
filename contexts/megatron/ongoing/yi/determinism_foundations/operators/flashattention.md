@@ -21,7 +21,8 @@ The historical learning sequence is maintained separately:
 
 - [FA1 one-page checkpoint](flashattention_fa1_checkpoint.md);
 - [full FA1 foundations and v1.0.9 audit](flashattention_fa1_foundations.md);
-- [FA2 v2.0.0 forward delta](flashattention_fa2_forward.md).
+- [FA2 v2.0.0 forward delta](flashattention_fa2_forward.md);
+- [FA2 forward delta visual map](flashattention_fa2_forward.html).
 
 It does not claim one verdict for every implementation in the repository.
 ROCm/Triton/CK backends, inference KV-cache mutation, paged attention,

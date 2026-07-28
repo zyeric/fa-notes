@@ -1,0 +1,1106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="从 FA1 出发理解 FlashAttention-2 forward 的 CTA ownership、warp partition、memory movement、性能优势与确定性">
+  <title>FlashAttention-2 Forward · The Delta From FA1</title>
+  <style>
+    :root {
+      --bg: #07101d;
+      --bg-2: #0a1727;
+      --panel: #101f32;
+      --panel-2: #152a41;
+      --ink: #f2f7fb;
+      --muted: #9eb0c5;
+      --line: #2a435e;
+      --cyan: #55d9fb;
+      --green: #70e3aa;
+      --amber: #ffc66f;
+      --red: #ff8585;
+      --violet: #b8a2ff;
+      --blue: #78a9ff;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .38);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 84% 12%, rgba(85, 217, 251, .11), transparent 28%),
+        radial-gradient(circle at 12% 88%, rgba(184, 162, 255, .10), transparent 32%),
+        linear-gradient(135deg, rgba(255, 255, 255, .018), transparent 42%);
+    }
+
+    a { color: var(--cyan); text-underline-offset: 3px; }
+    strong { color: #fff; }
+    code, .mono {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: .9em;
+    }
+
+    .deck { position: relative; width: 100%; height: 100%; }
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: none;
+      grid-template-rows: auto 1fr auto;
+      gap: clamp(11px, 1.5vh, 22px);
+      padding: clamp(28px, 4.2vh, 60px) clamp(36px, 5vw, 90px) clamp(25px, 3.4vh, 48px);
+    }
+    .slide.active { display: grid; animation: enter .24s ease-out; }
+    @keyframes enter {
+      from { opacity: .18; transform: translateX(12px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    .kicker {
+      color: var(--cyan);
+      font-size: clamp(12px, .95vw, 17px);
+      font-weight: 780;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: .25em; font-size: clamp(48px, 6vw, 102px); line-height: .98; letter-spacing: -.045em; }
+    h2 { margin-bottom: 0; font-size: clamp(33px, 4vw, 68px); line-height: 1.04; letter-spacing: -.035em; }
+    h3 { margin-bottom: .4em; font-size: clamp(19px, 1.7vw, 29px); line-height: 1.15; }
+    p, li, td, th { font-size: clamp(15px, 1.26vw, 23px); line-height: 1.34; }
+    p { margin-bottom: .65em; }
+    ul, ol { margin: .25em 0; padding-left: 1.15em; }
+    li { margin: .19em 0; }
+
+    .content { min-height: 0; align-self: stretch; }
+    .center { display: grid; place-items: center; text-align: center; }
+    .vcenter { align-self: center; }
+    .lead { font-size: clamp(23px, 2.4vw, 44px); line-height: 1.22; color: #dce8f4; }
+    .small { font-size: clamp(13px, .98vw, 18px); line-height: 1.35; }
+    .tiny { font-size: clamp(11px, .8vw, 15px); line-height: 1.35; }
+    .muted { color: var(--muted); }
+    .cyan { color: var(--cyan); }
+    .green { color: var(--green); }
+    .amber { color: var(--amber); }
+    .red { color: var(--red); }
+    .violet { color: var(--violet); }
+    .blue { color: var(--blue); }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(18px, 2.6vw, 44px); align-items: center; height: 100%; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(12px, 1.55vw, 26px); align-items: stretch; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: clamp(9px, 1.05vw, 18px); align-items: stretch; }
+    .wide-left { grid-template-columns: 1.22fr .78fr; }
+    .wide-right { grid-template-columns: .78fr 1.22fr; }
+
+    .card {
+      background: linear-gradient(145deg, rgba(21, 42, 65, .96), rgba(10, 23, 39, .96));
+      border: 1px solid var(--line);
+      border-radius: 17px;
+      padding: clamp(13px, 1.45vw, 24px);
+      box-shadow: var(--shadow);
+    }
+    .card p:last-child, .card ul:last-child, .card ol:last-child { margin-bottom: 0; }
+    .card.cyan-edge { border-top: 4px solid var(--cyan); }
+    .card.green-edge { border-top: 4px solid var(--green); }
+    .card.amber-edge { border-top: 4px solid var(--amber); }
+    .card.red-edge { border-top: 4px solid var(--red); }
+    .card.violet-edge { border-top: 4px solid var(--violet); }
+    .compact p, .compact li { font-size: clamp(13px, 1.05vw, 20px); }
+
+    .tag {
+      display: inline-block;
+      margin-bottom: .55em;
+      padding: .27em .6em;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(4, 12, 22, .64);
+      font-size: clamp(11px, .72vw, 14px);
+      font-weight: 760;
+      letter-spacing: .065em;
+      text-transform: uppercase;
+    }
+    .quote {
+      border-left: 5px solid var(--cyan);
+      padding: .16em 0 .16em .75em;
+      font-size: clamp(27px, 2.9vw, 52px);
+      line-height: 1.17;
+      letter-spacing: -.025em;
+    }
+    .equation {
+      display: block;
+      margin: .55em 0;
+      padding: .68em .85em;
+      background: #050f1b;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      color: var(--amber);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: clamp(16px, 1.45vw, 26px);
+      text-align: center;
+    }
+    .codebox {
+      white-space: pre-wrap;
+      margin: .55em 0;
+      padding: clamp(14px, 1.5vw, 24px);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #050f1b;
+      color: #dce8f4;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: clamp(13px, 1.02vw, 19px);
+      line-height: 1.4;
+      box-shadow: inset 0 0 30px rgba(85, 217, 251, .025);
+    }
+    .flow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin: .8em 0;
+    }
+    .node {
+      padding: .62em .85em;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 13px;
+      font-size: clamp(14px, 1.08vw, 21px);
+      font-weight: 680;
+      text-align: center;
+    }
+    .node.cyan-node { border-color: var(--cyan); background: rgba(85, 217, 251, .08); }
+    .node.green-node { border-color: var(--green); background: rgba(112, 227, 170, .08); }
+    .node.amber-node { border-color: var(--amber); background: rgba(255, 198, 111, .08); }
+    .node.violet-node { border-color: var(--violet); background: rgba(184, 162, 255, .08); }
+    .node.red-node { border-color: var(--red); background: rgba(255, 133, 133, .08); }
+    .arrow { color: var(--cyan); font-size: clamp(22px, 1.9vw, 35px); }
+
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { padding: .42em .48em; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--cyan); text-align: left; font-weight: 740; }
+    .dense td, .dense th { font-size: clamp(12px, .89vw, 16px); line-height: 1.23; padding: .31em .38em; }
+
+    .matrix {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #071321;
+    }
+    .matrix.cols-4 { grid-template-columns: repeat(4, 1fr); }
+    .matrix.cols-8 { grid-template-columns: repeat(8, 1fr); }
+    .matrix.rows-4 { grid-template-columns: 1fr; }
+    .cell {
+      display: grid;
+      place-items: center;
+      min-height: clamp(33px, 4.2vh, 54px);
+      padding: .35em;
+      border-radius: 7px;
+      background: #18324b;
+      color: #dce8f4;
+      font-size: clamp(11px, .82vw, 15px);
+      line-height: 1.18;
+      text-align: center;
+    }
+    .c0 { background: rgba(85, 217, 251, .18); }
+    .c1 { background: rgba(112, 227, 170, .18); }
+    .c2 { background: rgba(255, 198, 111, .18); }
+    .c3 { background: rgba(184, 162, 255, .18); }
+    .danger { background: rgba(255, 133, 133, .17); }
+
+    .memory {
+      display: grid;
+      gap: 9px;
+      width: min(1080px, 100%);
+      margin: 0 auto;
+    }
+    .mem {
+      padding: .68em .9em;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      text-align: center;
+      font-size: clamp(14px, 1.06vw, 20px);
+    }
+    .global { background: rgba(120, 169, 255, .09); border-color: var(--blue); }
+    .shared { background: rgba(85, 217, 251, .09); border-color: var(--cyan); }
+    .reg { background: rgba(255, 198, 111, .09); border-color: var(--amber); }
+    .compute { background: rgba(112, 227, 170, .09); border-color: var(--green); }
+
+    .timeline {
+      display: grid;
+      grid-template-columns: repeat(var(--steps, 5), 1fr);
+      gap: 8px;
+      margin: .7em 0;
+    }
+    .time-item {
+      min-width: 0;
+      padding: .68em .46em;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      text-align: center;
+    }
+    .time-item strong { display: block; color: var(--cyan); font-size: clamp(13px, 1vw, 18px); }
+    .time-item span { color: var(--muted); font-size: clamp(11px, .78vw, 14px); line-height: 1.25; }
+
+    .score {
+      display: grid;
+      grid-template-columns: 1.05fr .75fr 1.05fr;
+      gap: 8px;
+      align-items: center;
+    }
+    .score .metric {
+      padding: .7em;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      text-align: center;
+      background: var(--panel);
+    }
+    .score .versus { color: var(--muted); font-weight: 800; text-align: center; }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      color: var(--muted);
+      font-size: clamp(10px, .72vw, 13px);
+      letter-spacing: .035em;
+    }
+    .footer span:last-child { color: var(--cyan); }
+    .section-slide h2 { text-align: center; }
+
+    .hud {
+      position: fixed;
+      z-index: 30;
+      right: 18px;
+      bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 9px;
+      border: 1px solid rgba(42, 67, 94, .72);
+      border-radius: 999px;
+      background: rgba(5, 15, 27, .86);
+      backdrop-filter: blur(8px);
+    }
+    .hud button {
+      width: 29px;
+      height: 29px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--panel);
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .hud button:hover { border-color: var(--cyan); }
+    .counter { min-width: 55px; text-align: center; color: var(--muted); font: 12px "SFMono-Regular", monospace; }
+    .progress {
+      position: fixed;
+      z-index: 29;
+      left: 0;
+      bottom: 0;
+      width: 100%;
+      height: 3px;
+      background: rgba(42, 67, 94, .45);
+    }
+    .progress > span {
+      display: block;
+      width: 0;
+      height: 100%;
+      background: linear-gradient(90deg, var(--cyan), var(--violet));
+      transition: width .2s ease;
+    }
+
+    @media (max-width: 900px) {
+      .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; overflow: auto; }
+      .slide { padding-left: 24px; padding-right: 24px; }
+      .timeline { grid-template-columns: repeat(2, 1fr); }
+      .hud { right: 8px; bottom: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck" id="deck">
+    <section class="slide active" data-section="Title">
+      <div class="kicker">FlashAttention-2 forward · beginner delta map</div>
+      <div class="content center">
+        <div>
+          <h1>同一个 Attention<br><span class="cyan">为什么 FA2 更快？</span></h1>
+          <p class="lead muted">从 FA1 的 loop nest 出发，看 ownership、state lifetime、warp partition 与 memory movement 如何一起改变。</p>
+          <div class="flow">
+            <span class="node cyan-node">更多 CTA work units</span>
+            <span class="node green-node">running state 留在 registers</span>
+            <span class="node amber-node">warps 输出独占</span>
+            <span class="node violet-node">SM80 cp.async</span>
+          </div>
+        </div>
+      </div>
+      <footer class="footer"><span>←/→、Space 翻页 · Home/End 跳转 · URL hash 可分享页码</span><span>FA2 forward</span></footer>
+    </section>
+
+    <section class="slide" data-section="Question">
+      <div class="kicker">The one question</div>
+      <div class="content center">
+        <div class="quote">性能优化不是“少 load 一次”这么简单。<br><span class="cyan">谁拥有完整输出、什么状态能活多久、GPU 同时有多少 work</span> 必须一起看。</div>
+      </div>
+      <footer class="footer"><span>每个 advantage 都要能追溯到 physical dataflow</span><span>Question</span></footer>
+    </section>
+
+    <section class="slide" data-section="Scope">
+      <div class="kicker">Scope · compare pinned source, not product names in the abstract</div>
+      <div class="content grid-2">
+        <div class="card cyan-edge">
+          <span class="tag">Baseline</span>
+          <h3>FA1 v1.0.9</h3>
+          <p><code>6d48e14</code> · historical SM80 CUDA forward path。</p>
+          <p class="muted">已经在 FA1 deck 中建立：K/V-outer loop、16-row Q tile、four-warp split-key、running state handoff。</p>
+        </div>
+        <div class="card green-edge">
+          <span class="tag">Target</span>
+          <h3>FA2 v2.0.0</h3>
+          <p><code>4f285b3</code> · first official FA2 release。</p>
+          <p class="muted">本 deck 聚焦 SM80 FP16/BF16 forward；代表配置是 <code>d=64, B_M=B_N=128, 4 warps</code>。</p>
+        </div>
+        <p class="small amber" style="grid-column:1/-1;text-align:center">不覆盖 FA2 backward、later v2.x、FA3 TMA/WGMMA、inference KV cache 或实机 profile。</p>
+      </div>
+      <footer class="footer"><span>paper explains goals; pinned source establishes actual ownership and order</span><span>Scope</span></footer>
+    </section>
+
+    <section class="slide" data-section="Same math">
+      <div class="kicker">Invariant · the mathematical contract did not change</div>
+      <div class="content center">
+        <div>
+          <span class="equation">S = QKᵀ &nbsp;&nbsp; P = softmax(S) &nbsp;&nbsp; O = PV</span>
+          <div class="flow">
+            <span class="node">same exact dense attention</span><span class="arrow">→</span>
+            <span class="node cyan-node">different loop order</span><span class="arrow">→</span>
+            <span class="node amber-node">different physical execution</span>
+          </div>
+          <p class="lead">FA2 的优势来自<span class="green">重新安排相同的工作</span>，不是近似 attention。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>same real-number function does not imply cross-version bitwise equality</span><span>Same math</span></footer>
+    </section>
+
+    <section class="slide" data-section="Advantage map">
+      <div class="kicker">Executive map · four coupled advantages, four explicit tradeoffs</div>
+      <div class="content">
+        <table class="dense">
+          <thead><tr><th>FA2 mechanism</th><th>Direct advantage over audited FA1</th><th>What it costs / does not promise</th></tr></thead>
+          <tbody>
+            <tr><td>one CTA per large Q block</td><td>more sequence-dimension workers; complete Q-block reduction stays local</td><td>different CTAs reload overlapping K/V</td></tr>
+            <tr><td>unnormalized FP32 <code>acc_o</code> across all K/V tiles</td><td>Q and running O/max/sum avoid repeated HBM round trips; normalize once</td><td>larger per-CTA register/shared footprint</td></tr>
+            <tr><td>warps partition Q/output rows</td><td>disjoint O ownership; remove FA1 four-way partial-O numeric combine</td><td>softmax reductions and CTA barriers still exist</td></tr>
+            <tr><td>SM80 <code>cp.async</code> global→shared copies</td><td>avoid payload-register staging; explicit movement/compute overlap</td><td>wait/fence/barrier correctness becomes delicate</td></tr>
+          </tbody>
+        </table>
+        <p class="lead center">关键不是四个孤立 trick，而是它们让新的 loop nest <span class="cyan">真的可行且高效</span>。</p>
+      </div>
+      <footer class="footer"><span>advantage = mechanism + removed cost + new tradeoff</span><span>Map</span></footer>
+    </section>
+
+    <section class="slide section-slide" data-section="Part I">
+      <div class="kicker">Part I · interchange the loops, change the owner</div>
+      <div class="content center"><h2>从 K/V-outer<br>到<br><span class="cyan">Q-block owner</span></h2></div>
+      <footer class="footer"><span>loop order determines state reuse and lifetime</span><span>Part I</span></footer>
+    </section>
+
+    <section class="slide" data-section="FA1 loop">
+      <div class="kicker">FA1 baseline · keep one K/V tile, revisit many Q tiles</div>
+      <div class="content grid-2 wide-left">
+        <div class="codebox">CTA r:
+  for K/V tile J:                 # outer
+    load K_J, V_J
+
+    for Q tile I owned by r:      # inner
+      load Q_I
+      load prior output/normalization state
+      update attention prefix
+      write running output/normalization state</div>
+        <div>
+          <div class="card green-edge"><h3>What it reuses</h3><p>one loaded K/V tile is reused across many small Q tiles。</p></div>
+          <div class="card red-edge"><h3>What cannot stay live</h3><p>CTA advances to other Q tiles before returning to the same Q row on the next J；all Q rows' running state cannot fit on chip。</p></div>
+        </div>
+      </div>
+      <footer class="footer"><span>great K/V reuse inside one CTA; expensive mutable-state handoff</span><span>FA1 loop</span></footer>
+    </section>
+
+    <section class="slide" data-section="FA1 consequence">
+      <div class="kicker">FA1 physical consequence · the same Q row is paused between K/V prefixes</div>
+      <div class="content">
+        <div class="timeline" style="--steps:5">
+          <div class="time-item"><strong>J0 / I0</strong><span>load Q<br>update state</span></div>
+          <div class="time-item"><strong>J0 / I1…</strong><span>visit other<br>Q tiles</span></div>
+          <div class="time-item"><strong>J1 / I0</strong><span>reload Q<br>reload state</span></div>
+          <div class="time-item"><strong>J1 / I1…</strong><span>visit other<br>Q tiles</span></div>
+          <div class="time-item"><strong>…</strong><span>repeat until<br>last K/V tile</span></div>
+        </div>
+        <div class="memory">
+          <div class="mem reg"><strong>Registers now</strong> · only current Q tile's fragments and partial work</div>
+          <div class="mem global"><strong>HBM handoff</strong> · Q and running output/normalization state are revisited across J steps</div>
+        </div>
+        <p class="lead center">FA1 省了 CTA 内的 K/V reload，却让<span class="red">可变的 running state</span>反复跨越 kernel 的慢速层级。</p>
+      </div>
+      <footer class="footer"><span>capacity, not mathematical necessity, forces the handoff</span><span>FA1 consequence</span></footer>
+    </section>
+
+    <section class="slide" data-section="FA2 loop">
+      <div class="kicker">FA2 · fix one Q block and finish its complete K/V reduction</div>
+      <div class="content grid-2 wide-left">
+        <div class="codebox">CTA m = blockIdx.x:
+  load Q_m once
+  initialize FP32 acc_o, row_max, row_sum
+
+  for every valid K/V tile J:
+    load K_J, V_J
+    S_mJ = Q_m K_J^T
+    online-softmax update
+    acc_o += P_mJ V_J
+
+  normalize once
+  store final O_m and LSE_m once</div>
+        <div>
+          <div class="card green-edge"><h3>Complete owner</h3><p>一个 CTA 从头到尾拥有一块 Q rows 对应的 final O/LSE。</p></div>
+          <div class="card cyan-edge"><h3>Long-lived state</h3><p>Q、FP32 <code>acc_o/max/sum</code> 跨完整 K/V loop 留在 shared/registers。</p></div>
+        </div>
+      </div>
+      <footer class="footer"><span>finish one mutable state before moving ownership elsewhere</span><span>FA2 loop</span></footer>
+    </section>
+
+    <section class="slide" data-section="Grid example">
+      <div class="kicker">Concrete grid · B=1, H=32, N=8192, d=64</div>
+      <div class="content grid-2">
+        <div class="card amber-edge">
+          <span class="tag">FA1 illustrative R=4</span>
+          <div class="equation">grid = B × H × R = 128 CTAs</div>
+          <p>每个 head 只有 4 个 CTA；一个 CTA round-robin owns many 16-row Q tiles。</p>
+          <p class="small muted">R is host-selected and not universally 4；这里仅用于解释 granularity。</p>
+        </div>
+        <div class="card green-edge">
+          <span class="tag">FA2 B_M=128</span>
+          <div class="equation">grid = 64 × B × H = 2048 CTAs</div>
+          <p>每个 head 有 <code>8192/128=64</code> 个 independent Q-block CTAs；每个 CTA 完成自己的全部 K/V reduction。</p>
+        </div>
+        <p class="lead center" style="grid-column:1/-1">FA2 的 sequence parallelism 是<span class="cyan">更细的 complete-output ownership</span>，不是把同一个 O row 拆给 64 个 CTA。</p>
+      </div>
+      <footer class="footer"><span>more blocks expose scheduler freedom while output addresses remain disjoint</span><span>Grid</span></footer>
+    </section>
+
+    <section class="slide" data-section="Advantage one">
+      <div class="kicker">Advantage 1 · more useful CTA work when B×H is small</div>
+      <div class="content grid-3">
+        <div class="card red-edge">
+          <h3>FA1 risk</h3>
+          <p>当 batch×heads 较小，少量 heavy CTAs 可能形成不足或不整齐的 SM waves。</p>
+        </div>
+        <div class="card green-edge">
+          <h3>FA2 response</h3>
+          <p>把 Q sequence 暴露为一个 CTA per row block，GPU scheduler 有更多 independent work units。</p>
+        </div>
+        <div class="card amber-edge">
+          <h3>Boundary</h3>
+          <p>更多 CTA 不自动等于更快；occupancy、resource footprint、causal imbalance 与 launch overhead 仍要 profile。</p>
+        </div>
+        <div class="flow" style="grid-column:1/-1">
+          <span class="node">more Q owners</span><span class="arrow">→</span>
+          <span class="node cyan-node">more ready blocks</span><span class="arrow">→</span>
+          <span class="node green-node">better chance to fill SM waves</span>
+        </div>
+      </div>
+      <footer class="footer"><span>the source proves worker count; measured speed still belongs to profiling</span><span>Advantage 1</span></footer>
+    </section>
+
+    <section class="slide" data-section="Traffic trade">
+      <div class="kicker">The deliberate trade · duplicate read-only K/V to eliminate mutable-state traffic</div>
+      <div class="content">
+        <div class="score">
+          <div class="metric"><span class="tag">FA1</span><h3 class="green">K/V reuse</h3><p>one CTA reuses K/V across owned Q tiles</p></div>
+          <div class="versus">versus</div>
+          <div class="metric"><span class="tag">FA2</span><h3 class="amber">K/V reload</h3><p>different Q CTAs request overlapping K/V</p></div>
+        </div>
+        <div class="score">
+          <div class="metric"><h3 class="red">running-state traffic</h3><p>Q and mutable output/normalization state revisited across J</p></div>
+          <div class="versus">versus</div>
+          <div class="metric"><h3 class="green">on-chip state</h3><p>one Q owner retains the complete prefix state</p></div>
+        </div>
+        <p class="lead center">FA2 的赌注：read-only K/V 更适合重复请求和 cache reuse；<span class="cyan">mutable partial O 的 global handoff 更贵</span>。</p>
+      </div>
+      <footer class="footer"><span>compare total traffic and parallelism, not one operand's load count</span><span>Tradeoff</span></footer>
+    </section>
+
+    <section class="slide section-slide" data-section="Part II">
+      <div class="kicker">Part II · keep the prefix state on chip</div>
+      <div class="content center"><h2>不是“不再保存 O”<br>而是<span class="cyan">不再反复保存 partial O</span></h2></div>
+      <footer class="footer"><span>distinguish acc_o, final O, and LSE</span><span>Part II</span></footer>
+    </section>
+
+    <section class="slide" data-section="Online state">
+      <div class="kicker">Three different states · do not collapse them into “O”</div>
+      <div class="content">
+        <table>
+          <thead><tr><th>State</th><th>Meaning</th><th>FA2 lifetime</th><th>Final destination</th></tr></thead>
+          <tbody>
+            <tr><td><code>acc_o</code> / Õ</td><td>FP32 unnormalized running numerator</td><td>registers across the complete K/V loop</td><td>not separately materialized</td></tr>
+            <tr><td>final O</td><td>normalized attention output</td><td>formed once in epilogue</td><td>FP16/BF16 global tensor for later layers</td></tr>
+            <tr><td>LSE</td><td><code>m + log(l)</code>, enough to reconstruct P in backward</td><td>FP32 row state finalized in epilogue</td><td>global FP32 tensor</td></tr>
+          </tbody>
+        </table>
+        <p class="lead center">FA2 avoids a quadratic P tensor and repeated partial-state stores；<span class="amber">final O and LSE still exist</span>。</p>
+      </div>
+      <footer class="footer"><span>semantic output is not the same object as an internal running accumulator</span><span>State names</span></footer>
+    </section>
+
+    <section class="slide" data-section="Online math">
+      <div class="kicker">One K/V tile update · preserve exact softmax with an unnormalized numerator</div>
+      <div class="content grid-2">
+        <div>
+          <span class="equation">m_new = max(m_old, m_tile)</span>
+          <span class="equation">α = exp(m_old − m_new)</span>
+          <span class="equation">l_new = α l_old + Σ exp(S_tile − m_new)</span>
+        </div>
+        <div>
+          <span class="equation">Õ_new = α Õ_old + Σ exp(S_tile − m_new) V_tile</span>
+          <span class="equation">final O = Õ / l</span>
+          <p>旧 numerator 与旧 sum 在 max 改变时乘同一个 α；只有最后 epilogue 做一次 <code>1/l</code> normalization。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>fewer non-matmul normalizations without changing the real-number result</span><span>Online math</span></footer>
+    </section>
+
+    <section class="slide" data-section="State residence">
+      <div class="kicker">State residence · the loop interchange changes what can remain live</div>
+      <div class="content grid-2">
+        <div class="card red-edge">
+          <span class="tag">FA1 K/V outer</span>
+          <div class="memory">
+            <div class="mem reg">current Q tile fragments</div>
+            <div class="mem shared">current Q/K/V staging</div>
+            <div class="mem global">many Q rows' running output/normalization state between J visits</div>
+          </div>
+        </div>
+        <div class="card green-edge">
+          <span class="tag">FA2 Q block outer</span>
+          <div class="memory">
+            <div class="mem reg">FP32 acc_o + max + sum for owned rows</div>
+            <div class="mem shared">Q block + current K/V blocks</div>
+            <div class="mem global">only final O/LSE epilogue stores</div>
+          </div>
+        </div>
+      </div>
+      <footer class="footer"><span>ownership and loop order create the longer register lifetime</span><span>Residence</span></footer>
+    </section>
+
+    <section class="slide" data-section="Advantage two">
+      <div class="kicker">Advantage 2 · remove repeated Q and running-output round trips</div>
+      <div class="content">
+        <div class="flow">
+          <span class="node red-node">FA1: load Q + prior state</span><span class="arrow">→</span>
+          <span class="node">update one prefix</span><span class="arrow">→</span>
+          <span class="node red-node">store state</span><span class="arrow">→</span>
+          <span class="node muted">repeat per K/V step</span>
+        </div>
+        <div class="flow">
+          <span class="node green-node">FA2: load Q once</span><span class="arrow">→</span>
+          <span class="node">all K/V prefixes on chip</span><span class="arrow">→</span>
+          <span class="node green-node">store final O/LSE once</span>
+        </div>
+        <div class="grid-3">
+          <article class="card green-edge"><h3>Less HBM state traffic</h3><p>mutable prefix no longer needs global persistence between K/V tiles。</p></article>
+          <article class="card cyan-edge"><h3>Less non-matmul work</h3><p>unnormalized numerator enables one final division instead of repeatedly normalizing O。</p></article>
+          <article class="card amber-edge"><h3>More live registers</h3><p>larger Q tile and long-lived FP32 accumulators raise resource pressure；dispatch must adapt。</p></article>
+        </div>
+      </div>
+      <footer class="footer"><span>the performance win is paid for with a heavier but complete CTA</span><span>Advantage 2</span></footer>
+    </section>
+
+    <section class="slide section-slide" data-section="Part III">
+      <div class="kicker">Part III · partition output rows, not the PV reduction</div>
+      <div class="content center"><h2>从 four partial O<br>到<br><span class="cyan">four disjoint O row sets</span></h2></div>
+      <footer class="footer"><span>partition axis decides whether a combine exists</span><span>Part III</span></footer>
+    </section>
+
+    <section class="slide" data-section="FA1 warp split">
+      <div class="kicker">FA1 reminder · the same K/V-column split changes role between QK and PV</div>
+      <div class="content">
+        <table>
+          <thead><tr><th>GEMM</th><th>Shape</th><th>Four-warps partition</th><th>Consequence</th></tr></thead>
+          <tbody>
+            <tr><td>QKᵀ → S</td><td>[Bᵣ,D] [D,B꜀] → [Bᵣ,B꜀]</td><td>output score columns B꜀</td><td>disjoint S columns</td></tr>
+            <tr><td>PV → O</td><td>[Bᵣ,B꜀] [B꜀,D] → [Bᵣ,D]</td><td class="amber">reduction axis B꜀</td><td class="red">four partial O tiles need a numeric combine</td></tr>
+          </tbody>
+        </table>
+        <div class="matrix cols-4">
+          <span class="cell c0">warp 0<br>O partial from J0</span><span class="cell c1">warp 1<br>O partial from J1</span>
+          <span class="cell c2">warp 2<br>O partial from J2</span><span class="cell c3">warp 3<br>O partial from J3</span>
+        </div>
+        <p class="lead center">四个 warp 都贡献同一个 O element，因此必须经过 shared-memory partial-O reduction。</p>
+      </div>
+      <footer class="footer"><span>split reduction → combine obligation</span><span>FA1 warp split</span></footer>
+    </section>
+
+    <section class="slide" data-section="FA2 warp map">
+      <div class="kicker">FA2 representative map · four warps split the Q/output-row dimension</div>
+      <div class="content grid-2">
+        <div>
+          <div class="matrix rows-4">
+            <span class="cell c0">warp 0 → logical Q/O row groups 0 and 4 → 32 rows total</span>
+            <span class="cell c1">warp 1 → logical Q/O row groups 1 and 5 → 32 rows total</span>
+            <span class="cell c2">warp 2 → logical Q/O row groups 2 and 6 → 32 rows total</span>
+            <span class="cell c3">warp 3 → logical Q/O row groups 3 and 7 → 32 rows total</span>
+          </div>
+          <p class="small muted center">physical MMA groups are interleaved；“32 rows” 是 logical ownership，不是每个 lane 持有连续完整行。</p>
+        </div>
+        <div class="codebox">warp w:
+  keep Q_rows_w
+  for every K/V tile J:
+    S_rows_w,J = Q_rows_w K_J^T
+    softmax update for owned rows
+    acc_o_rows_w += P_rows_w,J V_J
+
+  store only O_rows_w</div>
+      </div>
+      <footer class="footer"><span>each warp follows its own rows through both GEMMs and every K/V tile</span><span>FA2 warp map</span></footer>
+    </section>
+
+    <section class="slide" data-section="FA2 MMA partition">
+      <div class="kicker">FA2 GEMMs · reduction axis and warp partition are different questions</div>
+      <div class="content">
+        <table>
+          <thead><tr><th>Product</th><th>CTA tile shape</th><th>Math reduction</th><th>Four-warps partition</th><th>Output ownership</th></tr></thead>
+          <tbody>
+            <tr><td>QKᵀ → S</td><td>[B_M,D] [D,B_N] → [B_M,B_N]</td><td>D</td><td>output Q rows B_M</td><td>disjoint score rows</td></tr>
+            <tr><td>PV → O</td><td>[B_M,B_N] [B_N,D] → [B_M,D]</td><td>B_N</td><td>output Q/O rows B_M</td><td>disjoint O rows</td></tr>
+          </tbody>
+        </table>
+        <div class="flow">
+          <span class="node green-node">partition M/output axis</span><span class="arrow">→</span>
+          <span class="node">each warp traverses complete reduction for its rows</span><span class="arrow">→</span>
+          <span class="node cyan-node">no cross-warp O sum</span>
+        </div>
+        <p class="small amber center">一个 tile GEMM 仍由每个 warp 发射多条 instruction-sized MMA；表中不是“一行对应一条 mma.sync”。</p>
+      </div>
+      <footer class="footer"><span>split output → concatenate; split reduction → sum</span><span>MMA partition</span></footer>
+    </section>
+
+    <section class="slide" data-section="Advantage three">
+      <div class="kicker">Advantage 3 · remove the four-way inter-warp partial-O reduction</div>
+      <div class="content grid-2">
+        <div class="card red-edge">
+          <span class="tag">FA1</span>
+          <div class="flow">
+            <span class="node">4 partial O</span><span class="arrow">→</span>
+            <span class="node red-node">shared handoff</span><span class="arrow">→</span>
+            <span class="node">fixed sum</span>
+          </div>
+          <p>额外 shared footprint、stores/loads、barrier 与 FP32 additions。</p>
+        </div>
+        <div class="card green-edge">
+          <span class="tag">FA2</span>
+          <div class="flow">
+            <span class="node">4 disjoint row sets</span><span class="arrow">→</span>
+            <span class="node green-node">epilogue layout/store</span>
+          </div>
+          <p>warps 的 O elements 不重叠；logical combine 是 concatenate，而不是 floating-point reduction。</p>
+        </div>
+        <p class="lead center" style="grid-column:1/-1">更好的 warp partition 同时减少 non-matmul work，并让 output ownership 更容易证明。</p>
+      </div>
+      <footer class="footer"><span>the best reduction is often the one ownership makes unnecessary</span><span>Advantage 3</span></footer>
+    </section>
+
+    <section class="slide" data-section="Reduction nuance">
+      <div class="kicker">Nuance · “no inter-warp O reduction” does not mean “no reduction or sync”</div>
+      <div class="content grid-3">
+        <article class="card amber-edge">
+          <h3>Softmax remains</h3>
+          <p>每个 score row 仍要对 B_N columns 做 max/sum；source 使用 per-thread work + fixed four-lane-group all-reduces。</p>
+        </article>
+        <article class="card cyan-edge">
+          <h3>CTA barriers remain</h3>
+          <p>all warps share Q/K/V buffers；buffer generation reuse 与 epilogue shared handoff 都需要 synchronization。</p>
+        </article>
+        <article class="card violet-edge">
+          <h3>MMA chains remain</h3>
+          <p>每个 output accumulator 仍沿 D 或 B_N reduction 维执行 dependent MMA instruction chain。</p>
+        </article>
+        <p class="lead center" style="grid-column:1/-1">FA2 删除的是一个特定的<span class="green">cross-warp numeric combine</span>，不是删除所有依赖。</p>
+      </div>
+      <footer class="footer"><span>name the exact reduction scope before claiming it disappeared</span><span>Nuance</span></footer>
+    </section>
+
+    <section class="slide section-slide" data-section="Part IV">
+      <div class="kicker">Part IV · move data without payload-register staging</div>
+      <div class="content center"><h2>ordinary LDG → registers → shared<br>变成<br><span class="cyan">SM80 cp.async global → shared</span></h2></div>
+      <footer class="footer"><span>copy mechanism changes; shared-memory correctness obligations remain</span><span>Part IV</span></footer>
+    </section>
+
+    <section class="slide" data-section="Copy path">
+      <div class="kicker">Memory movement · compare the software-visible path</div>
+      <div class="content grid-2">
+        <div class="card red-edge">
+          <span class="tag">Audited FA1 ordinary path</span>
+          <div class="flow">
+            <span class="node blue">HBM/L2</span><span class="arrow">→</span>
+            <span class="node amber-node">lane payload registers</span><span class="arrow">→</span>
+            <span class="node cyan-node">shared tile</span>
+          </div>
+          <p>threads issue ordinary global loads, temporarily hold copy payload, then store it into CTA shared memory。</p>
+        </div>
+        <div class="card green-edge">
+          <span class="tag">FA2 SM80 path</span>
+          <div class="flow">
+            <span class="node blue">HBM/L2</span><span class="arrow">→</span>
+            <span class="node violet-node">cp.async engine/path</span><span class="arrow">→</span>
+            <span class="node cyan-node">shared tile</span>
+          </div>
+          <p>copy instruction directly targets shared memory；payload does not occupy ordinary software staging registers。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>register fragments for MMA still exist; only copy payload staging changes</span><span>Copy path</span></footer>
+    </section>
+
+    <section class="slide" data-section="Pipeline">
+      <div class="kicker">FA2 no-dropout d64 loop · approximate dependency pipeline</div>
+      <div class="content">
+        <div class="timeline" style="--steps:6">
+          <div class="time-item"><strong>prologue</strong><span>cp.async Q<br>and last K</span></div>
+          <div class="time-item"><strong>wait K_J</strong><span>shared data<br>safe to read</span></div>
+          <div class="time-item"><strong>copy V_J</strong><span>start async<br>movement</span></div>
+          <div class="time-item"><strong>QK</strong><span>MMA while V<br>can progress</span></div>
+          <div class="time-item"><strong>copy K_prev</strong><span>prepare next<br>reverse step</span></div>
+          <div class="time-item"><strong>softmax + PV</strong><span>update state<br>and acc_o</span></div>
+        </div>
+        <div class="grid-3">
+          <article class="card green-edge"><h3>Overlap opportunity</h3><p>independent copy traffic can progress while warps execute QK/softmax/PV work。</p></article>
+          <article class="card amber-edge"><h3>Scoreboard/waits</h3><p>consumer cannot use K/V generation before the matching wait and barrier establish readiness。</p></article>
+          <article class="card red-edge"><h3>Not fire-and-forget</h3><p>moving a fence across a conditional can create a real race；source comments call out this boundary。</p></article>
+        </div>
+      </div>
+      <footer class="footer"><span>timeline shows dependencies and overlap windows, not a literal cycle trace</span><span>Pipeline</span></footer>
+    </section>
+
+    <section class="slide" data-section="Shared footprint">
+      <div class="kicker">Representative shared memory · d=64, B_M=B_N=128</div>
+      <div class="content grid-2">
+        <div>
+          <table>
+            <thead><tr><th>Region</th><th>BF16/FP16 bytes</th></tr></thead>
+            <tbody>
+              <tr><td>Q [128,64]</td><td>16 KiB</td></tr>
+              <tr><td>K [128,64]</td><td>16 KiB</td></tr>
+              <tr><td>V [128,64]</td><td>16 KiB</td></tr>
+              <tr><td><strong>Total ordinary trait</strong></td><td><strong>48 KiB</strong></td></tr>
+            </tbody>
+          </table>
+          <span class="equation">S_fwd = 2 × (B_M D + 2 B_N D) bytes</span>
+        </div>
+        <div class="memory">
+          <div class="mem global"><strong>Global</strong> · Q/K/V inputs · final O · final FP32 LSE</div>
+          <div class="mem shared"><strong>Shared</strong> · Q block · current K and V tile · epilogue layout handoff</div>
+          <div class="mem reg"><strong>Registers</strong> · score/P fragments · FP32 max/sum · long-lived acc_o</div>
+          <div class="mem compute"><strong>MMA/CUDA units</strong> · QK/PV plus softmax pointwise/reductions</div>
+        </div>
+      </div>
+      <footer class="footer"><span>resource accounting explains why tile choices vary with d and dropout</span><span>Shared memory</span></footer>
+    </section>
+
+    <section class="slide" data-section="Advantage four">
+      <div class="kicker">Advantage 4 · reduce copy staging pressure and expose overlap</div>
+      <div class="content grid-3">
+        <article class="card green-edge">
+          <h3>Fewer payload registers</h3>
+          <p><code>cp.async</code> removes ordinary global-load payload registers from the global→shared copy path。</p>
+        </article>
+        <article class="card cyan-edge">
+          <h3>Explicit async groups</h3>
+          <p>fence/wait operations let software express when a copy generation may overlap independent compute。</p>
+        </article>
+        <article class="card amber-edge">
+          <h3>More room for acc_o</h3>
+          <p>减少 staging pressure 有助于承载 FA2 更大的 Q tile 与 long-lived accumulators；实际 occupancy 仍由完整 resource set 决定。</p>
+        </article>
+        <p class="lead center" style="grid-column:1/-1">cp.async 不是单独的 magic speedup；它帮助新的 state-heavy CTA <span class="cyan">把 movement 藏在 compute 后面</span>。</p>
+      </div>
+      <footer class="footer"><span>copy optimization supports the ownership redesign</span><span>Advantage 4</span></footer>
+    </section>
+
+    <section class="slide section-slide" data-section="Part V">
+      <div class="kicker">Part V · causal work, dispatch, and determinism</div>
+      <div class="content center"><h2>优势不是 universal constant<br><span class="cyan">shape 与 specialization 决定边界</span></h2></div>
+      <footer class="footer"><span>do not generalize one d64 tile to all FA2 kernels</span><span>Part V</span></footer>
+    </section>
+
+    <section class="slide" data-section="Causal">
+      <div class="kicker">Causal pruning · a Q-block CTA skips future K/V tiles entirely</div>
+      <div class="content grid-2">
+        <div>
+          <div class="matrix cols-4">
+            <span class="cell c0">CTA Q0<br>visit K0</span>
+            <span class="cell c1">CTA Q1<br>visit K1,K0</span>
+            <span class="cell c2">CTA Q2<br>visit K2,K1,K0</span>
+            <span class="cell c3">CTA Q3<br>visit K3…K0</span>
+          </div>
+          <p class="small center muted">B_M=B_N=128 simplified triangle；source traverses valid K/V blocks in reverse order。</p>
+        </div>
+        <div>
+          <span class="equation">n_block_max = min(total K blocks, ceil((m_block+1)B_M/B_N))</span>
+          <ul>
+            <li>invalid future blocks are not loaded；</li>
+            <li>last valid/tail boundary is handled first；</li>
+            <li>early Q CTAs do less work than late Q CTAs。</li>
+          </ul>
+        </div>
+      </div>
+      <footer class="footer"><span>causal masking changes traversal length, not final-row ownership</span><span>Causal</span></footer>
+    </section>
+
+    <section class="slide" data-section="Causal balance">
+      <div class="kicker">Why more Q CTAs help but do not erase triangular imbalance</div>
+      <div class="content">
+        <div class="timeline" style="--steps:6">
+          <div class="time-item"><strong>Q0 CTA</strong><span>1 K tile<br>finishes early</span></div>
+          <div class="time-item"><strong>Q1 CTA</strong><span>2 K tiles</span></div>
+          <div class="time-item"><strong>Q2 CTA</strong><span>3 K tiles</span></div>
+          <div class="time-item"><strong>…</strong><span>increasing<br>work</span></div>
+          <div class="time-item"><strong>Q62 CTA</strong><span>63 K tiles</span></div>
+          <div class="time-item"><strong>Q63 CTA</strong><span>64 K tiles<br>critical tail</span></div>
+        </div>
+        <div class="grid-2">
+          <article class="card green-edge"><h3>Macro benefit</h3><p>64 CTA work units per head give the scheduler many blocks from different heads/Q positions to interleave。</p></article>
+          <article class="card amber-edge"><h3>Micro imbalance</h3><p>one late CTA is still much heavier than one early CTA；tail waves can remain inefficient。</p></article>
+        </div>
+        <p class="lead center">FA2 改善了可调度 work pool，不是让每个 CTA 的工作量相等。</p>
+      </div>
+      <footer class="footer"><span>load balance is a distribution, not a boolean property</span><span>Causal balance</span></footer>
+    </section>
+
+    <section class="slide" data-section="Dispatch">
+      <div class="kicker">Dispatch · larger d or dropout changes B_N, warps, and resource pressure</div>
+      <div class="content">
+        <table>
+          <thead><tr><th>v2.0.0 condition</th><th>B_M × B_N</th><th>CTA warps</th><th>Why the d64 picture may change</th></tr></thead>
+          <tbody>
+            <tr><td>d64, no dropout</td><td>128 × 128</td><td>4</td><td>representative deck path</td></tr>
+            <tr><td>d64, dropout</td><td>128 × 64</td><td>4</td><td>smaller K/V tile and RNG/mask work</td></tr>
+            <tr><td>d128, A100 branch, no dropout</td><td>128 × 64</td><td>4</td><td>head dimension doubles accumulator/input pressure</td></tr>
+            <tr><td>d192, no dropout</td><td>128 × 64</td><td>8</td><td>more warps and different fragment/resource layout</td></tr>
+            <tr><td>d256, A100 resource branch</td><td>128 × 64</td><td>8</td><td>large state needs a different specialization</td></tr>
+          </tbody>
+        </table>
+        <p class="small amber center">architecture、head dimension、dropout、causal mode 与 shared-memory limits 都可能影响 dispatch；不能把“4 warps / 48 KiB”当 FA2 universal fact。</p>
+      </div>
+      <footer class="footer"><span>always resolve the compiled specialization before reasoning about occupancy or order</span><span>Dispatch</span></footer>
+    </section>
+
+    <section class="slide" data-section="Determinism">
+      <div class="kicker">Forward determinism · trace every many-to-one edge</div>
+      <div class="content">
+        <div class="flow">
+          <span class="node violet-node">CTA m owns Q/O rows m</span><span class="arrow">→</span>
+          <span class="node">fixed reverse K/V loop</span><span class="arrow">→</span>
+          <span class="node">fixed local MMA + softmax chains</span><span class="arrow">→</span>
+          <span class="node green-node">one O/LSE epilogue owner</span>
+        </div>
+        <table class="dense">
+          <thead><tr><th>Value</th><th>Contributors</th><th>Combine/order</th><th>Cross-CTA race?</th></tr></thead>
+          <tbody>
+            <tr><td>O row</td><td>all valid K/V tiles</td><td>same CTA's fixed reverse loop and long-lived acc_o</td><td class="green">no</td></tr>
+            <tr><td>QK score</td><td>D chunks</td><td>compiled dependent MMA chain</td><td class="green">no</td></tr>
+            <tr><td>row max/sum</td><td>score columns and prior prefix</td><td>fixed local tree + sequential online merge</td><td class="green">no</td></tr>
+            <tr><td>LSE row</td><td>final max and sum</td><td>same CTA epilogue</td><td class="green">no</td></tr>
+          </tbody>
+        </table>
+        <p class="lead center">cp.async 改变 availability timing，不改变 numeric ownership。</p>
+      </div>
+      <footer class="footer"><span>fixed-artifact repeatability is expected; dropout also needs identical Philox state</span><span>Determinism</span></footer>
+    </section>
+
+    <section class="slide" data-section="Bits">
+      <div class="kicker">Repeatable does not mean FA1 and FA2 produce identical bits</div>
+      <div class="content grid-2">
+        <div class="card green-edge">
+          <span class="tag">Within one fixed FA2 artifact</span>
+          <h3>Expected repeatable</h3>
+          <ul>
+            <li>one CTA owner per O/LSE row；</li>
+            <li>fixed reverse K/V traversal；</li>
+            <li>fixed warp-local reduction trees；</li>
+            <li>no forward atomic numeric combine。</li>
+          </ul>
+        </div>
+        <div class="card amber-edge">
+          <span class="tag">Across artifacts</span>
+          <h3>Bits may differ</h3>
+          <ul>
+            <li>FA1 versus FA2 loop association；</li>
+            <li>different B_M/B_N or warp layouts；</li>
+            <li>different architecture/compiler binary；</li>
+            <li>different RNG state under dropout。</li>
+          </ul>
+        </div>
+        <p class="lead center" style="grid-column:1/-1">deterministic 是“同一 execution envelope 内顺序固定”，不是“所有正确实现共享一种 FP bit pattern”。</p>
+      </div>
+      <footer class="footer"><span>separate repeatability from cross-implementation equivalence</span><span>Bits</span></footer>
+    </section>
+
+    <section class="slide" data-section="Scorecard">
+      <div class="kicker">FA2 advantage scorecard · what changed, what disappeared, what grew</div>
+      <div class="content">
+        <table class="dense">
+          <thead><tr><th>Axis</th><th>FA1 v1.0.9 forward</th><th>FA2 v2.0.0 forward</th><th>Performance interpretation</th></tr></thead>
+          <tbody>
+            <tr><td>CTA Q ownership</td><td>several small interleaved Q tiles</td><td>one large Q row block</td><td>many more complete-output work units</td></tr>
+            <tr><td>loop nest</td><td>K/V outer → Q inner</td><td>Q owner → K/V inner</td><td>moves reuse from K/V toward mutable Q/output state</td></tr>
+            <tr><td>running state</td><td>global handoff across K/V steps</td><td>FP32 registers across all steps</td><td>fewer HBM round trips and normalizations</td></tr>
+            <tr><td>K/V traffic</td><td>CTA-local reuse across Q tiles</td><td>reload across Q CTAs</td><td>intentional read-only duplication; cache may help</td></tr>
+            <tr><td>warp split</td><td>K/V columns</td><td>Q/output rows</td><td>partial-O reduction becomes disjoint ownership</td></tr>
+            <tr><td>global→shared</td><td>ordinary payload registers</td><td>SM80 cp.async</td><td>less staging pressure and more overlap opportunity</td></tr>
+            <tr><td>CTA footprint</td><td>smaller Q state</td><td>larger Q block + long-lived acc_o</td><td>heavier CTA; specialization and occupancy matter</td></tr>
+            <tr><td>forward determinism</td><td>expected fixed-artifact repeatability</td><td>expected fixed-artifact repeatability</td><td>same verdict, different ownership proof and bits</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <footer class="footer"><span>FA2 is a coordinated dataflow redesign, not a single faster instruction</span><span>Scorecard</span></footer>
+    </section>
+
+    <section class="slide" data-section="General lessons">
+      <div class="kicker">What FA2 teaches beyond attention</div>
+      <div class="content grid-3">
+        <article class="card cyan-edge"><h3>1 · Loop interchange is physical</h3><p>它同时改变 global traffic、state lifetime、CTA count 与 FP association。</p></article>
+        <article class="card green-edge"><h3>2 · Prefer complete owners</h3><p>把 output axis 分给 workers，通常比切 reduction axis 更少 combine 与 race obligations。</p></article>
+        <article class="card amber-edge"><h3>3 · Read duplication can win</h3><p>重复 read-only input 可能比反复发布 mutable partial state 更便宜。</p></article>
+        <article class="card violet-edge"><h3>4 · Copy path supports compute design</h3><p>async movement 的价值在于支撑 larger live state 与 overlap，不应孤立分析。</p></article>
+        <article class="card red-edge"><h3>5 · More parallel is scoped</h3><p>worker count 增加不消除 CTA imbalance、resource limits 或 tail waves。</p></article>
+        <article class="card cyan-edge"><h3>6 · Re-prove determinism</h3><p>性能重写后重新画 ownership/combine graph；不能继承旧 kernel 的结论。</p></article>
+      </div>
+      <footer class="footer"><span>these questions transfer to GEMM, grouped GEMM, fused operators, and communication kernels</span><span>Lessons</span></footer>
+    </section>
+
+    <section class="slide" data-section="Backward boundary">
+      <div class="kicker">Stop line · why FA2 backward is not appended speculatively</div>
+      <div class="content grid-2">
+        <div class="card red-edge">
+          <h3>Not yet audited</h3>
+          <ul>
+            <li>dQ/dK/dV CTA ownership；</li>
+            <li>cross-CTA combine or atomics；</li>
+            <li>workspace and deterministic flag；</li>
+            <li>backward tile/warp dispatch；</li>
+            <li>later v2.x evolution。</li>
+          </ul>
+        </div>
+        <div class="card green-edge">
+          <h3>Controlled next step</h3>
+          <ol>
+            <li>pin FA2 v2.0.0 backward source landmarks；</li>
+            <li>derive the five GEMM shapes and owner graph；</li>
+            <li>trace P/dS layouts, state residence, and dQ combine；</li>
+            <li>then build a separate backward HTML。</li>
+          </ol>
+        </div>
+        <p class="lead center" style="grid-column:1/-1">forward 的优势不能自动推出 backward 的实现或 deterministic verdict。</p>
+      </div>
+      <footer class="footer"><span>source boundary is part of the result, not missing decoration</span><span>Backward boundary</span></footer>
+    </section>
+
+    <section class="slide" data-section="Summary">
+      <div class="kicker">One-screen checkpoint</div>
+      <div class="content center">
+        <div>
+          <div class="flow">
+            <span class="node cyan-node">one CTA / Q block</span><span class="arrow">→</span>
+            <span class="node green-node">complete state on chip</span><span class="arrow">→</span>
+            <span class="node amber-node">warps own disjoint rows</span><span class="arrow">→</span>
+            <span class="node violet-node">cp.async overlaps movement</span>
+          </div>
+          <p class="lead">FA2 更快的核心：<span class="cyan">用更多 complete-output owners，换掉 mutable partial-state traffic 和 reduction overhead</span>。</p>
+          <p class="lead muted">代价是 duplicated K/V reads、更大的 live state、更复杂的 pipeline，以及 shape-dependent dispatch。</p>
+          <span class="equation">performance question = ownership × residence × partition × movement × resource admission</span>
+        </div>
+      </div>
+      <footer class="footer"><span>source of truth: flashattention_fa2_forward.md</span><span>Summary</span></footer>
+    </section>
+  </main>
+
+  <div class="hud" aria-label="slide controls">
+    <button id="prev" type="button" aria-label="previous slide">←</button>
+    <span class="counter" id="counter">1 / 1</span>
+    <button id="next" type="button" aria-label="next slide">→</button>
+  </div>
+  <div class="progress" aria-hidden="true"><span id="progress"></span></div>
+
+  <script>
+    (() => {
+      const slides = [...document.querySelectorAll(".slide")];
+      const counter = document.getElementById("counter");
+      const progress = document.getElementById("progress");
+      let current = 0;
+
+      const hashIndex = () => {
+        const match = location.hash.match(/^#(\d+)$/);
+        return match ? Math.min(slides.length - 1, Math.max(0, Number(match[1]) - 1)) : 0;
+      };
+
+      const show = (index, updateHash = true) => {
+        current = Math.min(slides.length - 1, Math.max(0, index));
+        slides.forEach((slide, i) => slide.classList.toggle("active", i === current));
+        counter.textContent = `${current + 1} / ${slides.length}`;
+        progress.style.width = `${((current + 1) / slides.length) * 100}%`;
+        document.title = `${slides[current].dataset.section} · FA2 Forward`;
+        if (updateHash) history.replaceState(null, "", `#${current + 1}`);
+      };
+
+      const next = () => show(current + 1);
+      const prev = () => show(current - 1);
+      document.getElementById("next").addEventListener("click", next);
+      document.getElementById("prev").addEventListener("click", prev);
+
+      document.addEventListener("keydown", (event) => {
+        if (["ArrowRight", "PageDown", " "].includes(event.key)) {
+          event.preventDefault();
+          next();
+        } else if (["ArrowLeft", "PageUp", "Backspace"].includes(event.key)) {
+          event.preventDefault();
+          prev();
+        } else if (event.key === "Home") {
+          event.preventDefault();
+          show(0);
+        } else if (event.key === "End") {
+          event.preventDefault();
+          show(slides.length - 1);
+        }
+      });
+
+      let touchX = null;
+      document.addEventListener("touchstart", (event) => {
+        touchX = event.changedTouches[0].clientX;
+      }, {passive: true});
+      document.addEventListener("touchend", (event) => {
+        if (touchX === null) return;
+        const delta = event.changedTouches[0].clientX - touchX;
+        if (Math.abs(delta) > 55) delta < 0 ? next() : prev();
+        touchX = null;
+      }, {passive: true});
+
+      window.addEventListener("hashchange", () => show(hashIndex(), false));
+      show(hashIndex(), false);
+    })();
+  </script>
+</body>
+</html>
