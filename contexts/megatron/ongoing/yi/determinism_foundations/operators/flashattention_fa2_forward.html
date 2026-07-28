@@ -992,31 +992,27 @@
       <footer class="footer"><span>these questions transfer to GEMM, grouped GEMM, fused operators, and communication kernels</span><span>Lessons</span></footer>
     </section>
 
-    <section class="slide" data-section="Backward boundary">
-      <div class="kicker">Stop line · why FA2 backward is not appended speculatively</div>
+    <section class="slide" data-section="Backward companion">
+      <div class="kicker">Companion audit · backward needs a different owner graph</div>
       <div class="content grid-2">
-        <div class="card red-edge">
-          <h3>Not yet audited</h3>
+        <div class="card amber-edge">
+          <h3>Why it remains separate</h3>
           <ul>
-            <li>dQ/dK/dV CTA ownership；</li>
-            <li>cross-CTA combine or atomics；</li>
-            <li>workspace and deterministic flag；</li>
-            <li>backward tile/warp dispatch；</li>
-            <li>later v2.x evolution。</li>
+            <li>one K/V-tile CTA owns final dK/dV but only partial dQ；</li>
+            <li>five GEMMs use three warp-output layouts；</li>
+            <li>preprocess、main、dQ convert form a three-kernel protocol；</li>
+            <li>cross-CTA atomic dQ creates a different determinism boundary。</li>
           </ul>
         </div>
         <div class="card green-edge">
-          <h3>Controlled next step</h3>
-          <ol>
-            <li>pin FA2 v2.0.0 backward source landmarks；</li>
-            <li>derive the five GEMM shapes and owner graph；</li>
-            <li>trace P/dS layouts, state residence, and dQ combine；</li>
-            <li>then build a separate backward HTML。</li>
-          </ol>
+          <h3>Now source-audited</h3>
+          <p>继续阅读 pinned v2.0.0 companion：</p>
+          <p><a href="flashattention_fa2_backward.html">FA2 backward visual map</a></p>
+          <p><a href="flashattention_fa2_backward.md">FA2 backward Markdown source of truth</a></p>
         </div>
-        <p class="lead center" style="grid-column:1/-1">forward 的优势不能自动推出 backward 的实现或 deterministic verdict。</p>
+        <p class="lead center" style="grid-column:1/-1">forward 的 complete-Q owner 很 deterministic；backward 为并行 dK/dV 重新引入 many-owner dQ。</p>
       </div>
-      <footer class="footer"><span>source boundary is part of the result, not missing decoration</span><span>Backward boundary</span></footer>
+      <footer class="footer"><span>same release, different gradient ownership and determinism proof</span><span>Backward companion</span></footer>
     </section>
 
     <section class="slide" data-section="Summary">

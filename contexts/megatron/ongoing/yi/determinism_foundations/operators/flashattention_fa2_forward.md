@@ -510,8 +510,14 @@ without a separate audit:
 - batch invariance or inference KV-cache behavior;
 - cross-version bitwise equality.
 
+The pinned v2.0.0 backward source audit now lives in
+[FA2 backward](flashattention_fa2_backward.md), with a companion
+[backward visual map](flashattention_fa2_backward.html). It is kept separate
+because its sequence-K atomic ownership and three-kernel protocol require a
+different determinism proof.
+
 The next useful sequence is:
 
-1. use the checkpoint and delta table as the first HTML reading surfaces;
-2. audit FA2 backward only after the forward ownership model has been reviewed;
+1. review the forward and backward visual maps together;
+2. validate both pinned paths on A100 when GPU access is available;
 3. add Hopper's TMA/WGMMA/warpgroup foundation before FA3.
