@@ -2146,6 +2146,24 @@ sequence-parallel main grid:
     (batch, heads, ceil(Nk / Bc))
 ```
 
+Keep the requested mode selector separate from the resolved fan-out:
+
+| Requested backward `num_splits` | Meaning in v1.0.9 | Actual main-kernel z dimension |
+| --- | --- | --- |
+| `0` | run the host heuristic | either `1` or the full K/V-tile count |
+| `1` | select the serial-K mode | `1` |
+| `2`, `3`, `4`, ... | select the same sequence-K kernel | `ceil(Nk / Bc)`, independent of the requested value |
+
+Thus the exact user-supplied value above one is not a tunable degree of
+parallelism in this backward implementation. The **resolved K/V-tile count**
+still matters: it determines the CTA count, the number of potential atomic
+contributors to a `dQ` element, contention, and the space of possible
+floating-point arrival orders. For the running $N_k=8192,B_c=128$ example,
+passing either `num_splits=2` or `num_splits=8` launches 64 K/V-tile CTAs per
+batch/head. Causality can make some query rows receive fewer active
+contributions, but it does not turn the requested integer into an exact CTA
+count.
+
 The default heuristic compares CTA-wave utilization for `batch * heads`
 against the parallel K/V-tile count. It discounts sequence parallelism because
 that mode must zero an FP32 `dq_tmp`, run a separate $D_i$ kernel, and copy/cast
@@ -2367,6 +2385,90 @@ but the dependency graph is the same.
 $[B_r,B_c]$ warp layout, while $dV=P^\top G$ and $dK=dS^\top Q$ consume the
 transpose. The source stores them through swizzled shared-memory tiles and
 reloads the transposed fragments instead of materializing a global tensor.
+
+#### One-tile dataflow and layout transitions
+
+For one current Q tile $I$ and fixed K/V tile $J$, the dependency graph is:
+
+```text
+Q_I, K_J
+    -> S_IJ [query,key] score fragments
+       QK: [B_r,D] x [D,B_c] -> [B_r,B_c]
+       reduce D; warps partition output key columns B_c
+    -> P_IJ = exp(S_IJ - LSE_I)
+       |\
+       | \-> store P tile in shared
+       |      -> transposed fragment reload P_IJ^T [key,query]
+       |      -> acc_dV_J += P_IJ^T G_I
+       |         [B_c,B_r] x [B_r,D] -> [B_c,D]
+       |         reduce B_r; warps partition output key rows B_c
+       |
+G_I, V_J -> dP_IJ = G_I V_J^T
+                [B_r,D] x [D,B_c] -> [B_r,B_c]
+                reduce D; warps partition output key columns B_c
+                \
+P_IJ, dP_IJ, D_I -> dS_IJ = P_IJ * (dP_IJ - D_I)
+                       |\
+                       | \-> original [query,key] fragments
+                       |      -> local dQ_I_from_J = dS_IJ K_J
+                       |         [B_r,B_c] x [B_c,D] -> [B_r,D]
+                       |         reduce B_c; warps partition B_c into eight partial dQ tiles
+                       |
+                       \-> store dS tile in shared
+                              -> transposed fragment reload dS_IJ^T [key,query]
+                              -> acc_dK_J += dS_IJ^T Q_I
+                                 [B_c,B_r] x [B_r,D] -> [B_c,D]
+                                 reduce B_r; warps partition output key rows B_c
+```
+
+This graph separates mathematical values from their instruction-facing
+layouts:
+
+| Stage value | Semantic coordinates | Residence/layout at that stage | Consumer |
+| --- | --- | --- | --- |
+| $S_{IJ}$ | `[query,key]` | FP32 QK accumulator fragments distributed across lanes | pointwise mask and LSE-based reconstruction of $P$ |
+| $P_{IJ}$ | `[query,key]` | score-oriented registers; current tile is also published through swizzled shared memory | pointwise $dS$ path and transpose handoff |
+| $P_{IJ}^\top$ | `[key,query]` | newly loaded MMA operand fragments after the shared-memory layout conversion | $dV=P^\top G$ |
+| $dP_{IJ}$ | `[query,key]` | FP32 `G V^T` accumulator fragments | pointwise formation of $dS$ |
+| $dS_{IJ}$ | `[query,key]` | score-oriented registers; current tile is also stored to shared memory | $dQ=dS K$ and transpose handoff |
+| $dS_{IJ}^\top$ | `[key,query]` | newly loaded MMA operand fragments after the shared-memory layout conversion | $dK=dS^\top Q$ |
+
+The five matrix products use three distinct partition patterns:
+
+| Product | Tile shapes | Mathematical reduction axis | Eight-warp partition in this FA1 backward specialization | CTA-local consequence |
+| --- | --- | --- | --- | --- |
+| $S=QK^\top$ | $[B_r,D][D,B_c]\to[B_r,B_c]$ | $D$ | partition the output's $B_c$ key columns | each warp produces a disjoint score-column slice |
+| $dP=GV^\top$ | $[B_r,D][D,B_c]\to[B_r,B_c]$ | $D$ | partition the output's $B_c$ key columns | each warp produces a disjoint $dP$-column slice |
+| $dQ=dS K$ | $[B_r,B_c][B_c,D]\to[B_r,D]$ | $B_c$ | partition the **reduction** axis $B_c$ | eight warps produce eight partial $[B_r,D]$ `dQ` tiles that must be combined |
+| $dV=P^\top G$ | $[B_c,B_r][B_r,D]\to[B_c,D]$ | $B_r$ | partition the output's $B_c$ key rows | each final $dV$ row has one warp owner |
+| $dK=dS^\top Q$ | $[B_c,B_r][B_r,D]\to[B_c,D]$ | $B_r$ | partition the output's $B_c$ key rows | each final $dK$ row has one warp owner |
+
+For example, when $B_c=128$, each of the eight warps owns a 16-key slice.
+That slice means output columns for QK/$dP$, a reduction slice for $dQ$, and
+output rows for $dK$/$dV$. These are logical warp-level partitions, not a
+claim that one whole tile product maps to one hardware instruction. Each warp
+issues multiple MMA instructions over instruction-sized microtiles, and the
+lane/register fragment mapping still depends on the compiled specialization.
+
+`P^T` and `dS^T` are not additional full tensors and never become
+sequence-sized global intermediates. They are the same current-tile values
+reassigned to different lane/register tuples so a later MMA sees the operand
+shape and role it requires.
+
+The transposed consumers occur late in one Q-tile iteration because they
+depend on the shared store, visibility synchronization, and transposed reload.
+They are not postponed until after all Q tiles:
+
+```text
+for each I:
+    form P_IJ and dS_IJ
+    update current dQ_I contribution
+    acc_dV_J += transposed P_IJ contribution
+    acc_dK_J += transposed dS_IJ contribution
+
+after the complete I loop:
+    store final dV_J and dK_J once
+```
 
 #### Within one Q-tile iteration
 

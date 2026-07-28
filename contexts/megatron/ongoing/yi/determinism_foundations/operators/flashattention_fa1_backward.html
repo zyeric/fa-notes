@@ -664,6 +664,61 @@ write final dK_J,dV_J once</div>
       <footer class="footer"><span>P and dS each cross shared memory to become transposed MMA operands</span><span>dS transpose</span></footer>
     </section>
 
+    <section class="slide" data-section="Backward dataflow">
+      <div class="kicker">One (I,J) dataflow · values branch before their transposed consumers</div>
+      <div class="content grid-2 wide-left">
+        <div class="codebox">Q_I,K_J
+  → S_IJ [query,key]                  QK: reduce D; split output J
+  → P_IJ = exp(S_IJ − LSE_I)
+      ├─ P original + dP − D → dS_IJ [query,key]
+      │                           ├─ original dS + K_J → dQ
+      │                           │   reduce/split J → 8 partials
+      │                           └─ shared → dS_IJᵀ → acc_dK
+      │                               reduce I; split output J
+      └─ shared → P_IJᵀ [key,query] → acc_dV
+          reduce I; split output J
+
+G_I,V_J
+  → dP_IJ = G_I V_Jᵀ ──────────────┘
+    reduce D; split output J</div>
+        <div>
+          <table class="dense">
+            <thead><tr><th>Value/layout</th><th>When and why</th></tr></thead>
+            <tbody>
+              <tr><td>S [I,J]</td><td>QK FP32 score accumulators；only used to reconstruct P</td></tr>
+              <tr><td>P [I,J]</td><td>score-oriented registers；pointwise dS input + shared publication</td></tr>
+              <tr><td>Pᵀ [J,I]</td><td>transposed reload fragments；late consumer dV=PᵀG</td></tr>
+              <tr><td>dS [I,J]</td><td>score-oriented registers；direct consumer dQ=dSK + shared publication</td></tr>
+              <tr><td>dSᵀ [J,I]</td><td>transposed reload fragments；late consumer dK=dSᵀQ</td></tr>
+            </tbody>
+          </table>
+          <p class="small amber"><strong>不是 Sᵀ：</strong>dK consumes <code>dSᵀ</code>。Pᵀ/dSᵀ 也不是 global tensors；只是 current tile 经 shared layout conversion 后的新 lane/register tuples。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>semantic transpose changes fragment ownership, not the mathematical values stored in a full tensor</span><span>Backward dataflow</span></footer>
+    </section>
+
+    <section class="slide" data-section="MMA partition">
+      <div class="kicker">Five GEMMs · first identify reduction, then identify the warp partition</div>
+      <div class="content">
+        <table class="dense">
+          <thead><tr><th>Product</th><th>Tile shape</th><th>Reduce</th><th>Eight warps partition</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td>QKᵀ → S</td><td>[Bᵣ,D] [D,B꜀] → [Bᵣ,B꜀]</td><td>D</td><td>output key columns B꜀</td><td>disjoint S slices</td></tr>
+            <tr><td>GVᵀ → dP</td><td>[Bᵣ,D] [D,B꜀] → [Bᵣ,B꜀]</td><td>D</td><td>output key columns B꜀</td><td>disjoint dP slices</td></tr>
+            <tr><td>dS K → dQ</td><td>[Bᵣ,B꜀] [B꜀,D] → [Bᵣ,D]</td><td class="amber">B꜀</td><td class="amber">reduction axis B꜀</td><td class="amber">8 partial dQ tiles</td></tr>
+            <tr><td>PᵀG → dV</td><td>[B꜀,Bᵣ] [Bᵣ,D] → [B꜀,D]</td><td>Bᵣ</td><td>output key rows B꜀</td><td>one owner per dV row</td></tr>
+            <tr><td>dSᵀQ → dK</td><td>[B꜀,Bᵣ] [Bᵣ,D] → [B꜀,D]</td><td>Bᵣ</td><td>output key rows B꜀</td><td>one owner per dK row</td></tr>
+          </tbody>
+        </table>
+        <div class="grid-2">
+          <article class="card cyan-edge"><h3>B꜀=128 example</h3><p>八个 warp 各拿 16 个 key positions。对 QK/dP，它们是 output columns；对 dQ，它们是 reduction slice；对 dK/dV，它们是 output rows。</p></article>
+          <article class="card violet-edge"><h3>GEMM ≠ one MMA</h3><p>每个 warp 会对 instruction-sized microtiles 发射多条 MMA。表中是 logical warp partition；exact lane/register fragments 由 specialization 决定。</p></article>
+        </div>
+      </div>
+      <footer class="footer"><span>only dQ partitions a reduction axis, which is why only dQ needs an eight-way local combine</span><span>MMA partition</span></footer>
+    </section>
+
     <section class="slide" data-section="One iteration">
       <div class="kicker">One Q-tile iteration · approximate dependency timeline</div>
       <div class="content">
@@ -681,7 +736,7 @@ write final dK_J,dV_J once</div>
           <article class="card"><h3>CTA barriers</h3><p>protect Q/G buffer generations and smem_dq reuse。</p></article>
           <article class="card"><h3>Warp sync</h3><p>protect score-tile transpose handoffs when communication scope is one warp。</p></article>
         </div>
-        <p class="small muted center">源码 interleave 比这张图更细；timeline 表示 true dependency and lifetime boundaries，不伪造逐 cycle schedule。</p>
+        <p class="small muted center">dV/dK 是每个 I iteration 的 late consumers；acc_dV/acc_dK 跨 I 保持在 registers，完整 Q loop 结束后才各写 global output 一次。源码 interleave 比图更细，不伪造逐 cycle schedule。</p>
       </div>
       <footer class="footer"><span>software pipelining overlaps independent work but does not remove true gradient dependencies</span><span>One iteration</span></footer>
     </section>
@@ -780,13 +835,13 @@ then store final rows once</div>
           <p>每个 (batch,head) 一个 CTA；它顺序执行全部 64 个 K/V tiles。</p>
         </div>
         <div class="card red-edge">
-          <span class="tag">num_splits &gt; 1</span>
+          <span class="tag">num_splits = 2, 3, 4, ...</span>
           <h3>Select sequence-K mode</h3>
           <span class="equation">main grid = (B,H,ceil(Nk/Bc))</span>
-          <p>running example 是 1×32×64 = 2048 CTAs；不是数值 4 就只有四份。</p>
+          <p>所有大于 1 的输入调用同一个 kernel。running example 中传 2 或 8 都是 1×32×64 = 2048 CTAs；输入值不是实际份数。</p>
         </div>
         <div class="card amber-edge" style="grid-column:1/-1">
-          <p><strong>num_splits=0</strong>：host heuristic 在两种模式间选择。它比较 wave utilization 并给 parallel path 一个经验折扣；源码注释明确点出 dq_tmp zero/final copy，实际 path 还包含 separate D kernel 和 atomic traffic。</p>
+          <p><strong>分开两个数：</strong>requested <code>num_splits</code> 只是 0/1/&gt;1 mode selector；resolved fan-out 是 K/V tile 数 <code>Tk=ceil(Nk/Bc)</code>。后者决定 CTA 数、dQ atomic contributors 和 contention。<strong>num_splits=0</strong> 的 heuristic 只在 serial 1 和完整 Tk-way parallel 两种方案间选择。</p>
         </div>
       </div>
       <footer class="footer"><span>same parameter name, materially different scheduling semantics from forward</span><span>num_splits</span></footer>
