@@ -328,9 +328,202 @@
       transition: width .2s ease;
     }
 
+    /* Balanced-layout pass: use the full viewport without turning every slide
+       into the same rigid grid. Dense slides can opt into the fit classes that
+       the navigation script assigns after measuring the active slide. */
+    .slide {
+      --body-size: clamp(14px, 1.08vw, 21px);
+      --card-min-2: clamp(245px, 39vh, 420px);
+      --card-min-3: clamp(175px, 25vh, 270px);
+      --card-min-4: clamp(235px, 35vh, 370px);
+      gap: clamp(10px, 1.25vh, 18px);
+      padding:
+        clamp(25px, 3.5vh, 49px)
+        clamp(38px, 4.6vw, 84px)
+        clamp(23px, 3vh, 42px);
+    }
+    .kicker {
+      display: flex;
+      align-items: center;
+      gap: clamp(12px, 1.2vw, 22px);
+      min-width: 0;
+    }
+    .kicker::after {
+      content: "";
+      flex: 1 1 auto;
+      height: 1px;
+      background: linear-gradient(90deg, rgba(85, 217, 251, .62), transparent);
+    }
+    h3 { font-size: clamp(18px, 1.45vw, 26px); }
+    p, li, td, th { font-size: var(--body-size); line-height: 1.38; }
+    .lead { font-size: clamp(21px, 2.05vw, 38px); }
+    .content {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: clamp(13px, 1.8vh, 25px);
+      overflow: hidden;
+    }
+    .content.center { display: grid; }
+    .content.grid-2,
+    .content.grid-3,
+    .content.grid-4 {
+      display: grid;
+      align-content: center;
+      min-height: 0;
+    }
+    .grid-2 {
+      height: auto;
+      align-items: center;
+    }
+    .grid-3,
+    .grid-4 {
+      align-content: center;
+    }
+    .content.grid-2 { height: 100%; }
+    .content.grid-2 > .card { min-height: var(--card-min-2); }
+    .content.grid-3 > .card { min-height: var(--card-min-3); }
+    .content.grid-4 > .card { min-height: var(--card-min-4); }
+    .content > .grid-2,
+    .content > .grid-3,
+    .content > .grid-4 {
+      align-content: center;
+      width: 100%;
+    }
+    .content > .grid-3 > .card,
+    .content > .grid-4 > .card {
+      min-height: clamp(165px, 23vh, 245px);
+    }
+    .card {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-width: 0;
+      box-shadow: 0 18px 52px rgba(0, 0, 0, .28);
+    }
+    table {
+      overflow: hidden;
+      border: 1px solid rgba(42, 67, 94, .88);
+      border-collapse: separate;
+      border-spacing: 0;
+      border-radius: 15px;
+      background: linear-gradient(145deg, rgba(16, 31, 50, .92), rgba(8, 20, 34, .94));
+      box-shadow: 0 18px 52px rgba(0, 0, 0, .24);
+    }
+    tbody tr:last-child td { border-bottom: 0; }
+    .content > table { align-self: center; }
+    .timeline {
+      width: 100%;
+      min-height: clamp(92px, 13vh, 142px);
+      margin: 0;
+      align-items: stretch;
+    }
+    .time-item {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .content > .timeline + .grid-3,
+    .content > .timeline + .grid-4 {
+      margin-top: clamp(5px, .7vh, 10px);
+    }
+    .content:has(> .timeline),
+    .content:has(> .grid-3 + .flow),
+    .content:has(> .grid-4 + .flow),
+    .content:has(> .flow + .grid-2),
+    .content:has(> .flow + .grid-3) {
+      justify-content: space-evenly;
+    }
+
+    .section-slide {
+      isolation: isolate;
+      overflow: hidden;
+    }
+    .section-slide::before {
+      content: attr(data-section);
+      position: absolute;
+      z-index: 0;
+      right: clamp(20px, 4vw, 76px);
+      top: 48%;
+      transform: translateY(-50%);
+      color: rgba(85, 217, 251, .055);
+      font-size: clamp(132px, 22vw, 360px);
+      font-weight: 900;
+      letter-spacing: -.08em;
+      line-height: .8;
+      pointer-events: none;
+    }
+    .section-slide > * { position: relative; z-index: 1; }
+    .section-slide .content {
+      width: 100%;
+      min-height: min(62vh, 610px);
+      padding: clamp(28px, 4vw, 70px);
+      border: 1px solid rgba(85, 217, 251, .25);
+      border-radius: clamp(22px, 2.3vw, 38px);
+      background:
+        linear-gradient(125deg, rgba(21, 42, 65, .88), rgba(8, 20, 34, .58)),
+        radial-gradient(circle at 88% 18%, rgba(85, 217, 251, .12), transparent 34%);
+      box-shadow: 0 28px 90px rgba(0, 0, 0, .34);
+    }
+    .section-slide h2 {
+      max-width: 1100px;
+      margin-inline: auto;
+      font-size: clamp(40px, 5.2vw, 86px);
+    }
+    .slide[data-section="Question"] .content > div {
+      width: min(1180px, 100%);
+      padding: clamp(30px, 4vw, 68px);
+      border: 1px solid rgba(85, 217, 251, .24);
+      border-left: 6px solid var(--cyan);
+      border-radius: 24px;
+      background: linear-gradient(135deg, rgba(16, 31, 50, .88), rgba(8, 20, 34, .6));
+      box-shadow: 0 24px 72px rgba(0, 0, 0, .3);
+    }
+
+    .slide.tight {
+      --body-size: clamp(12px, .93vw, 17px);
+      --card-min-2: 0px;
+      --card-min-3: 0px;
+      --card-min-4: 0px;
+      gap: 8px;
+      padding-top: 20px;
+      padding-bottom: 20px;
+    }
+    .slide.tight h3 { font-size: clamp(16px, 1.2vw, 21px); }
+    .slide.tight .lead { font-size: clamp(18px, 1.7vw, 30px); }
+    .slide.tight .card { padding: clamp(10px, 1vw, 17px); }
+    .slide.tight .content { gap: clamp(8px, 1vh, 14px); }
+    .slide.tight .equation,
+    .slide.tight .codebox { padding: .48em .62em; margin: .28em 0; }
+    .slide.tight .timeline { min-height: 72px; }
+    .slide.ultra-tight {
+      --body-size: clamp(11px, .82vw, 15px);
+      padding-top: 14px;
+      padding-bottom: 14px;
+    }
+    .slide.ultra-tight .kicker,
+    .slide.ultra-tight .footer { font-size: 10px; }
+    .slide.ultra-tight .lead { font-size: clamp(16px, 1.45vw, 25px); }
+    .slide.ultra-tight .dense td,
+    .slide.ultra-tight .dense th { font-size: clamp(10px, .72vw, 13px); }
+
     @media (max-width: 900px) {
-      .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; overflow: auto; }
+      .grid-2, .grid-3, .grid-4 {
+        grid-template-columns: 1fr;
+        align-content: start;
+        overflow: auto;
+      }
       .slide { padding-left: 24px; padding-right: 24px; }
+      .content { justify-content: flex-start; overflow: auto; }
+      .content.grid-2,
+      .content.grid-3,
+      .content.grid-4 { height: auto; align-content: start; }
+      .content.grid-2 > .card,
+      .content.grid-3 > .card,
+      .content.grid-4 > .card,
+      .content > .grid-3 > .card,
+      .content > .grid-4 > .card { min-height: 0; }
+      .section-slide .content { min-height: 56vh; }
       .timeline { grid-template-columns: repeat(2, 1fr); }
       .hud { right: 8px; bottom: 8px; }
     }
@@ -1149,6 +1342,29 @@ FA2:
         return match ? Math.min(slides.length - 1, Math.max(0, Number(match[1]) - 1)) : 0;
       };
 
+      const overflows = (slide) => {
+        const content = slide.querySelector(".content");
+        if (!content) return false;
+        const targets = [content, ...content.querySelectorAll(
+          ".card, .codebox, .matrix, .timeline, table"
+        )];
+        return targets.some((node) =>
+          node.scrollHeight > node.clientHeight + 2 ||
+          node.scrollWidth > node.clientWidth + 2
+        );
+      };
+
+      const fit = (slide) => {
+        slide.classList.remove("tight", "ultra-tight");
+        requestAnimationFrame(() => {
+          if (!overflows(slide)) return;
+          slide.classList.add("tight");
+          requestAnimationFrame(() => {
+            if (overflows(slide)) slide.classList.add("ultra-tight");
+          });
+        });
+      };
+
       const show = (index, updateHash = true) => {
         current = Math.min(slides.length - 1, Math.max(0, index));
         slides.forEach((slide, i) => slide.classList.toggle("active", i === current));
@@ -1156,6 +1372,7 @@ FA2:
         progress.style.width = `${((current + 1) / slides.length) * 100}%`;
         document.title = `${slides[current].dataset.section} · FA2 Forward`;
         if (updateHash) history.replaceState(null, "", `#${current + 1}`);
+        fit(slides[current]);
       };
 
       const next = () => show(current + 1);
@@ -1191,6 +1408,11 @@ FA2:
       }, {passive: true});
 
       window.addEventListener("hashchange", () => show(hashIndex(), false));
+      let resizeFrame = null;
+      window.addEventListener("resize", () => {
+        cancelAnimationFrame(resizeFrame);
+        resizeFrame = requestAnimationFrame(() => fit(slides[current]));
+      });
       show(hashIndex(), false);
     })();
   </script>
