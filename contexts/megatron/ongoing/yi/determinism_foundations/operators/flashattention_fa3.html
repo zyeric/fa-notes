@@ -46,6 +46,59 @@
     .grid-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:clamp(11px,1.45vw,24px); align-items:stretch; }
     .grid-4 { display:grid; grid-template-columns:repeat(4,1fr); gap:clamp(8px,1vw,16px); align-items:stretch; }
     .wide-left{grid-template-columns:1.22fr .78fr} .wide-right{grid-template-columns:.78fr 1.22fr}
+    .roadmap { display:grid; grid-template-rows:repeat(4,minmax(0,1fr)); gap:clamp(10px,1.35vh,18px); height:100%; }
+    .roadmap .card { display:grid; grid-template-columns:minmax(54px,.25fr) minmax(180px,.8fr) minmax(0,1.65fr);
+      align-items:center; gap:clamp(12px,1.5vw,25px); padding:clamp(10px,1.15vw,18px) clamp(14px,1.55vw,25px); }
+    .roadmap .map-index { font-size:clamp(28px,3.2vw,54px); line-height:1; font-weight:850; text-align:center; }
+    .roadmap .tag,.roadmap h3,.roadmap p { margin:0; }
+    .roadmap .tag { margin-bottom:.38em; }
+    .roadmap p { color:#dce8f2; }
+    .roadmap p span { display:block; margin-top:.28em; color:var(--muted); font-size:.82em; }
+    .hardware-balance { display:grid; grid-template-columns:minmax(0,1.18fr) minmax(330px,.82fr);
+      gap:clamp(16px,2.2vw,36px); height:100%; align-items:stretch; }
+    .hardware-table { display:grid; align-content:center; }
+    .hardware-table th,.hardware-table td { padding:.58em .52em; }
+    .ratio-panel { display:flex; flex-direction:column; justify-content:center; }
+    .ratio-panel h3 { margin-bottom:.7em; }
+    .ratio-stack { display:grid; gap:clamp(10px,1.25vh,17px); }
+    .ratio-head { display:flex; justify-content:space-between; gap:10px; margin-bottom:5px;
+      color:#dce8f2; font-size:clamp(12px,.94vw,17px); }
+    .ratio-head strong { color:var(--cyan); }
+    .bar-track { height:clamp(12px,1.45vh,20px); overflow:hidden; border:1px solid var(--line);
+      border-radius:999px; background:#030b14; }
+    .bar-fill { width:var(--w); height:100%; border-radius:inherit;
+      background:linear-gradient(90deg,var(--cyan),var(--green)); }
+    .bar-fill.supply { background:linear-gradient(90deg,var(--blue),var(--violet)); }
+    .ratio-callout { margin-top:clamp(15px,2vh,26px); padding:.75em .85em; border-left:4px solid var(--amber);
+      border-radius:8px; background:rgba(255,201,111,.07); color:#e8f0f6; font-size:clamp(13px,1.04vw,19px); }
+    .identity-stack { display:grid; grid-template-rows:minmax(0,1.05fr) minmax(0,.95fr);
+      gap:clamp(12px,1.65vh,23px); height:100%; }
+    .identity-stack table { height:100%; }
+    .identity-stack > .grid-2 { height:100%; }
+    .sequence-stack { display:grid; grid-template-rows:minmax(0,.72fr) minmax(0,1.28fr);
+      gap:clamp(14px,2vh,27px); height:100%; }
+    .sequence-stack > .timeline { height:100%; margin:0; }
+    .sequence-stack > .timeline .time-item { display:grid; place-content:center; }
+    .sequence-stack > .grid-3 { height:100%; }
+    .lane-story { display:grid; grid-template-rows:minmax(0,1fr) auto; gap:clamp(10px,1.5vh,21px); height:100%; }
+    .lane-story > .lane-grid { height:100%; }
+    .lane-story > p { margin:0; }
+    .dataflow-stack { display:grid; grid-template-rows:repeat(3,minmax(0,1fr)) auto;
+      gap:clamp(9px,1.3vh,18px); height:100%; }
+    .dataflow-stack > .flow { height:100%; margin:0; padding:.48em .7em; border:1px solid var(--line);
+      border-radius:14px; background:linear-gradient(135deg,rgba(21,49,75,.66),rgba(5,13,24,.7)); }
+    .dataflow-stack > p { margin:0; }
+    .dual-schedule { display:grid; grid-template-rows:minmax(0,1.15fr) minmax(0,.85fr) auto;
+      gap:clamp(9px,1.25vh,17px); height:100%; }
+    .dual-schedule > .lane-grid,.dual-schedule > .timeline { height:100%; margin:0; }
+    .dual-schedule > .timeline .time-item { display:grid; place-content:center; }
+    .dual-schedule > p { margin:0; }
+    .backward-owner { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(330px,.85fr);
+      gap:clamp(15px,2vw,32px); height:100%; }
+    .dq-grid { display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr;
+      gap:clamp(12px,1.55vw,25px); height:100%; }
+    .dq-grid .card { display:flex; flex-direction:column; justify-content:center; }
+    .dq-grid .codebox { margin:.32em 0; }
     .card { background:linear-gradient(145deg,rgba(21,49,75,.96),rgba(8,21,35,.97)); border:1px solid var(--line);
       border-radius:16px; padding:clamp(12px,1.35vw,22px); box-shadow:var(--shadow); min-width:0; }
     .card p:last-child,.card ul:last-child { margin-bottom:0; }
@@ -90,14 +143,14 @@
     .slot.soft{background:rgba(255,201,111,.14);border-color:rgba(255,201,111,.42)}
     .slot.wait{background:rgba(255,133,133,.10);border-color:rgba(255,133,133,.3)}
     .slot.write{background:rgba(188,168,255,.14);border-color:rgba(188,168,255,.42)}
-    .memory { display:grid; gap:8px; width:min(1080px,100%); margin:0 auto; }
-    .mem { padding:.62em .85em; border:1px solid var(--line); border-radius:11px; text-align:center; font-size:clamp(13px,1vw,19px); }
+    .memory { display:grid; grid-template-rows:repeat(4,minmax(0,1fr)) auto; gap:clamp(8px,1.2vh,16px);
+      width:min(1080px,100%); height:100%; margin:0 auto; }
+    .mem { display:grid; place-items:center; padding:.62em .85em; border:1px solid var(--line);
+      border-radius:11px; text-align:center; font-size:clamp(13px,1vw,19px); }
     .global{background:rgba(121,170,255,.09);border-color:var(--blue)}
     .shared{background:rgba(88,220,255,.09);border-color:var(--cyan)}
     .reg{background:rgba(255,201,111,.09);border-color:var(--amber)}
     .compute{background:rgba(112,231,174,.09);border-color:var(--green)}
-    .section-slide { background:linear-gradient(145deg,rgba(88,220,255,.06),transparent 45%); }
-    .section-slide .content { display:grid; place-items:center; text-align:center; }
     .footer { display:flex; justify-content:space-between; color:var(--muted); font-size:clamp(10px,.72vw,14px); }
     .hud { position:fixed; right:20px; bottom:14px; z-index:10; display:flex; align-items:center; gap:8px;
       padding:7px 9px; border:1px solid var(--line); border-radius:999px; background:rgba(3,10,18,.82); backdrop-filter:blur(9px); }
@@ -107,7 +160,13 @@
     .progress span { display:block; height:100%; background:linear-gradient(90deg,var(--cyan),var(--violet)); transition:width .2s; }
     .tight p,.tight li,.tight td,.tight th{font-size:.92em}.tight .card{padding:10px 13px}.tight .content{transform:scale(.97);transform-origin:center}
     .ultra-tight .content{transform:scale(.91)} .ultra-tight p,.ultra-tight li{line-height:1.2}
-    @media(max-width:900px){.grid-3,.grid-4{grid-template-columns:1fr 1fr}.lane-grid{grid-template-columns:90px repeat(var(--steps,6),1fr)}}
+    @media(max-width:900px){
+      .grid-3,.grid-4{grid-template-columns:1fr 1fr}
+      .lane-grid{grid-template-columns:90px repeat(var(--steps,6),1fr)}
+      .roadmap .card{grid-template-columns:48px 1fr}.roadmap .card p{grid-column:2}
+      .hardware-balance{grid-template-columns:1fr 1fr}
+      .backward-owner{grid-template-columns:1fr 1fr}
+    }
   </style>
 </head>
 <body>
@@ -126,11 +185,27 @@
 
     <section class="slide" data-section="Reading map">
       <div class="kicker">Reading map · one story, two dataflows</div>
-      <div class="content grid-4">
-        <article class="card cyan-edge"><span class="tag">Part I</span><h3>A100 → H100</h3><p>为什么 FA2 在新硬件上只有约 35% 利用率？</p></article>
-        <article class="card green-edge"><span class="tag">Part II</span><h3>Hopper primitives</h3><p>WGMMA、TMA、warpgroup、barrier、setmaxnreg。</p></article>
-        <article class="card amber-edge"><span class="tag">Part III</span><h3>Two-level overlap</h3><p>搬运 vs 主计算；Tensor Core vs softmax 路径。</p></article>
-        <article class="card violet-edge"><span class="tag">Part IV</span><h3>Forward + backward</h3><p>tile、role、pipeline、写回竞争与确定性。</p></article>
+      <div class="content roadmap">
+        <article class="card cyan-edge">
+          <span class="map-index cyan">I</span>
+          <div><span class="tag">hardware pressure</span><h3>A100 → H100</h3></div>
+          <p>先解释为什么 FA2 在 H100 上只有约 35% 利用率。<span>算力增长得比 HBM、SMEM 和非矩阵路径更快。</span></p>
+        </article>
+        <article class="card green-edge">
+          <span class="map-index green">II</span>
+          <div><span class="tag">new machinery</span><h3>Hopper primitives</h3></div>
+          <p>再拆 WGMMA、TMA、warpgroup、barrier 和 <code>setmaxnreg</code>。<span>它们分别改变谁搬、谁算、谁等待。</span></p>
+        </article>
+        <article class="card amber-edge">
+          <span class="map-index amber">III</span>
+          <div><span class="tag">software schedule</span><h3>Two-level overlap</h3></div>
+          <p>建立两层流水：搬运 vs 主计算；Tensor Core vs softmax 路径。<span>硬件并行只有在依赖和 lifetime 合法时才有用。</span></p>
+        </article>
+        <article class="card violet-edge">
+          <span class="map-index violet">IV</span>
+          <div><span class="tag">two dataflows</span><h3>Forward + backward</h3></div>
+          <p>最后代入 tile、CTA role、pipeline、写回竞争与确定性。<span>forward 和 backward 共用 primitive，但 ownership 不同。</span></p>
+        </article>
       </div>
       <footer class="footer"><span>先建立硬件因果，再读代码角色</span><span>Map</span></footer>
     </section>
@@ -153,78 +228,66 @@
       <footer class="footer"><span>FA1→FA2 changes owner · FA2→FA3 changes execution</span><span>Baseline</span></footer>
     </section>
 
-    <section class="slide section-slide" data-section="Part I">
-      <div class="kicker">Part I · hardware generation changes the bottleneck</div>
-      <div class="content"><div><h2>A100 → H100</h2><p class="lead">算力增长速度，超过了数据供给和非矩阵计算。</p></div></div>
-      <footer class="footer"><span>opportunity and challenge arrive together</span><span>I</span></footer>
-    </section>
-
     <section class="slide" data-section="Hardware table">
       <div class="kicker">Representative SXM resources · use the ratio, not one magic SKU</div>
-      <div class="content">
-        <table>
-          <thead><tr><th>Resource</th><th>A100 80GB SXM</th><th>H100 SXM5</th><th>Change</th></tr></thead>
-          <tbody>
-            <tr><td>dense BF16/FP16 Tensor Core</td><td>312 TFLOP/s</td><td>989 TFLOP/s</td><td class="green">3.17×</td></tr>
-            <tr><td>HBM bandwidth</td><td>2.039 TB/s</td><td>3.35 TB/s</td><td>1.64×</td></tr>
-            <tr><td>L2 capacity</td><td>40 MiB</td><td>50 MiB</td><td>1.25×</td></tr>
-            <tr><td>max SMEM / SM</td><td>164 KiB</td><td>228 KiB</td><td>1.39×</td></tr>
-            <tr><td>register file / SM</td><td>64K × 32-bit</td><td>64K × 32-bit</td><td class="amber">capacity unchanged</td></tr>
-          </tbody>
-        </table>
-        <span class="equation">compute ↑↑↑  faster than  HBM / SMEM / registers / exp throughput ↑</span>
+      <div class="content hardware-balance">
+        <div class="card hardware-table">
+          <table>
+            <thead><tr><th>Resource</th><th>A100</th><th>H100</th><th>Change</th></tr></thead>
+            <tbody>
+              <tr><td>dense BF16/FP16 TC</td><td>312 TF/s</td><td>989 TF/s</td><td class="green">3.17×</td></tr>
+              <tr><td>HBM bandwidth</td><td>2.039 TB/s</td><td>3.35 TB/s</td><td>1.64×</td></tr>
+              <tr><td>L2 capacity</td><td>40 MiB</td><td>50 MiB</td><td>1.25×</td></tr>
+              <tr><td>max SMEM / SM</td><td>164 KiB</td><td>228 KiB</td><td>1.39×</td></tr>
+              <tr><td>register file / SM</td><td>64K × 32-bit</td><td>64K × 32-bit</td><td class="amber">1.00×</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card ratio-panel amber-edge">
+          <h3>以 A100 = 1：增长并不均匀</h3>
+          <div class="ratio-stack">
+            <div><div class="ratio-head"><span>Tensor Core compute</span><strong>3.17×</strong></div><div class="bar-track"><div class="bar-fill" style="--w:100%"></div></div></div>
+            <div><div class="ratio-head"><span>HBM bandwidth</span><strong>1.64×</strong></div><div class="bar-track"><div class="bar-fill supply" style="--w:52%"></div></div></div>
+            <div><div class="ratio-head"><span>SMEM capacity</span><strong>1.39×</strong></div><div class="bar-track"><div class="bar-fill supply" style="--w:44%"></div></div></div>
+            <div><div class="ratio-head"><span>register capacity</span><strong>1.00×</strong></div><div class="bar-track"><div class="bar-fill supply" style="--w:32%"></div></div></div>
+          </div>
+          <div class="ratio-callout"><strong>3.17 ÷ 1.64 ≈ 1.93</strong><br>相对 compute 而言，每 FLOP 可分到的 HBM 带宽几乎减半；copy、softmax 和依赖等待更容易暴露。</div>
+        </div>
       </div>
       <footer class="footer"><span>exact values depend on SKU, clocks, dtype, and sparsity accounting</span><span>Balance</span></footer>
     </section>
 
-    <section class="slide" data-section="FA2 gap">
-      <div class="kicker">The Hopper challenge · FlashAttention already reduced HBM traffic</div>
-      <div class="content grid-2 wide-left">
-        <div>
-          <div class="quote">FA2 on H100:<br><span class="red">~35% utilization</span><br>optimized GEMM:<br><span class="green">80–90%</span></div>
-        </div>
+    <section class="slide" data-section="Hopper gap and opportunity">
+      <div class="kicker">Hopper challenge + opportunity · the same generation creates both</div>
+      <div class="content grid-2">
         <div class="card amber-edge">
-          <h3>暴露出来的新成本</h3>
-          <ul>
-            <li>copy 的地址计算和指令发射；</li>
-            <li>SMEM stage reuse 与 barrier；</li>
-            <li>max / exp / sum / rescale；</li>
-            <li><code>QK → softmax → PV</code> 依赖；</li>
-            <li>更多 in-flight state 的 register 压力。</li>
-          </ul>
+          <div class="quote">FA2 on H100:<br><span class="red">~35%</span> utilization<br>optimized GEMM: <span class="green">80–90%</span></div>
+          <h3>更容易暴露的成本</h3>
+          <p class="small">copy issue、SMEM/barrier、max/exp/sum、<code>QK→softmax→PV</code> 依赖，以及更多 in-flight register state。</p>
+        </div>
+        <div class="card cyan-edge center">
+          <div>
+            <div class="flow">
+              <span class="node blue-node">HBM</span><span class="arrow">→</span>
+              <span class="node cyan-node">TMA</span><span class="arrow">→</span>
+              <span class="node cyan-node">SMEM</span><span class="arrow">→</span>
+              <span class="node green-node">WGMMA</span>
+            </div>
+            <div class="flow">
+              <span class="node amber-node">CUDA cores</span>
+              <span class="node amber-node">shuffle / convert</span>
+              <span class="node violet-node">MUFU exp2</span>
+            </div>
+            <p class="lead">问题转化为：能否把<span class="cyan">合法的独立工作</span>同时放进这些硬件路径？</p>
+          </div>
         </div>
       </div>
-      <footer class="footer"><span>not “HBM is the only bottleneck”</span><span>Gap</span></footer>
+      <footer class="footer"><span>not “HBM is the only bottleneck” · concurrency still needs a legal schedule</span><span>Why FA3</span></footer>
     </section>
 
-    <section class="slide" data-section="Opportunity">
-      <div class="kicker">The Hopper opportunity · specialized async engines</div>
-      <div class="content center">
-        <div class="flow">
-          <span class="node blue-node">HBM</span><span class="arrow">→</span>
-          <span class="node cyan-node">TMA copy engine</span><span class="arrow">→</span>
-          <span class="node cyan-node">SMEM</span><span class="arrow">→</span>
-          <span class="node green-node">WGMMA / Tensor Core</span>
-        </div>
-        <div class="flow">
-          <span class="node amber-node">CUDA-core arithmetic</span>
-          <span class="node amber-node">shuffle / convert</span>
-          <span class="node violet-node">MUFU exp2</span>
-        </div>
-        <p class="lead">独立硬件路径存在，关键变成：<span class="cyan">能否把合法的独立工作同时放进去？</span></p>
-      </div>
-      <footer class="footer"><span>hardware concurrency is useful only with a legal software schedule</span><span>Opportunity</span></footer>
-    </section>
-
-    <section class="slide section-slide" data-section="Part II">
-      <div class="kicker">Part II · Hopper vocabulary before the kernel</div>
-      <div class="content"><div><h2>TMA · WGMMA · Warpgroup</h2><p class="lead">先分清 API、ISA collective 和物理执行单元。</p></div></div>
-      <footer class="footer"><span>do not collapse software and hardware layers</span><span>II</span></footer>
-    </section>
-
-    <section class="slide" data-section="Names">
-      <div class="kicker">WMMA is not WGMMA · names at different layers</div>
-      <div class="content">
+    <section class="slide" data-section="WGMMA identity">
+      <div class="kicker">WGMMA identity · layer, scope, and relation to Hopper Tensor Cores</div>
+      <div class="content identity-stack">
         <table>
           <thead><tr><th>Name</th><th>Layer</th><th>Agent scope</th><th>A100?</th><th>H100?</th></tr></thead>
           <tbody>
@@ -234,27 +297,18 @@
             <tr><td>Tensor Core</td><td>physical hardware</td><td>matrix pipeline</td><td>3rd gen</td><td>4th gen</td></tr>
           </tbody>
         </table>
-        <p class="lead center">FA3 的新机会是 <span class="cyan">WGMMA</span>，不是 A100 已有的 WMMA。</p>
-      </div>
-      <footer class="footer"><span>API ≠ PTX instruction ≠ physical unit</span><span>Names</span></footer>
-    </section>
-
-    <section class="slide" data-section="WGMMA relation">
-      <div class="kicker">Is WGMMA caused by the new Tensor Core?</div>
-      <div class="content grid-2">
-        <div class="card green-edge">
-          <h3>可以这样说</h3>
-          <p>Hopper 第四代 Tensor Core 更快，需要更大的 collective、更直接的 SMEM operand path 和 async issue 才容易喂饱。</p>
-          <p>WGMMA 是 Hopper 暴露这些能力的架构接口。</p>
+        <div class="grid-2">
+          <div class="card green-edge">
+            <h3>可以这样理解</h3>
+            <p>Hopper 第四代 Tensor Core 更快；WGMMA 是面向 128-thread warpgroup 的 async 架构接口，更容易供给这条新矩阵路径。</p>
+          </div>
+          <div class="card red-edge">
+            <h3>不要建立假映射</h3>
+            <p>“一个 warpgroup 固定对应四个 Tensor Cores”不是 portable contract；ISA collective、layout 和 wait protocol 不等于物理一一映射。</p>
+          </div>
         </div>
-        <div class="card red-edge">
-          <h3>不要这样说</h3>
-          <p>“一个 warpgroup 就固定对应四个 Tensor Cores。”</p>
-          <p>ISA 规定 collective semantics、layout 和 wait protocol；portable kernel 不应依赖未公开的一一物理映射。</p>
-        </div>
-        <span class="equation" style="grid-column:1/-1">4 contiguous warps → one WGMMA collective → distributed register accumulator</span>
       </div>
-      <footer class="footer"><span>need + opportunity, not a portable one-to-one mapping</span><span>WGMMA</span></footer>
+      <footer class="footer"><span>FA3 uses WGMMA, not A100-era WMMA · 4 contiguous warps → one collective → distributed accumulator</span><span>WGMMA</span></footer>
     </section>
 
     <section class="slide" data-section="Warpgroup">
@@ -273,7 +327,7 @@
 
     <section class="slide" data-section="WGMMA lifecycle">
       <div class="kicker">WGMMA lifecycle · async does not erase dependencies</div>
-      <div class="content">
+      <div class="content sequence-stack">
         <div class="timeline" style="--steps:5">
           <div class="time-item"><strong>fence</strong><span>prior RMEM / SMEM writes visible</span></div>
           <div class="time-item"><strong>mma_async</strong><span>issue collective</span></div>
@@ -312,49 +366,35 @@ bulk HBM ↔ SMEM transfer</div>
       <footer class="footer"><span>dedicated address generation and movement engine</span><span>TMA</span></footer>
     </section>
 
-    <section class="slide" data-section="Circular buffer">
-      <div class="kicker">Circular SMEM · one physical slot, many generations</div>
-      <div class="content">
-        <div class="flow">
-          <span class="node cyan-node">EMPTY · gen j</span><span class="arrow">→</span>
-          <span class="node blue-node">producer_acquire</span><span class="arrow">→</span>
-          <span class="node blue-node">TMA + expected bytes</span><span class="arrow">→</span>
-          <span class="node green-node">FULL</span><span class="arrow">→</span>
-          <span class="node amber-node">consumer WGMMA</span><span class="arrow">→</span>
-          <span class="node violet-node">release · gen j+s</span>
-        </div>
-        <div class="grid-2">
-          <div class="card cyan-edge"><h3>transaction barrier</h3><p>不仅记“有人到了”，还追踪这次 TMA 期望和完成的 bytes。</p></div>
-          <div class="card red-edge"><h3>phase / generation</h3><p>防止下一轮把旧 completion 误认为新 tile 已经 ready。</p></div>
-        </div>
-      </div>
-      <footer class="footer"><span>buffer protocol is a liveness and correctness proof</span><span>Stages</span></footer>
-    </section>
-
-    <section class="slide" data-section="Warp specialization">
-      <div class="kicker">Warp specialization · asymmetric jobs need asymmetric resources</div>
+    <section class="slide" data-section="Producer consumer machinery">
+      <div class="kicker">Producer-consumer machinery · circular SMEM protocol + asymmetric roles</div>
       <div class="content grid-2">
         <div class="card cyan-edge">
-          <h3>Producer warpgroup</h3>
-          <ul><li>TMA descriptor；</li><li>stage counters；</li><li>scheduler state；</li><li>很少的 matrix accumulator。</li></ul>
+          <h3>One SMEM slot, many generations</h3>
+          <div class="codebox">EMPTY(gen j)
+→ producer_acquire
+→ TMA + expected bytes
+→ FULL → consumer WGMMA
+→ release(gen j+s)</div>
+          <p><strong>Transaction barrier</strong> 追踪本轮期望/完成 bytes；<strong>phase</strong> 防止把旧 completion 当成新 tile ready。</p>
         </div>
-        <div class="card green-edge">
-          <h3>Consumer warpgroups</h3>
-          <ul><li>WGMMA accumulators；</li><li>current/next S；</li><li>running O or dK/dV；</li><li>softmax metadata。</li></ul>
-        </div>
-        <div class="flow" style="grid-column:1/-1">
-          <span class="node cyan-node">producer setmaxnreg.dec</span><span class="arrow">→</span>
-          <span class="node amber-node">fixed CTA register pool</span><span class="arrow">→</span>
-          <span class="node green-node">consumers setmaxnreg.inc</span>
+        <div style="display:grid;grid-template-rows:1fr 1fr auto;gap:12px">
+          <div class="card cyan-edge">
+            <h3>Producer warpgroup</h3>
+            <p>TMA descriptor、stage counters、scheduler state；几乎不需要 matrix accumulators。</p>
+          </div>
+          <div class="card green-edge">
+            <h3>Consumer warpgroups</h3>
+            <p>WGMMA accumulators、current/next S、running O 或 dK/dV、softmax metadata。</p>
+          </div>
+          <div class="flow">
+            <span class="node cyan-node">producer reg ↓</span><span class="arrow">→</span>
+            <span class="node amber-node">CTA pool</span><span class="arrow">→</span>
+            <span class="node green-node">consumer reg ↑</span>
+          </div>
         </div>
       </div>
-      <footer class="footer"><span>redistributes admitted registers; does not create more SM registers</span><span>Roles</span></footer>
-    </section>
-
-    <section class="slide section-slide" data-section="Part III">
-      <div class="kicker">Part III · the central FA3 idea</div>
-      <div class="content"><div><h2>Two-Level Overlap</h2><p class="lead">上层隐藏数据搬运；下层隐藏 softmax 和非矩阵计算。</p></div></div>
-      <footer class="footer"><span>space specialization + temporal pipelining</span><span>III</span></footer>
+      <footer class="footer"><span>buffer protocol proves lifetime; setmaxnreg redistributes the admitted CTA pool, not total SM registers</span><span>Pipeline machinery</span></footer>
     </section>
 
     <section class="slide" data-section="Two layers">
@@ -380,7 +420,7 @@ CUDA/MUFU:   max, exp, sum, rescale</div>
 
     <section class="slide" data-section="Layer A timeline">
       <div class="kicker">Layer A · producer can run ahead until the ring is full</div>
-      <div class="content">
+      <div class="content lane-story">
         <div class="lane-grid" style="--steps:6">
           <div class="lane-label">producer</div><div class="slot copy">TMA K0/V0</div><div class="slot copy">TMA K1/V1</div><div class="slot wait">ring full</div><div class="slot copy">TMA K2/V2</div><div class="slot copy">TMA K3/V3</div><div class="slot wait">tail</div>
           <div class="lane-label">consumer</div><div class="slot wait">wait K0</div><div class="slot gemm">compute 0</div><div class="slot gemm">compute 1</div><div class="slot soft">softmax 1</div><div class="slot gemm">compute 2</div><div class="slot gemm">compute 3</div>
@@ -408,16 +448,11 @@ CUDA/MUFU:   max, exp, sum, rescale</div>
       <footer class="footer"><span>FP8 makes the imbalance worse because matmul doubles but exp does not</span><span>Layer B</span></footer>
     </section>
 
-    <section class="slide section-slide" data-section="Forward">
-      <div class="kicker">Part IV-A · forward</div>
-      <div class="content"><div><h2>One complete O owner,<br>deeper execution pipeline</h2><p class="lead">先看 logical tile，再看 persistent CTA 和两个 consumer warpgroups。</p></div></div>
-      <footer class="footer"><span>same semantic ownership, different physical schedule</span><span>Forward</span></footer>
-    </section>
-
-    <section class="slide" data-section="Forward tile">
-      <div class="kicker">Forward ownership · one Q tile walks all K/V tiles</div>
+    <section class="slide" data-section="Forward tile and shape">
+      <div class="kicker">Forward ownership + representative shape · B=1 H=32 N=8192 D=128</div>
       <div class="content grid-2 wide-left">
         <div class="card cyan-edge">
+          <h3>One logical Q tile owns one complete O tile</h3>
           <div class="codebox">logical work item i:
   own Q_i and O_i
   keep O~, max, sum on chip
@@ -428,53 +463,24 @@ CUDA/MUFU:   max, exp, sum, rescale</div>
       O~_i += P~_ij V_j
 
   store final O_i and LSE_i</div>
+          <p class="small">K/V 是 read-only contributors；没有其他 Q work item add 到这个 O tile。</p>
         </div>
-        <div>
-          <div class="flow"><span class="node cyan-node">Q_i</span><span class="arrow">→</span><span class="node green-node">complete O_i</span></div>
-          <p class="lead">K/V 是 read-only contributors；没有其他 Q work item add 到这个 O tile。</p>
-        </div>
-      </div>
-      <footer class="footer"><span>FA2 owner graph remains the foundation</span><span>Owner</span></footer>
-    </section>
-
-    <section class="slide" data-section="Forward example">
-      <div class="kicker">Representative causal BF16/FP16 · B=1 H=32 N=8192 D=128</div>
-      <div class="content grid-4">
-        <article class="card cyan-edge center"><h3>B_M = 128</h3><p>Q/O rows per logical tile</p></article>
-        <article class="card green-edge center"><h3>B_N = 128</h3><p>K/V rows per causal step</p></article>
-        <article class="card amber-edge center"><h3>12 warps</h3><p>384 threads per CTA</p></article>
-        <article class="card violet-edge center"><h3>2 stages</h3><p>K/V circular SMEM</p></article>
-        <div class="card" style="grid-column:1/-1">
-          <span class="equation">logical Q/O work items = 1 × 32 × (8192/128) = 2048</span>
-          <p class="center">一个晚期 causal Q tile 最多访问 64 个 K/V tiles；早期 tile 会跳过未来区域。</p>
+        <div style="display:grid;grid-template-rows:1fr auto auto;gap:12px">
+          <div class="grid-2">
+            <article class="card cyan-edge center"><h3>B_M=128</h3><p class="small">Q/O rows</p></article>
+            <article class="card green-edge center"><h3>B_N=128</h3><p class="small">K/V rows</p></article>
+            <article class="card amber-edge center"><h3>12 warps</h3><p class="small">384 threads</p></article>
+            <article class="card violet-edge center"><h3>2 stages</h3><p class="small">circular SMEM</p></article>
+          </div>
+          <span class="equation">Q/O work items = 1×32×(8192/128) = 2048</span>
+          <p class="small center">晚期 causal Q tile 最多访问 64 个 K/V tiles；早期 tile 跳过未来区域。</p>
         </div>
       </div>
-      <footer class="footer"><span>noncausal early source uses B_N=176 and may use a 2-CTA cluster</span><span>Shape</span></footer>
+      <footer class="footer"><span>FA2 owner graph remains; noncausal early source may use B_N=176 and a 2-CTA cluster</span><span>Forward tile</span></footer>
     </section>
 
-    <section class="slide" data-section="Persistent CTA">
-      <div class="kicker">Subtlety · logical tile is not physical CTA lifetime</div>
-      <div class="content grid-2">
-        <div class="card green-edge">
-          <h3>Paper-level work</h3>
-          <div class="codebox">one logical Q_i tile
-    ↓
-one complete O_i result</div>
-        </div>
-        <div class="card violet-edge">
-          <h3>Pinned source</h3>
-          <div class="codebox">launch ≈ one persistent CTA / SM
-CTA executes tile i
-then obtains another logical tile
-then another ...</div>
-        </div>
-        <p class="lead center" style="grid-column:1/-1">persistent scheduler 的 atomic 分配的是<span class="cyan">工作身份</span>，不是 floating-point partial。</p>
-      </div>
-      <footer class="footer"><span>one tile still has one complete numeric owner</span><span>Scheduler</span></footer>
-    </section>
-
-    <section class="slide" data-section="Forward roles">
-      <div class="kicker">Forward CTA · 1 producer warpgroup + 2 consumers</div>
+    <section class="slide" data-section="Forward CTA roles">
+      <div class="kicker">Forward physical schedule · persistent CTA with 1 producer WG + 2 consumer WGs</div>
       <div class="content grid-3">
         <article class="card cyan-edge">
           <h3>WG0 · producer</h3>
@@ -491,8 +497,16 @@ then another ...</div>
           <p>own 后 64 个 Q/O rows；与 WG1 pingpong 调度，不做 partial-O sum。</p>
           <p class="small muted">register target: 240/thread</p>
         </article>
+        <div class="card" style="grid-column:1/-1">
+          <div class="flow">
+            <span class="node blue-node">persistent CTA admitted to one SM</span><span class="arrow">→</span>
+            <span class="node cyan-node">logical tile i → complete O_i</span><span class="arrow">→</span>
+            <span class="node violet-node">request another tile</span>
+          </div>
+          <p class="center">scheduler atomic 分配的是<span class="cyan">工作身份</span>，不是 floating-point partial；一个 logical tile 仍有一个完整 numeric owner。</p>
+        </div>
       </div>
-      <footer class="footer"><span>two consumer groups own disjoint rows, not two partial copies of O</span><span>Roles</span></footer>
+      <footer class="footer"><span>one CTA lifetime may process many tiles; consumer WGs own disjoint rows, not partial copies of O</span><span>Forward roles</span></footer>
     </section>
 
     <section class="slide" data-section="Forward memory">
@@ -524,23 +538,14 @@ then another ...</div>
       <footer class="footer"><span>pipeline independent iterations; do not wish away dependencies</span><span>Dependency</span></footer>
     </section>
 
-    <section class="slide" data-section="Pingpong">
-      <div class="kicker">Inter-warpgroup pingpong · softmax on one side, GEMM on the other</div>
-      <div class="content">
+    <section class="slide" data-section="Forward lower overlap">
+      <div class="kicker">Forward Layer B · inter-WG pingpong + intra-WG current/next pipeline</div>
+      <div class="content dual-schedule">
         <div class="lane-grid" style="--steps:6">
           <div class="lane-label">consumer WG1</div><div class="slot gemm">QK / PV</div><div class="slot soft">softmax</div><div class="slot gemm">QK / PV</div><div class="slot soft">softmax</div><div class="slot gemm">QK / PV</div><div class="slot soft">softmax</div>
           <div class="lane-label">consumer WG2</div><div class="slot soft">softmax</div><div class="slot gemm">QK / PV</div><div class="slot soft">softmax</div><div class="slot gemm">QK / PV</div><div class="slot soft">softmax</div><div class="slot gemm">QK / PV</div>
           <div class="lane-label">Tensor Core</div><div class="slot gemm">busy</div><div class="slot gemm">busy</div><div class="slot gemm">busy</div><div class="slot gemm">busy</div><div class="slot gemm">busy</div><div class="slot gemm">busy</div>
         </div>
-        <p class="center">Named barriers influence issue order；WG1/WG2 仍然 store disjoint output rows。</p>
-        <p class="small amber center">论文：d128/N8192 forward 约从 570 提升到 620–640 TFLOP/s；实际 timeline 没有图中这么整齐。</p>
-      </div>
-      <footer class="footer"><span>schedule communication, not numeric partial-O communication</span><span>Pingpong</span></footer>
-    </section>
-
-    <section class="slide" data-section="Intra WG">
-      <div class="kicker">Intra-warpgroup two-stage pipeline · current and next score fragments</div>
-      <div class="content">
         <div class="timeline" style="--steps:6">
           <div class="time-item"><strong>prologue</strong><span>QK₀, wait</span></div>
           <div class="time-item"><strong>softmax</strong><span>S_cur → P_cur</span></div>
@@ -549,13 +554,11 @@ then another ...</div>
           <div class="time-item"><strong>softmax</strong><span>S_next → P_next</span></div>
           <div class="time-item"><strong>rotate</strong><span>next → current</span></div>
         </div>
-        <div class="grid-3">
-          <article class="card green-edge"><h3>Gain</h3><p>WGMMA completion 与 non-WGMMA 指令交叠。</p></article>
-          <article class="card amber-edge"><h3>Cost</h3><p><code>S_cur + S_next</code> FP32 fragments 同时占 registers。</p></article>
-          <article class="card red-edge"><h3>Proof</h3><p>source 表示合法顺序；SASS/profile 才证明实际 interleave。</p></article>
-        </div>
+        <p class="small center"><span class="green">Gain:</span> WGMMA 与 softmax overlap；
+          <span class="amber">cost:</span> <code>S_cur + S_next</code> 同时占 registers；
+          <span class="red">proof:</span> source 只证明合法，SASS/profile 才证明实际 interleave。</p>
       </div>
-      <footer class="footer"><span>pipeline depth trades against tile size, registers, spills, and occupancy</span><span>2-stage</span></footer>
+      <footer class="footer"><span>WG1/WG2 still own disjoint rows · paper d128/N8192: ~570 → 620–640 TFLOP/s</span><span>Forward Layer B</span></footer>
     </section>
 
     <section class="slide" data-section="Forward determinism">
@@ -585,169 +588,98 @@ then another ...</div>
       <footer class="footer"><span>expected fixed-artifact repeatability; H100 repeat probe still required</span><span>Forward bits</span></footer>
     </section>
 
-    <section class="slide section-slide" data-section="Backward">
-      <div class="kicker">Part IV-B · backward</div>
-      <div class="content"><div><h2>Five GEMMs,<br>one extra writer role</h2><p class="lead">dK/dV complete ownership 与 many-writer dQ 同时存在。</p></div></div>
-      <footer class="footer"><span>same Hopper primitives, different dependency and combine graph</span><span>Backward</span></footer>
-    </section>
-
-    <section class="slide" data-section="Backward graph">
-      <div class="kicker">Backward one-tile graph · follow P and dS through five GEMMs</div>
-      <div class="content">
-        <div class="flow">
-          <span class="node cyan-node">Q,K</span><span class="arrow">→</span><span class="node green-node">S=QKᵀ</span><span class="arrow">→</span>
-          <span class="node amber-node">P=exp(S-LSE)</span>
+    <section class="slide" data-section="Backward graph and ownership">
+      <div class="kicker">Backward five-GEMM graph → ownership consequence</div>
+      <div class="content backward-owner">
+        <div class="dataflow-stack">
+          <div class="flow"><span class="node cyan-node">Q,K</span><span class="arrow">→</span><span class="node green-node">S=QKᵀ</span><span class="arrow">→</span><span class="node amber-node">P</span></div>
+          <div class="flow"><span class="node cyan-node">dO,V</span><span class="arrow">→</span><span class="node green-node">dP=dOVᵀ</span><span class="arrow">→</span><span class="node amber-node">dS</span></div>
+          <div class="flow"><span class="node violet-node">PᵀdO→dV</span><span class="node violet-node">dSᵀQ→dK</span><span class="node red-node">dSK→partial dQ</span></div>
+          <p class="small center">S、dP、dV、dK、dQ：five GEMMs；每次都要判断 split axis 是 output 还是 reduction。</p>
         </div>
-        <div class="flow">
-          <span class="node cyan-node">dO,V</span><span class="arrow">→</span><span class="node green-node">dP=dOVᵀ</span><span class="arrow">→</span>
-          <span class="node amber-node">dS=P⊙(dP-D)</span>
+        <div style="display:grid;grid-template-rows:1fr 1fr auto;gap:12px">
+          <div class="card green-edge">
+            <h3>CTA j owns K_j,V_j</h3>
+            <p>遍历所有相交 Q_i，累加 <code>dV_j=P_ijᵀdO_i</code> 和 <code>dK_j=dS_ijᵀQ_i</code>，最终各写一次完整结果。</p>
+          </div>
+          <div class="card red-edge">
+            <h3>But dQ_i has many owners</h3>
+            <p><code>dQ_i = Σ_j dQ_i^(j)</code>；每个 K/V owner 只产生一份 partial dQ。</p>
+          </div>
+          <span class="equation">more KV CTA parallelism ↔ many-to-one dQ combine</span>
         </div>
-        <div class="flow">
-          <span class="node violet-node">PᵀdO → dV</span>
-          <span class="node violet-node">dSᵀQ → dK</span>
-          <span class="node red-node">dSK → partial dQ</span>
-        </div>
-        <p class="center">每个 GEMM 都要重新判断 split axis 是 output 还是 reduction。</p>
       </div>
-      <footer class="footer"><span>S, dP, dQ, dK, dV = five matrix products</span><span>Dataflow</span></footer>
+      <footer class="footer"><span>one loop orientation completes dK/dV, but creates the central backward determinism boundary at dQ</span><span>Backward owner</span></footer>
     </section>
 
-    <section class="slide" data-section="Backward ownership">
-      <div class="kicker">Backward ownership · no one loop orientation completes all gradients</div>
-      <div class="content grid-2">
-        <div class="card green-edge">
-          <h3>CTA j owns K_j,V_j</h3>
-          <div class="codebox">for every interacting Q_i:
-  accumulate dV_j += P_ij^T dO_i
-  accumulate dK_j += dS_ij^T Q_i
-
-store complete dK_j,dV_j once</div>
-        </div>
-        <div class="card red-edge">
-          <h3>But dQ_i has many contributors</h3>
-          <div class="codebox">dQ_i =
-  dQ_i^(0)
-  + dQ_i^(1)
-  + ...
-  + dQ_i^(K_tiles-1)</div>
-        </div>
-        <span class="equation" style="grid-column:1/-1">more K/V CTA parallelism ↔ global many-to-one dQ combine</span>
-      </div>
-      <footer class="footer"><span>the central backward determinism boundary survives FA3</span><span>Ownership</span></footer>
-    </section>
-
-    <section class="slide" data-section="Backward protocol">
-      <div class="kicker">Backward is a three-kernel protocol · d128 representative numbers</div>
-      <div class="content">
+    <section class="slide" data-section="Backward protocol and roles">
+      <div class="kicker">Backward runtime structure · three kernels + three roles inside the main CTA</div>
+      <div class="content sequence-stack">
         <div class="timeline" style="--steps:3">
           <div class="time-item"><strong>preprocess · 4096 work items</strong><span>D=rowsum(dO*O), LSE transform, zero dQaccum/semaphore</span></div>
           <div class="time-item"><strong>main · 2048 work items</strong><span>64 K blocks × 32 heads; dK/dV owner + partial dQ</span></div>
           <div class="time-item"><strong>postprocess · 4096 work items</strong><span>scale FP32 dQaccum, convert/store BF16/FP16 dQ</span></div>
         </div>
         <div class="grid-3">
-          <article class="card cyan-edge"><h3>B_M=64</h3><p>128 Q blocks/head</p></article>
-          <article class="card green-edge"><h3>B_N=128</h3><p>64 KV owners/head</p></article>
-          <article class="card amber-edge"><h3>128 MiB</h3><p>FP32 dQ accumulator</p></article>
+          <article class="card cyan-edge"><h3>WG0 warp 0 · loader</h3><p>TMA fixed K/V；pipeline Q、dO、LSE、D。</p><p class="small muted">B_M=64 · 128 Q blocks/head</p></article>
+          <article class="card violet-edge"><h3>WG0 warp 1 · dQ writer</h3><p>wait SMEM partial；global TMA reduce-add；semaphore/backpressure。</p><p class="small muted">FP32 dQ workspace: 128 MiB</p></article>
+          <article class="card green-edge"><h3>WG1+WG2 · consumers</h3><p>WGMMA + pointwise；keep FP32 dK/dV across Q tiles。</p><p class="small muted">B_N=128 · 64 KV owners/head</p></article>
         </div>
       </div>
-      <footer class="footer"><span>B=1 H=32 N=8192 D=128</span><span>Protocol</span></footer>
+      <footer class="footer"><span>B=1 H=32 N=8192 D=128 · 12 warps; WG0 warps 2–3 have no main payload in this early path</span><span>Backward runtime</span></footer>
     </section>
 
-    <section class="slide" data-section="Backward roles">
-      <div class="kicker">Backward 12-warps CTA · producer WG has two distinct active roles</div>
-      <div class="content grid-3">
-        <article class="card cyan-edge">
-          <h3>WG0 / warp 0 · loader</h3>
-          <p>TMA load fixed K/V；pipeline Q、dO、LSE、D。</p>
-          <p class="small muted">warps 2–3 have no main payload role in this early path</p>
-        </article>
-        <article class="card violet-edge">
-          <h3>WG0 / warp 1 · dQ writer</h3>
-          <p>wait SMEM partial；issue global TMA reduce-add；manage semaphore and backpressure。</p>
-        </article>
-        <article class="card green-edge">
-          <h3>WG1 + WG2 · consumers</h3>
-          <p>WGMMA + pointwise；keep FP32 dK/dV accumulators across Q tiles。</p>
-        </article>
-      </div>
-      <footer class="footer"><span>one producer warpgroup, but load and publication are separate jobs</span><span>Roles</span></footer>
-    </section>
-
-    <section class="slide" data-section="Backward Layer A">
-      <div class="kicker">Backward Layer A · fixed K/V, double-buffer Q-side inputs</div>
-      <div class="content">
+    <section class="slide" data-section="Backward overlap">
+      <div class="kicker">Backward two-level overlap · movement pipeline above, five-GEMM issue below</div>
+      <div class="content dual-schedule">
         <div class="lane-grid" style="--steps:6">
           <div class="lane-label">load warp</div><div class="slot copy">TMA K_j,V_j</div><div class="slot copy">Q_i,dO_i</div><div class="slot copy">Q_{i+1},dO_{i+1}</div><div class="slot copy">Q_{i+2},dO_{i+2}</div><div class="slot wait">tail wait</div><div class="slot">done</div>
           <div class="lane-label">consumers</div><div class="slot wait">wait KV</div><div class="slot gemm">five-GEMM step i</div><div class="slot gemm">step i+1</div><div class="slot gemm">step i+2</div><div class="slot write">dK/dV epilogue</div><div class="slot">done</div>
           <div class="lane-label">dQ writer</div><div class="slot">idle</div><div class="slot write">publish dQ_i</div><div class="slot write">publish dQ_i+1</div><div class="slot write">publish dQ_i+2</div><div class="slot wait">TMA tail</div><div class="slot">done</div>
         </div>
-        <p class="center">consumer release Q/dO stage only after all async WGMMA readers finish。</p>
+        <div class="card amber-edge">
+          <div class="flow">
+            <span class="node green-node">issue S</span>
+            <span class="node green-node">issue dP</span><span class="arrow">→</span>
+            <span class="node amber-node">P and dS</span><span class="arrow">→</span>
+            <span class="node green-node">dV / dK</span>
+            <span class="node green-node">dQ</span>
+          </div>
+          <p class="small center">partial waits 允许 independent WGMMA/pointwise overlap，但 five-GEMM dependency 比 forward 更长。</p>
+        </div>
+        <p class="small center">Q/dO stage 要等所有 async readers；论文没有给 backward 一个通用的 forward-Algorithm-2 式 schedule，实际 interleave 要看 specialization + SASS/profile。</p>
       </div>
-      <footer class="footer"><span>movement, compute, and contested publication can all be in flight</span><span>Backward overlap</span></footer>
+      <footer class="footer"><span>movement, five-GEMM compute, and contested dQ publication can all be in flight</span><span>Backward overlap</span></footer>
     </section>
 
-    <section class="slide" data-section="Backward Layer B">
-      <div class="kicker">Backward Layer B · more dependencies, less tidy than forward</div>
-      <div class="content">
-        <div class="flow">
-          <span class="node green-node">issue S</span>
-          <span class="node green-node">issue dP</span><span class="arrow">→</span>
-          <span class="node amber-node">P and dS</span><span class="arrow">→</span>
-          <span class="node green-node">issue dV / dK</span>
-          <span class="node green-node">issue dQ</span>
-        </div>
-        <div class="grid-2">
-          <article class="card green-edge"><h3>Source-backed</h3><p>async WGMMA groups and pointwise work are ordered with partial waits；independent operations can overlap。</p></article>
-          <article class="card amber-edge"><h3>Do not overclaim</h3><p>论文没有给 backward 一张与 forward Algorithm 2 同样简单、通用的 two-stage pipeline。</p></article>
-        </div>
-        <p class="lead center">Backward 的 realized interleave 必须从<span class="cyan">选中的 specialization + SASS/profile</span>验证。</p>
-      </div>
-      <footer class="footer"><span>five GEMMs constrain the schedule differently</span><span>Lower overlap</span></footer>
-    </section>
-
-    <section class="slide" data-section="dQ writer">
-      <div class="kicker">dQ writer · latency hiding does not change numeric contributors</div>
-      <div class="content grid-2">
+    <section class="slide" data-section="dQ publication and determinism">
+      <div class="kicker">dQ publication · helper writer changes overlap; semaphore changes numeric order</div>
+      <div class="content dq-grid">
         <div class="card green-edge">
-          <h3>Consumers</h3>
-          <div class="codebox">dQ_local in WGMMA registers
-  → store one CTA partial to smem_dqacc
-  → signal dQFull
-  → continue when dQEmpty permits</div>
+          <h3>1 · Consumer produces one partial</h3>
+          <div class="codebox">dQ_local in registers
+→ SMEM dQacc → signal dQFull</div>
         </div>
         <div class="card violet-edge">
-          <h3>Writer warp</h3>
-          <div class="codebox">wait dQFull
-  → TMA reduce-add SMEM → global FP32
-  → wait before SMEM reuse
-  → signal dQEmpty</div>
+          <h3>2 · Writer publishes it</h3>
+          <div class="codebox">wait dQFull → TMA reduce-add
+→ wait reuse → signal dQEmpty</div>
         </div>
-        <p class="lead center" style="grid-column:1/-1">helper writer 减少 consumer 暴露的等待；<span class="red">并没有减少 K/V CTA contributors</span>。</p>
-      </div>
-      <footer class="footer"><span>execution overlap and numeric order are separate audits</span><span>dQ writer</span></footer>
-    </section>
-
-    <section class="slide" data-section="Backward determinism">
-      <div class="kicker">Backward determinism · same partials, different publication order</div>
-      <div class="content grid-2">
         <article class="card red-edge">
-          <h3>Default</h3>
+          <h3>Default · racing contributors</h3>
           <div class="codebox">KV CTA 7  ─┐
 KV CTA 2  ─┼─ racing TMA reduce-add
-KV CTA 9  ─┘        ↓
-            same global FP32 dQ words</div>
-          <p>arrival order can vary；FP add is not associative。</p>
+KV CTA 9  ─┘ → same FP32 dQ words</div>
+          <p class="small">arrival order can vary；FP add is not associative。</p>
         </article>
         <article class="card green-edge">
-          <h3><code>deterministic=True</code></h3>
+          <h3><code>deterministic=True</code> · ordered</h3>
           <div class="codebox">wait dq_semaphore == my turn
-  → complete TMA reduce-add
-  → increment semaphore
-  → release prescribed next writer</div>
-          <p>固定 contributor publication order；代价是 serialization、wait 和 backpressure。</p>
+→ TMA reduce-add → increment semaphore</div>
+          <p class="small">固定 publication order；代价是 serialization、wait 和 backpressure。</p>
         </article>
       </div>
-      <footer class="footer"><span>dK/dV stay single-owner; dQ is the multi-owner boundary</span><span>Backward bits</span></footer>
+      <footer class="footer"><span>helper writer does not reduce contributors · dK/dV remain single-owner; dQ is the multi-owner boundary</span><span>dQ order</span></footer>
     </section>
 
     <section class="slide" data-section="FA2 vs FA3">
