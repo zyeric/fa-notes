@@ -501,29 +501,108 @@ FA3 tile constants.
 
 ### 7.3 Logical work item is not always one physical CTA lifetime
 
-The paper presents one CTA-level `Q_i -> O_i` work item. The pinned source uses
-persistent schedulers:
+Persistent CTA scheduling is not a Hopper invention and is not one of FA3's
+new numeric ownership rules. It is an implementation pattern that keeps a
+fixed population of CTA workers resident for the duration of one kernel
+launch. The worker loops over several logical `Q_i -> O_i` work items instead
+of exiting after one.
+
+#### 7.3.1 The ordinary-grid counterfactual has no wave barrier
+
+A non-persistent launch does not wait for every CTA in an analytical "wave" to
+finish:
+
+```text
+SM 0: CTA 0 finishes -> resources released -> pending CTA 132 can be admitted
+SM 1: CTA 1 may still be running
+SM 2: CTA 2 finishes -> resources released -> pending CTA 133 can be admitted
+```
+
+CUDA admits a pending CTA whenever one SM can reserve its complete register,
+SMEM, thread/warp, barrier, and cluster resources. If resources permit,
+several CTAs may already be resident on one SM. A wave count such as
+`2048 / 132 = 15.5` is a concurrency model, not a grid-wide synchronization
+protocol.
+
+Consequently, persistence does not uniquely make the scheduler
+work-conserving. The normal hardware block scheduler already refills available
+CTA slots, and both designs still have an underfilled final tail when fewer
+logical tiles remain than available worker slots.
+
+#### 7.3.2 What the pinned FA3 forward source changes
+
+For fixed-length forward, the pinned source selects persistent schedulers:
 
 ```text
 noncausal:
-  launch approximately one CTA per SM
+  gridDim.x = number of SMs
   CTA c handles logical tile ids c, c + gridDim.x, ...
 
 causal:
-  launch approximately one CTA per SM
-  atomic scheduler assigns the next logical Q tile
+  gridDim.x = number of SMs
+  an integer atomic work queue assigns the next logical Q tile
 ```
 
-Therefore:
+For `B=1,H=32,N=8192,D=128`, there are 2048 logical Q/O tiles but an H100
+SXM-class device has about 132 persistent workers:
 
 ```text
-one logical tile -> one CTA at a time -> one complete O tile
-one physical persistent CTA -> several logical tiles sequentially
+ordinary conceptual grid:
+  2048 CTA identities, each completes one logical tile and exits
+
+pinned persistent grid:
+  about 132 CTA identities, each loops over about 15-16 logical tiles
 ```
 
-The dynamic scheduler's `atomicAdd` chooses work identity, not a floating-point
-contributor order. Different CTA-to-tile assignment does not by itself make
-forward numerically nondeterministic because logical O tiles are disjoint.
+This is still one host kernel launch in both cases. It is therefore misleading
+to say that persistence removes "one kernel launch per CTA." The more precise
+potential savings are:
+
+- fewer CTA exit/admission transitions for the same logical tile count;
+- amortized producer/consumer role setup, register redistribution, barrier and
+  pipeline initialization, and prologue/tail work;
+- the ability to preserve the CTA-level TMA/SMEM pipeline machinery across
+  logical work-item boundaries instead of rebuilding it from scratch;
+- explicit programmer control over static stride, dynamic queue, tile order,
+  and future cost-aware scheduling policy.
+
+The dynamic queue can help with causal tiles whose K/V-loop lengths differ,
+but the counterfactual is already a work-conserving hardware scheduler. The
+incremental benefit comes from customized ordering and from avoiding a full
+CTA/pipeline handoff, not from removing a nonexistent barrier between waves.
+Because the task granularity remains one Q tile, persistence also does not
+eliminate the fundamental final tail.
+
+#### 7.3.3 Why this pattern fits this FA3 specialization
+
+The d128 path gives its producer threads a low register target and its two
+consumer warpgroups a high target. The nominal targets nearly consume H100's
+64K-register SM budget for one 12-warp CTA. Exact residency still requires
+compiled metadata and an occupancy/profile check, but the design is plausibly
+close to one large CTA per SM.
+
+That makes CTA handoff and pipeline rebuild more exposed than in a smaller
+kernel that can keep several CTAs resident. Persistence can be more valuable
+for short or causal work where fixed setup and imbalance are a larger fraction
+of runtime. For long tiles, its contribution may be secondary to TMA/WGMMA
+overlap and GEMM/softmax interleaving. The paper does not provide an isolated
+persistent-scheduler ablation, so this note does not assign it a standalone
+speedup.
+
+Persistence does **not**:
+
+- reduce the mathematical Q/K/V bytes required by each logical tile;
+- increase the number of independent logical outputs;
+- allow one CTA to migrate across several SMs;
+- guarantee more resident CTAs or remove the last underfilled tail;
+- change `Q_i -> complete O_i` ownership.
+
+The dynamic scheduler's `atomicAdd` chooses an integer work identity, not a
+floating-point contributor order. Different CTA-to-tile assignment does not by
+itself make forward numerically nondeterministic because logical O tiles are
+disjoint. The pinned mode boundary also matters: variable-length forward uses
+the single-tile scheduler, and the pinned backward main path does not use this
+forward persistent loop.
 
 ### 7.4 CTA role map
 
@@ -1113,4 +1192,3 @@ Open questions:
   fresh processes on the pinned H100 Docker?
 - Which GQA and varlen paths add another many-to-one combine beyond the dQ
   semaphore described here?
-

@@ -99,6 +99,10 @@
       gap:clamp(12px,1.55vw,25px); height:100%; }
     .dq-grid .card { display:flex; flex-direction:column; justify-content:center; }
     .dq-grid .codebox { margin:.32em 0; }
+    .persistent-compare { display:grid; grid-template-columns:1fr 1fr; grid-template-rows:minmax(0,1fr) auto;
+      gap:clamp(12px,1.55vw,24px); height:100%; }
+    .persistent-compare > .card { display:flex; flex-direction:column; justify-content:center; }
+    .persistent-compare > .grid-3 { grid-column:1/-1; }
     .card { background:linear-gradient(145deg,rgba(21,49,75,.96),rgba(8,21,35,.97)); border:1px solid var(--line);
       border-radius:16px; padding:clamp(12px,1.35vw,22px); box-shadow:var(--shadow); min-width:0; }
     .card p:last-child,.card ul:last-child { margin-bottom:0; }
@@ -499,14 +503,44 @@ CUDA/MUFU:   max, exp, sum, rescale</div>
         </article>
         <div class="card" style="grid-column:1/-1">
           <div class="flow">
-            <span class="node blue-node">persistent CTA admitted to one SM</span><span class="arrow">→</span>
-            <span class="node cyan-node">logical tile i → complete O_i</span><span class="arrow">→</span>
-            <span class="node violet-node">request another tile</span>
+            <span class="node cyan-node">WG0: 128 × 24 regs</span><span class="arrow">+</span>
+            <span class="node green-node">WG1+WG2: 256 × 240 regs</span><span class="arrow">≈</span>
+            <span class="node amber-node">64K-register SM budget</span>
           </div>
-          <p class="center">scheduler atomic 分配的是<span class="cyan">工作身份</span>，不是 floating-point partial；一个 logical tile 仍有一个完整 numeric owner。</p>
+          <p class="small center">Nominal targets make one large CTA/SM plausible；exact residency still needs compiled metadata and an occupancy/profile check。</p>
         </div>
       </div>
-      <footer class="footer"><span>one CTA lifetime may process many tiles; consumer WGs own disjoint rows, not partial copies of O</span><span>Forward roles</span></footer>
+      <footer class="footer"><span>consumer WGs own disjoint rows, not partial copies of O</span><span>Forward roles</span></footer>
+    </section>
+
+    <section class="slide" data-section="Persistent scheduler">
+      <div class="kicker">Persistent CTA · compare against the real CUDA counterfactual</div>
+      <div class="content persistent-compare">
+        <article class="card blue-edge">
+          <h3>Ordinary grid · already work-conserving</h3>
+          <div class="codebox">2048 logical tiles → 2048 CTA identities
+
+CTA i finishes on SM0
+→ its resources are released
+→ a pending CTA can be admitted on SM0</div>
+          <p class="small"><strong>No wave barrier.</strong> Other SMs need not finish；the final underfilled tail still exists。</p>
+        </article>
+        <article class="card cyan-edge">
+          <h3>Pinned fixed-length forward</h3>
+          <div class="codebox">gridDim.x ≈ number of SMs
+
+noncausal: tile += gridDim.x
+causal:    tile = atomicAdd(work_queue, 1)
+same CTA loops until no work remains</div>
+          <p class="small">Still one host kernel launch；the atomic assigns integer work identity, not FP contributors。</p>
+        </article>
+        <div class="grid-3">
+          <div class="card green-edge"><h3>Amortize</h3><p class="small">CTA handoff/admission、role setup、barrier/pipeline init、prologue/tail。</p></div>
+          <div class="card violet-edge"><h3>Control</h3><p class="small">Programmer chooses static stride、dynamic queue and future cost-aware ordering。</p></div>
+          <div class="card red-edge"><h3>Does not change</h3><p class="small">Q/K/V bytes、logical parallelism、final tail、<code>Q_i→O_i</code> ownership。</p></div>
+        </div>
+      </div>
+      <footer class="footer"><span>incremental benefit may matter more for short/causal work; no isolated paper ablation</span><span>Persistent worker</span></footer>
     </section>
 
     <section class="slide" data-section="Forward memory">
