@@ -1,10 +1,10 @@
 # FlashAttention-2 Forward: The Delta From FA1
 
-Date: 2026-07-26
+Date: 2026-07-29
 
 Status: FA2 paper plus official v2.0.0 SM80 CUDA forward source study
-complete; CPU-only reasoning, with GPU validation and backward intentionally
-deferred
+complete; CPU-only reasoning, with GPU validation deferred and backward kept
+in its separate companion audit
 
 Read the
 [FA1 one-page checkpoint](flashattention_fa1_checkpoint.md)
@@ -97,6 +97,21 @@ The biggest conceptual change is not one isolated trick. Loop order, CTA
 granularity, state residence, warp ownership, and copy mechanism change
 together.
 
+The performance argument should therefore be read as a causal chain rather
+than four independent slogans:
+
+| Change | Immediate physical effect | Expected performance effect | Cost / caveat |
+| --- | --- | --- | --- |
+| one CTA per Q block | many more sequence-axis workers | more waves and better SM utilization when `B*H` is small | every Q CTA logically reloads its K/V tiles |
+| keep one Q block and its running state on chip | remove repeated mutable Q/O/LSE handoffs | less global state traffic and a shorter dependency path | larger register/shared footprint per CTA |
+| defer output normalization | remove repeated full-output scale/divide work | fewer expensive FP32 non-matmul instructions | row max, exponential, sum, and old-numerator rescale remain |
+| split warp work by Q/output rows | disjoint O ownership | remove shared partial-O stores, barriers, reloads, and FP32 sums | K/V must be visible to all consumer warps |
+| SM80 `cp.async` pipeline | direct global-to-shared payload movement with explicit staging | less payload-register pressure and more movement/compute overlap | correctness now depends on fence/wait/barrier placement |
+
+The paper's headline speedup is not evidence that any one row of this table
+contributed a fixed percentage. That attribution requires a controlled
+ablation or profile.
+
 ## 3. FA2 Does Not Stop Producing Or Saving O
 
 Three states are easy to collapse:
@@ -152,7 +167,42 @@ between the two pinned code releases.
 
 ## 4. CTA Ownership: Swap The Loop Nest
 
-### 4.1 FA1 v1.0.9
+### 4.1 Original FA1 paper versus later FA1 source
+
+The original FA1 paper-level implementation is described retrospectively in
+the FA2 paper as one CTA per attention head:
+
+```text
+paper FA1 grid = batch * heads
+```
+
+That CTA keeps a K/V tile outside and walks the Q tiles inside. This is the
+baseline behind the FA2 paper's claim that the first FlashAttention version
+exposes only batch/head parallelism.
+
+The pinned FA1 v1.0.9 source is already a later implementation evolution. It
+adds a configurable query `num_splits=R`:
+
+```text
+FA1 v1.0.9 grid = batch * heads * R
+```
+
+Split `r` owns disjoint Q tiles `r,r+R,...`, so this is limited query-sequence
+parallelism. It is not yet the full FA2 plan: each split CTA still owns several
+small Q tiles, keeps K/V outside, and hands running Q/output state through
+global memory between K/V iterations.
+
+For `B=1,H=32,N=8192`, an illustrative comparison is:
+
+```text
+original FA1 paper:       32 CTAs
+FA1 v1.0.9 with R=4:     128 CTAs
+FA2 with B_M=128:       2048 CTAs
+```
+
+`R=4` is illustrative rather than a universal dispatch result.
+
+### 4.2 FA1 v1.0.9
 
 FA1's historical source launches a configurable number `R` of CTAs per
 `(batch, head)`. CTA `r` owns Q tiles `r, r+R, ...`, but uses K/V as its outer
@@ -171,7 +221,7 @@ CTA r:
 This reuses one K/V tile across several Q tiles but constrains the CTA count
 and sends running output state through HBM between K/V steps.
 
-### 4.2 FA2 v2.0.0
+### 4.3 FA2 v2.0.0
 
 FA2 launches:
 
@@ -217,7 +267,7 @@ CTA m=1 owns Q[128:256] -> O[128:256]
 K/V is reread by the two CTAs, potentially with L2 reuse, but no CTA publishes
 a partial result for another CTA to finish.
 
-### 4.3 Why more duplicated K/V can still win
+### 4.4 Why more duplicated K/V can still win
 
 The trade is:
 
@@ -249,6 +299,62 @@ FA2 v2.0.0:
 
 This is another reason to label paper-to-paper and source-to-source
 comparisons separately.
+
+### 4.5 "Reads less" needs an address-space-qualified ledger
+
+FA2 does not simply reduce every input read. It changes which operand or
+mutable state is revisited:
+
+```text
+paper-style FA1:
+  K/V tile reused by one head CTA
+  Q and running O/normalization state revisited for later K/V tiles
+
+FA2:
+  Q block and running state retained by one CTA
+  K/V tiles logically reloaded by every Q-block CTA
+```
+
+Ignoring caches, scalar row statistics, tails, and different tile sizes, let
+`T` be both the number of Q blocks and K/V blocks. A deliberately simplified
+major-traffic sketch is:
+
+```text
+paper-style FA1 reads:
+  K,V once                    ~ 2 N D
+  Q across K/V steps          ~ T N D
+  running O across steps      ~ T N D
+                                ----------
+                              ~ (2T + 2) N D
+
+paper-style FA1 writes:
+  running O across steps      ~ T N D
+
+FA2 reads:
+  Q once                      ~ N D
+  K,V for every Q CTA         ~ 2 T N D
+                                ----------
+                              ~ (2T + 1) N D
+
+FA2 writes:
+  final O once                ~ N D
+```
+
+This is intuition, not an exact byte model. It shows why pure read volume may
+be similar while total read-plus-write traffic is more clearly improved: FA2
+replaces repeated mutable-output round trips with repeated read-only K/V
+loads. For FA1 v1.0.9 `R>1`, K/V is also logically reloaded by every split CTA,
+so the paper baseline and source baseline differ again.
+
+Finally, a CUDA global-load instruction is not synonymous with a physical HBM
+transaction. Repeated K/V global loads from nearby CTAs may be served partly
+by L2. A performance claim should therefore keep three quantities separate:
+
+```text
+logical global-load/store instructions
+L2 hit/miss and cache-sector traffic
+physical HBM bytes
+```
 
 ## 5. Warp Ownership: Split-K Becomes Split-Q
 
@@ -310,6 +416,23 @@ all-reduces inside the warp layout. "No inter-warp O reduction" does not mean
 The CTA still uses barriers because all warps consume shared Q/K/V tiles and
 because the epilogue transits O through shared memory for coalesced stores.
 Avoiding an inter-warp numeric sum does not make the warps independent CTAs.
+
+The general reason split-Q is a more natural forward partition is that it
+follows complete output ownership. In:
+
+$$
+PV:\quad [B_M,B_N][B_N,D]\rightarrow[B_M,D],
+$$
+
+`B_N` is a reduction dimension. Splitting it among warps creates overlapping
+partial O values. `B_M` is an output dimension. Splitting it gives disjoint O
+rows that can be concatenated. This is an owner-computes design, not merely a
+different label on the same four warps.
+
+FA2 can use this mapping because its larger Q tile provides enough independent
+Q-row MMA work. The audited FA1 `B_r=16` tile had only one natural 16-row M
+group, so splitting score columns supplied useful warp parallelism at the
+cost of a later partial-O sum.
 
 ## 6. Memory Residence And The SM80 Pipeline
 
@@ -498,6 +621,26 @@ This table is the main reusable result of the delta pass:
    mutable partial-state traffic and expose more workers.
 5. Determinism can survive a major performance rewrite when complete-output
    ownership and all local combine orders remain fixed.
+
+### A reusable implementation-design scorecard
+
+For every candidate tile and worker mapping, fill this table before calling it
+"more natural" or "faster":
+
+| Question | Preferred direction | Required counter-check |
+| --- | --- | --- |
+| Which output elements does one warp/CTA own? | complete, disjoint output regions | tails, masking, and whether another stage reuses the same axis as a reduction |
+| Is the split axis output or reduction for each fused GEMM? | split output axes when enough independent work exists | splitting reduction may still win if it greatly improves reuse or concurrency |
+| Which mutable state crosses a loop iteration? | keep one owner's accumulator on chip | register/shared capacity, spilling, and occupancy |
+| Which read-only inputs become duplicated? | duplicate cacheable inputs before spilling mutable partial state | L2/HBM traffic must be measured rather than assumed |
+| Which numeric combines remain? | shortest fixed local tree and no unordered cross-CTA writers | atomics, workspace reduction, and deterministic mode |
+| Which synchronizations move numeric data versus only protect reuse? | remove cross-worker value exchange first | barriers for copy completion and buffer generations still remain |
+| What is the full resource ledger? | compute, bytes, concurrency, and protocol all improve on the critical path | a storage saving is not automatically a traffic or latency saving |
+| What validates the performance story? | pinned ablation/profile plus resolved specialization | theoretical peak or source shape alone is insufficient |
+
+This scorecard is also maintained in the cross-project
+[`kernel_communication_research.md`](../../../../../kernel_communication_research.md)
+workflow so future kernel studies ask the same questions.
 
 ## 10. Stop Line And Next Questions
 

@@ -62,6 +62,16 @@
     <footer class="footer"><span>P is reconstructed tile by tile; no N×N tensor is saved</span><span>Math</span></footer>
   </section>
 
+  <section class="slide" data-section="Similar means">
+    <div class="kicker">Paper wording · “backward is similar” does not mean the kernel is unchanged</div>
+    <div class="content grid-2">
+      <div class="card green-edge"><h3>What stays similar</h3><ul><li>same five GEMMs and pointwise softmax derivative；</li><li>recompute tiled S/P；</li><li>K/V-owner naturally completes dK/dV；</li><li>every J contributes to dQ。</li></ul></div>
+      <div class="card cyan-edge"><h3>What FA2 changes</h3><ul><li>Q tile 16 → 64 at d128；</li><li>warp MMA output layouts；</li><li>local dQ combine disappears；</li><li>cp.async/double buffering；</li><li>always sequence-K public path and three-kernel protocol。</li></ul></div>
+      <p class="lead center" style="grid-column:1/-1">数学/dataflow 相似；CTA exposure、warp ownership、memory movement 与 determinism surface 并不相同。</p>
+    </div>
+    <footer class="footer"><span>a Q owner would complete dQ but create partial dK/dV; no loop orientation uniquely owns all three</span><span>Similar?</span></footer>
+  </section>
+
   <section class="slide" data-section="Dataflow">
     <div class="kicker">One (I,J) tile · values branch before transposed consumers</div>
     <div class="content grid-2 wide-left"><div class="codebox">Q_I,K_J → S[I,J] → P[I,J]
@@ -135,6 +145,16 @@ G_I,V_J → dP[I,J] ────────────────┘</div><di
     <div class="kicker">Part III · five GEMMs, three output-axis warp layouts</div><div class="content center"><h2>FA2 删除 local dQ sum<br>但没有删除<br><span class="cyan">cross-J combine</span></h2></div><footer class="footer"><span>identify reduction axis and worker partition independently</span><span>Part III</span></footer>
   </section>
 
+  <section class="slide" data-section="FA1 warp reuse">
+    <div class="kicker">FA1 backward · one 16-key slice per warp changes role across five GEMMs</div>
+    <div class="content">
+      <div class="matrix cols-8"><span class="cell c0">W0<br>J 0:16</span><span class="cell c1">W1<br>J 16:32</span><span class="cell c2">W2<br>J 32:48</span><span class="cell c3">W3<br>J 48:64</span><span class="cell c0">W4<br>J 64:80</span><span class="cell c1">W5<br>J 80:96</span><span class="cell c2">W6<br>J 96:112</span><span class="cell c3">W7<br>J 112:128</span></div>
+      <table class="dense"><thead><tr><th>Stage</th><th>J_w means</th><th>Warp result</th><th>Combine?</th></tr></thead><tbody><tr><td>QKᵀ / GVᵀ</td><td>output score/dP columns</td><td>disjoint [16,16] slice</td><td>no</td></tr><tr><td>dS K → dQ</td><td class="amber">B_c reduction slice</td><td class="amber">one [16,128] partial dQ</td><td class="red">8-way shared sum</td></tr><tr><td>PᵀG / dSᵀQ</td><td>output dV/dK rows</td><td>disjoint [16,128] rows</td><td>no</td></tr></tbody></table>
+      <p class="lead center">同一个 key axis 在 QK/dP 是 output，在 dQ 是 reduction，在 dK/dV 又是 output。</p>
+    </div>
+    <footer class="footer"><span>“split K/V” is incomplete until the axis role is named for each GEMM</span><span>FA1 warp map</span></footer>
+  </section>
+
   <section class="slide" data-section="MMA table">
     <div class="kicker">Representative d128 CTA · B_M=64, B_N=128, eight warps</div>
     <div class="content"><table class="dense"><thead><tr><th>Product</th><th>Shape</th><th>Reduce</th><th>Warp output layout</th><th>Local result</th></tr></thead><tbody><tr><td>QKᵀ → S</td><td>[64,128][128,128]→[64,128]</td><td>D</td><td>2 Q × 4 K</td><td>disjoint S subtiles</td></tr><tr><td>GVᵀ → dP</td><td>[64,128][128,128]→[64,128]</td><td>D</td><td>2 Q × 4 K</td><td>disjoint dP subtiles</td></tr><tr><td>dS K → dQᴶ</td><td>[64,128][128,128]→[64,128]</td><td>B_N</td><td>2 Q × 4 D</td><td>disjoint pieces of J partial</td></tr><tr><td>PᵀG → dV</td><td>[128,64][64,128]→[128,128]</td><td>B_M</td><td>4 K × 2 D</td><td>disjoint final dV pieces</td></tr><tr><td>dSᵀQ → dK</td><td>[128,64][64,128]→[128,128]</td><td>B_M</td><td>4 K × 2 D</td><td>disjoint final dK pieces</td></tr></tbody></table><p class="small amber center">每个 warp 仍发射多条 instruction-sized MMA；2×4/4×2 是 logical warp layout，不是单条指令形状。</p></div>
@@ -147,10 +167,30 @@ G_I,V_J → dP[I,J] ────────────────┘</div><di
     <footer class="footer"><span>the labels show output groups, not exact lane-coordinate fragments</span><span>Warp maps</span></footer>
   </section>
 
+  <section class="slide" data-section="FA2 maps expanded">
+    <div class="kicker">FA2 backward · output ownership is remapped for each matrix shape</div>
+    <div class="content grid-2">
+      <div class="card cyan-edge"><h3>S/dP · [Q,K] · 2×4</h3><div class="matrix cols-4"><span class="cell c0">W0<br>Q0/K0</span><span class="cell c1">W1<br>Q0/K1</span><span class="cell c2">W2<br>Q0/K2</span><span class="cell c3">W3<br>Q0/K3</span><span class="cell c0">W4<br>Q1/K0</span><span class="cell c1">W5<br>Q1/K1</span><span class="cell c2">W6<br>Q1/K2</span><span class="cell c3">W7<br>Q1/K3</span></div><p class="small">Q0/Q1 each 32 rows；K0…K3 each 32 columns。</p></div>
+      <div class="card amber-edge"><h3>dQᴶ · [Q,D] · 2×4</h3><div class="matrix cols-4"><span class="cell c0">W0<br>Q0/D0</span><span class="cell c1">W1<br>Q0/D1</span><span class="cell c2">W2<br>Q0/D2</span><span class="cell c3">W3<br>Q0/D3</span><span class="cell c0">W4<br>Q1/D0</span><span class="cell c1">W5<br>Q1/D1</span><span class="cell c2">W6<br>Q1/D2</span><span class="cell c3">W7<br>Q1/D3</span></div><p class="small">D0…D3 each 32 columns；每个 warp 完成 full B_N reduction。</p></div>
+      <div class="card green-edge" style="grid-column:1/-1"><h3>dK/dV · [K,D] · 4×2</h3><div class="matrix cols-8"><span class="cell c0">W0<br>K0/D0</span><span class="cell c0">W1<br>K0/D1</span><span class="cell c1">W2<br>K1/D0</span><span class="cell c1">W3<br>K1/D1</span><span class="cell c2">W4<br>K2/D0</span><span class="cell c2">W5<br>K2/D1</span><span class="cell c3">W6<br>K3/D0</span><span class="cell c3">W7<br>K3/D1</span></div><p class="small center">K0…K3 each 32 rows；D0/D1 each 64 columns；all output fragments are disjoint。</p></div>
+    </div>
+    <footer class="footer"><span>row-major warp IDs are illustrative; the source-backed claim is the logical 2×4 / 4×2 topology</span><span>FA2 maps</span></footer>
+  </section>
+
   <section class="slide" data-section="FA1 vs FA2 dQ">
     <div class="kicker">Key FA1→FA2 improvement · remove the CTA-local eight-way dQ combine</div>
     <div class="content grid-2"><div class="card red-edge"><span class="tag">FA1 dQ</span><div class="flow"><span class="node">8 warps split B_c reduction</span><span class="arrow">→</span><span class="node red-node">8 × [B_r,D] partials</span><span class="arrow">→</span><span class="node">shared fixed sum</span></div></div><div class="card green-edge"><span class="tag">FA2 dQ from one J</span><div class="flow"><span class="node">8 warps split [Q,D] output</span><span class="arrow">→</span><span class="node green-node">disjoint partial-tile pieces</span><span class="arrow">→</span><span class="node">atomic publish</span></div></div><p class="lead center" style="grid-column:1/-1">FA2 优化了 CTA 内的 combine；不同 J CTAs 之间仍然要合并到同一个 dQ。</p></div>
     <footer class="footer"><span>better local ownership does not imply unique global ownership</span><span>FA1 vs FA2 dQ</span></footer>
+  </section>
+
+  <section class="slide" data-section="Reduction scope">
+    <div class="kicker">Scope correction · FA2 removes an in-kernel reduction, not a CUDA kernel launch</div>
+    <div class="content grid-2">
+      <div class="card red-edge"><span class="tag">FA1 main CTA</span><div class="flow"><span class="node">8 register partials</span><span class="arrow">→</span><span class="node red-node">smem_dq</span><span class="arrow">→</span><span class="node">barrier + reload + sum</span></div><p>所有步骤都在同一个 main backward kernel、同一个 CTA 内完成。</p></div>
+      <div class="card green-edge"><span class="tag">FA2 main CTA</span><div class="flow"><span class="node">8 disjoint [Q,D] pieces</span><span class="arrow">→</span><span class="node green-node">direct atomic publication</span></div><p>省的是 shared traffic、FP32 adds 和 local dependency；public v2.0.0 仍有 preprocess/main/convert 三个 kernels。</p></div>
+      <span class="equation" style="grid-column:1/-1">local reduction removed ≠ reduction kernel removed ≠ global reduction removed</span>
+    </div>
+    <footer class="footer"><span>always name the combine scope: warp, CTA, kernel, grid, or rank</span><span>Reduction scope</span></footer>
   </section>
 
   <section class="slide section-slide" data-section="Part IV">
@@ -169,6 +209,15 @@ G_I,V_J → dP[I,J] ────────────────┘</div><di
     <footer class="footer"><span>capacity bound is source reasoning, not measured occupancy</span><span>Shared</span></footer>
   </section>
 
+  <section class="slide" data-section="Shared comparison">
+    <div class="kicker">Shared-memory ledger · remove 64 KiB, grow other tiles by 56 KiB</div>
+    <div class="content">
+      <table><thead><tr><th>Per-CTA shared allocation · d128</th><th>FA1 v1.0.9</th><th>FA2 v2.0.0</th><th>Delta</th></tr></thead><tbody><tr><td>Q / dO staging</td><td>16 KiB</td><td>48 KiB</td><td class="amber">+32</td></tr><tr><td>K/V staging</td><td>64 KiB</td><td>64 KiB</td><td>0</td></tr><tr><td>P/dS layout buffers</td><td>8 KiB</td><td>32 KiB</td><td class="amber">+24</td></tr><tr><td>8 FP32 partial dQ</td><td>64 KiB</td><td>0</td><td class="green">−64</td></tr><tr><td><strong>Total</strong></td><td><strong>152 KiB</strong></td><td><strong>144 KiB</strong></td><td class="green"><strong>−8 KiB</strong></td></tr></tbody></table>
+      <div class="grid-3"><article class="card green-edge"><h3>Gross saving</h3><p>FA2 完全删除 64 KiB <code>smem_dq</code>。</p></article><article class="card amber-edge"><h3>Replacement cost</h3><p>Q tile 16→64，使 Q/dO 与 P/dS buffers 增大 56 KiB。</p></article><article class="card cyan-edge"><h3>Admission result</h3><p>两者在 A100 都仍像 one-heavy-CTA/SM；价值是 larger useful tile，不是 1→2 CTA residency。</p></article></div>
+    </div>
+    <footer class="footer"><span>gross deleted buffer ≠ net shared allocation delta</span><span>Shared compare</span></footer>
+  </section>
+
   <section class="slide" data-section="Pipeline">
     <div class="kicker">One Q iteration · dependency timeline, not literal cycles</div>
     <div class="content"><div class="timeline" style="--steps:7"><div class="time-item"><strong>cp.async Q/G</strong><span>prepare current<br>or next tile</span></div><div class="time-item"><strong>QK</strong><span>recompute S<br>then P</span></div><div class="time-item"><strong>dP/dS</strong><span>GVᵀ<br>pointwise</span></div><div class="time-item"><strong>dV</strong><span>PᵀG<br>accumulate J</span></div><div class="time-item"><strong>dQᴶ</strong><span>dS K<br>output split</span></div><div class="time-item"><strong>atomic</strong><span>publish into<br>dq_accum</span></div><div class="time-item"><strong>dK</strong><span>dSᵀQ<br>accumulate J</span></div></div><div class="grid-3"><article class="card green-edge"><h3>cp.async</h3><p>global→shared Q/K/V movement can overlap independent compute without ordinary payload-register staging。</p></article><article class="card violet-edge"><h3>Double buffer</h3><p>next Q generation can be prepared while fixed J work finishes on the current tile。</p></article><article class="card red-edge"><h3>Sync remains</h3><p>P/dS transpose handoffs and buffer reuse require correct wait/fence/barrier placement。</p></article></div></div>
@@ -179,6 +228,25 @@ G_I,V_J → dP[I,J] ────────────────┘</div><di
     <div class="kicker">Backward advantages over FA1 · mechanism, not slogans</div>
     <div class="content grid-4"><article class="card cyan-edge"><h3>1 · Larger Q work</h3><p>64-row d128 tile amortizes fixed K/V state over fewer Q-loop iterations。</p></article><article class="card green-edge"><h3>2 · Better warp ownership</h3><p>all five representative GEMMs split output dimensions；no local dQ reduction tree。</p></article><article class="card violet-edge"><h3>3 · More CTA parallelism</h3><p>one J CTA per K/V tile exposes 64 work units per head in the example。</p></article><article class="card amber-edge"><h3>4 · Better movement</h3><p>cp.async and double buffering support the larger live state and overlap windows。</p></article></div>
     <footer class="footer"><span>these improvements coexist with, rather than eliminate, the atomic protocol</span><span>Advantages</span></footer>
+  </section>
+
+  <section class="slide" data-section="Non matmul">
+    <div class="kicker">Non-Tensor-Core work · less, but not the same simplification as forward</div>
+    <div class="content grid-2">
+      <div class="card green-edge"><h3>Removed / amortized</h3><ul><li>8-way local dQ: about <code>16×128×7=14,336</code> FP32 adds per FA1 tile；</li><li>partial-dQ shared stores/reloads；</li><li>local barrier/dependency；</li><li>larger 64-row Q tile amortizes loop/control overhead。</li></ul></div>
+      <div class="card red-edge"><h3>Still required</h3><ul><li><code>exp(S−LSE)</code> for reconstructed P；</li><li><code>dS=P(dP−D)</code> pointwise work；</li><li><code>D=dot(G,O)</code>；</li><li>mask/dropout, atomics, FP32 conversion；</li><li>the same five mathematical GEMMs。</li></ul></div>
+      <p class="lead center" style="grid-column:1/-1">Backward 的 headline 是<span class="cyan">ownership + shared communication + tile amortization</span>；不像 forward 那样主要依赖 deferred normalization。</p>
+    </div>
+    <footer class="footer"><span>FA1 v1.0.9 already stores LSE; do not count that paper-level tweak twice</span><span>Non-matmul</span></footer>
+  </section>
+
+  <section class="slide" data-section="Performance chain">
+    <div class="kicker">Why faster · mechanism, removed cost, and new cost stay on one page</div>
+    <div class="content">
+      <div class="timeline" style="--steps:4"><div class="time-item"><strong>larger Q tile</strong><span>fewer loop steps<br>more work / CTA</span></div><div class="time-item"><strong>output-axis warps</strong><span>remove local dQ<br>sum + smem traffic</span></div><div class="time-item"><strong>one CTA / J</strong><span>more independent<br>dK/dV owners</span></div><div class="time-item"><strong>cp.async pipeline</strong><span>support larger state<br>and overlap</span></div></div>
+      <div class="grid-3"><article class="card green-edge"><h3>Win</h3><p>更多 useful workers、更少 CTA-local vector/smem overhead、更好的 movement overlap。</p></article><article class="card red-edge"><h3>Price</h3><p>cross-J atomic dQ、128 MiB workspace、three kernels、one heavy CTA/SM。</p></article><article class="card amber-edge"><h3>Proof boundary</h3><p>source explains the mechanism；各项 speedup 占比需要 pinned ablation/profile。</p></article></div>
+    </div>
+    <footer class="footer"><span>performance is a coordinated dataflow redesign, not “one less kernel”</span><span>Performance</span></footer>
   </section>
 
   <section class="slide" data-section="Costs">
@@ -230,6 +298,19 @@ G_I,V_J → dP[I,J] ────────────────┘</div><di
     <div class="kicker">FA1 v1.0.9 versus FA2 v2.0.0 backward</div>
     <div class="content"><table class="dense"><thead><tr><th>Axis</th><th>FA1</th><th>FA2</th><th>Meaning</th></tr></thead><tbody><tr><td>Q tile at d128</td><td>16</td><td>64</td><td>more compute/live state per FA2 iteration</td></tr><tr><td>CTA</td><td>8 warps</td><td>8 warps</td><td>same count, different work partition</td></tr><tr><td>K/V parallelism</td><td>serial or sequence-K</td><td>public path always sequence-K</td><td>FA2 prioritizes available workers</td></tr><tr><td>local dQ</td><td>8 reduction partials + shared sum</td><td>output-axis pieces</td><td>FA2 removes local numeric combine</td></tr><tr><td>cross-J dQ</td><td>ordinary serial update or atomic</td><td>FP32 atomic</td><td>initial FA2 keeps nondeterministic boundary</td></tr><tr><td>dK/dV</td><td>one J owner</td><td>one J owner</td><td>stable ownership survives redesign</td></tr><tr><td>movement</td><td>ordinary historical staging</td><td>cp.async + double buffer</td><td>more overlap opportunity</td></tr><tr><td>deterministic option</td><td>num_splits=1</td><td>absent</td><td>version matters</td></tr></tbody></table></div>
     <footer class="footer"><span>FA2 improves local work partition without yet providing a deterministic global dQ combine</span><span>Scorecard</span></footer>
+  </section>
+
+  <section class="slide" data-section="Kernel guidance">
+    <div class="kicker">Implementation guidance · reusable beyond attention</div>
+    <div class="content grid-3">
+      <article class="card green-edge"><h3>1 · Prefer output owners</h3><p>若有足够 output macrotiles，沿 free/output axis 分工；沿 reduction axis 分工会创建 combine obligation。</p></article>
+      <article class="card cyan-edge"><h3>2 · Score every fused GEMM</h3><p>同一轴在前一个 GEMM 可能是 output，在下一个 GEMM 可能是 reduction；不能只说“split K”。</p></article>
+      <article class="card amber-edge"><h3>3 · Count net resources</h3><p>删除一个 64 KiB buffer 后，还要加上 larger Q/P/dS replacement buffers。</p></article>
+      <article class="card violet-edge"><h3>4 · Name sync scope</h3><p>warp/CTA local reduction、cross-CTA atomic、kernel boundary 是三种不同成本与确定性问题。</p></article>
+      <article class="card red-edge"><h3>5 · Keep four ledgers</h3><p>compute、bytes/state、concurrency、protocol；storage saving 不自动等于 latency saving。</p></article>
+      <article class="card cyan-edge"><h3>6 · Validate the chain</h3><p>resolved specialization → resource metadata → ablation/profile → exact-output probe。</p></article>
+    </div>
+    <footer class="footer"><span>minimize numeric communication, not synchronization as an unqualified slogan</span><span>Guidance</span></footer>
   </section>
 
   <section class="slide" data-section="Summary">

@@ -422,6 +422,32 @@
       <footer class="footer"><span>loop order determines state reuse and lifetime</span><span>Part I</span></footer>
     </section>
 
+    <section class="slide" data-section="Three baselines">
+      <div class="kicker">First resolve the apparent contradiction · paper FA1 ≠ later FA1 source</div>
+      <div class="content grid-3">
+        <article class="card red-edge">
+          <span class="tag">Original FA1 paper</span>
+          <h3>B × H CTAs</h3>
+          <p>一个 CTA / attention head；K/V outer，CTA 内扫描所有 Q tiles。</p>
+          <p class="small muted">这是 FA2 paper 所说“FA1 only parallelizes batch and heads”的 baseline。</p>
+        </article>
+        <article class="card amber-edge">
+          <span class="tag">FA1 v1.0.9 source</span>
+          <h3>B × H × R CTAs</h3>
+          <p><code>num_splits=R</code> 已加入有限 query parallelism；每个 CTA 仍拥有多个小 Q tiles。</p>
+          <p class="small muted">相对 original paper 是后续 implementation evolution。</p>
+        </article>
+        <article class="card green-edge">
+          <span class="tag">FA2 v2.0.0</span>
+          <h3>B × H × T<sub>Q</sub> CTAs</h3>
+          <p>一个 CTA 完整拥有一个大 Q block；在 CTA 内完成全部 K/V reduction。</p>
+          <p class="small muted">sequence parallelism 变成 complete-output ownership。</p>
+        </article>
+        <p class="lead center" style="grid-column:1/-1">paper-to-paper 与 source-to-source 必须分开；否则会误以为我们之前看的 FA1 split-Q 与论文冲突。</p>
+      </div>
+      <footer class="footer"><span>pin algorithm claim and released implementation separately</span><span>Baselines</span></footer>
+    </section>
+
     <section class="slide" data-section="FA1 loop">
       <div class="kicker">FA1 baseline · keep one K/V tile, revisit many Q tiles</div>
       <div class="content grid-2 wide-left">
@@ -486,7 +512,12 @@
 
     <section class="slide" data-section="Grid example">
       <div class="kicker">Concrete grid · B=1, H=32, N=8192, d=64</div>
-      <div class="content grid-2">
+      <div class="content grid-3">
+        <div class="card red-edge">
+          <span class="tag">Original FA1 paper</span>
+          <div class="equation">B × H = 32 CTAs</div>
+          <p>one CTA per head；长序列不会自动增加 grid workers。</p>
+        </div>
         <div class="card amber-edge">
           <span class="tag">FA1 illustrative R=4</span>
           <div class="equation">grid = B × H × R = 128 CTAs</div>
@@ -498,7 +529,7 @@
           <div class="equation">grid = 64 × B × H = 2048 CTAs</div>
           <p>每个 head 有 <code>8192/128=64</code> 个 independent Q-block CTAs；每个 CTA 完成自己的全部 K/V reduction。</p>
         </div>
-        <p class="lead center" style="grid-column:1/-1">FA2 的 sequence parallelism 是<span class="cyan">更细的 complete-output ownership</span>，不是把同一个 O row 拆给 64 个 CTA。</p>
+        <p class="lead center" style="grid-column:1/-1">32 → 128 → 2048 展示的是 worker granularity；FA2 不是把同一个 O row 拆给 64 个 CTA。</p>
       </div>
       <footer class="footer"><span>more blocks expose scheduler freedom while output addresses remain disjoint</span><span>Grid</span></footer>
     </section>
@@ -543,6 +574,31 @@
         <p class="lead center">FA2 的赌注：read-only K/V 更适合重复请求和 cache reuse；<span class="cyan">mutable partial O 的 global handoff 更贵</span>。</p>
       </div>
       <footer class="footer"><span>compare total traffic and parallelism, not one operand's load count</span><span>Tradeoff</span></footer>
+    </section>
+
+    <section class="slide" data-section="Traffic ledger">
+      <div class="kicker">“Reads less” is not one number · count instructions, cache traffic, and HBM separately</div>
+      <div class="content grid-2">
+        <div class="card amber-edge">
+          <h3>Logical access swap</h3>
+          <div class="codebox">paper-style FA1:
+  K/V reuse inside head CTA
+  revisit Q + mutable running O/state
+
+FA2:
+  load Q once; retain running state
+  every Q CTA requests its K/V tiles</div>
+          <p>只数 Q/K/V reads，FA2 未必显著更少；加上 running-O read/write，FA2 的总 traffic 更有优势。</p>
+        </div>
+        <div class="card cyan-edge">
+          <h3>Three physical ledgers</h3>
+          <div class="flow"><span class="node">global load/store instructions</span><span class="arrow">→</span><span class="node cyan-node">L2 sectors / hit rate</span><span class="arrow">→</span><span class="node green-node">HBM bytes</span></div>
+          <p>不同 Q CTAs 的重复 K/V global loads 可能命中 L2；不能把“每 CTA load”直接等同于“每次从 HBM DRAM 读”。</p>
+          <p class="small muted">FA1 v1.0.9 的 R 个 split CTAs 也会各自请求 K/V，因此 paper baseline 与 source baseline 再次不同。</p>
+        </div>
+        <p class="lead center" style="grid-column:1/-1"><span class="cyan">FA2 的关键不是所有 reads 都更少</span>，而是用 cacheable read-only duplication 换掉 mutable-state round trips。</p>
+      </div>
+      <footer class="footer"><span>logical global accesses != physical HBM transactions</span><span>Traffic ledger</span></footer>
     </section>
 
     <section class="slide section-slide" data-section="Part II">
@@ -979,6 +1035,26 @@
       <footer class="footer"><span>FA2 is a coordinated dataflow redesign, not a single faster instruction</span><span>Scorecard</span></footer>
     </section>
 
+    <section class="slide" data-section="Performance chain">
+      <div class="kicker">Why faster · connect every mechanism to the cost it removes</div>
+      <div class="content">
+        <div class="timeline" style="--steps:5">
+          <div class="time-item"><strong>Q-block CTA</strong><span>more independent<br>sequence workers</span></div>
+          <div class="time-item"><strong>state on chip</strong><span>remove mutable<br>HBM handoff</span></div>
+          <div class="time-item"><strong>defer normalize</strong><span>fewer FP32<br>scale/divide ops</span></div>
+          <div class="time-item"><strong>split output</strong><span>remove partial-O<br>smem reduction</span></div>
+          <div class="time-item"><strong>cp.async</strong><span>support larger state<br>and overlap</span></div>
+        </div>
+        <div class="grid-3">
+          <article class="card green-edge"><h3>Compute path</h3><p>Tensor Core GEMMs 保留；减少围绕它们的 normalization 与 partial-output vector work。</p></article>
+          <article class="card cyan-edge"><h3>Memory path</h3><p>减少 mutable state 的 global round trips 和 partial-O shared traffic；接受重复 K/V reads。</p></article>
+          <article class="card amber-edge"><h3>Concurrency path</h3><p>更多 complete owners 改善 waves；heavier CTA、causal imbalance 和 tails 仍需 profile。</p></article>
+        </div>
+        <p class="small amber center">Paper/source 证明 mechanism；每项贡献多少百分比必须靠 pinned ablation 或 profile。</p>
+      </div>
+      <footer class="footer"><span>performance explanation = cause → removed cost → new tradeoff → measurement</span><span>Performance</span></footer>
+    </section>
+
     <section class="slide" data-section="General lessons">
       <div class="kicker">What FA2 teaches beyond attention</div>
       <div class="content grid-3">
@@ -990,6 +1066,26 @@
         <article class="card cyan-edge"><h3>6 · Re-prove determinism</h3><p>性能重写后重新画 ownership/combine graph；不能继承旧 kernel 的结论。</p></article>
       </div>
       <footer class="footer"><span>these questions transfer to GEMM, grouped GEMM, fused operators, and communication kernels</span><span>Lessons</span></footer>
+    </section>
+
+    <section class="slide" data-section="Design scorecard">
+      <div class="kicker">Kernel implementation guidance · score the complete fused dataflow</div>
+      <div class="content">
+        <table class="dense">
+          <thead><tr><th>Question</th><th>Preferred direction</th><th>Counter-check</th></tr></thead>
+          <tbody>
+            <tr><td>Which output does one worker own?</td><td>complete, disjoint rows/columns</td><td>is there enough output work to fill all warps?</td></tr>
+            <tr><td>What role does the split axis play in every GEMM?</td><td>split output/free dimensions</td><td>the same axis may become a reduction later</td></tr>
+            <tr><td>Which state is mutable across iterations?</td><td>keep owner accumulator on chip</td><td>register spill, shared capacity, occupancy</td></tr>
+            <tr><td>What read-only input gets duplicated?</td><td>duplicate cacheable input before spilling mutable output</td><td>measure L2/HBM rather than assuming reuse</td></tr>
+            <tr><td>Which synchronization moves numeric values?</td><td>remove cross-worker numeric exchange first</td><td>copy/reuse barriers still remain</td></tr>
+            <tr><td>What is the net resource change?</td><td>full register/shared/global ledger</td><td>gross deleted buffer ≠ net allocation saving</td></tr>
+            <tr><td>How is the speed story validated?</td><td>resolved specialization + ablation/profile</td><td>peak FLOPs and source shape are not measurements</td></tr>
+          </tbody>
+        </table>
+        <span class="equation">tile → owner graph → residence → traffic/sync → waves → measured critical path</span>
+      </div>
+      <footer class="footer"><span>prefer fewer combine obligations, not fewer barriers as an unqualified goal</span><span>Guidance</span></footer>
     </section>
 
     <section class="slide" data-section="Backward companion">

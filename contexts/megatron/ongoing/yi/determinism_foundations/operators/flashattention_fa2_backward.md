@@ -1,6 +1,6 @@
 # FlashAttention-2 Backward: Ownership, Pipeline, And Determinism
 
-Date: 2026-07-28
+Date: 2026-07-29
 
 Status: official v2.0.0 SM80 CUDA backward source study complete for the
 standard sequence-K path; CPU-only reasoning, with GPU validation deferred
@@ -89,6 +89,26 @@ G_I,V_J -> dP[I,J] -----/
 sequence-sized global tensors. `P` and `dS` begin as score-oriented register
 fragments, are stored through swizzled shared layouts, and are reloaded under
 the operand mapping required by the transposed GEMMs.
+
+### 2.1 "Similar to FA1" is a mathematical/dataflow statement
+
+The FA2 paper's description that backward is similar to FA1 is accurate at the
+algorithmic level:
+
+- both recompute tiled `S` and `P` rather than saving quadratic tensors;
+- both use the same five matrix products and pointwise softmax derivative;
+- both naturally fix one K/V tile, scan Q tiles, and accumulate complete
+  `dK_J,dV_J`;
+- both must combine one `dQ_I` contribution from every interacting K/V tile.
+
+Unlike forward, swapping the loop does not make all three gradients
+single-owned. A K/V-owner CTA completes `dK/dV` but emits partial `dQ`; a
+Q-owner CTA would complete `dQ` but emit partial `dK/dV`. One orientation
+cannot make all three outputs unique owners at once.
+
+"Similar" does not mean the kernels are physically unchanged. The pinned FA2
+source changes Q-tile size, warp MMA layouts, movement, CTA exposure, local
+`dQ` combination, workspace protocol, and deterministic configurability.
 
 ## 3. Three-Kernel Sequence-K Protocol
 
@@ -185,6 +205,85 @@ Each table row describes a logical warp-level decomposition. A warp issues
 multiple instruction-sized MMA operations, and lane/register fragments are
 specialization-specific.
 
+### 5.1 FA1 keeps one 16-key slice per warp
+
+For the audited FA1 `B_r=16,B_c=128,D=128` specialization, define:
+
+```text
+J_w = key rows [16*w, 16*(w+1)),  w=0,...,7
+```
+
+The same logical key-slice ownership changes role across the five products:
+
+| Product | Warp `w` owns or computes | Axis role | Result |
+| --- | --- | --- | --- |
+| `QK^T` | `S[:,J_w] = Q K[J_w,:]^T` | output score columns | disjoint `[16,16]` score slice |
+| `G V^T` | `dP[:,J_w] = G V[J_w,:]^T` | output dP columns | disjoint `[16,16]` dP slice |
+| pointwise | `P[:,J_w]`, `dS[:,J_w]` | same score layout | stays local to the key-slice owner |
+| `dS K` | `dS[:,J_w] K[J_w,:]` | `B_c` reduction slice | one complete-shaped `[16,128]` partial dQ |
+| `P^T G` | `dV[J_w,:] += P[:,J_w]^T G` | output dV rows | disjoint final rows |
+| `dS^T Q` | `dK[J_w,:] += dS[:,J_w]^T Q` | output dK rows | disjoint final rows |
+
+Thus FA1 preserves score/dS locality for `dQ`, but pays:
+
+```text
+8 x [16,128] FP32 partial dQ
+  -> store all eight to CTA-private smem_dq
+  -> barrier
+  -> reload and add partial indices 0 through 7
+```
+
+That reduction is inside the main backward kernel. It is not a separate CUDA
+reduction-kernel launch.
+
+### 5.2 FA2 repartitions each GEMM by its output
+
+For FA2 `B_M=64,B_N=128,D=128`, the eight warps use different logical output
+maps:
+
+```text
+S and dP output [Q=64,K=128], layout 2 x 4:
+
+                 K0 0:32   K1 32:64   K2 64:96   K3 96:128
+Q0 rows  0:32       W0          W1          W2          W3
+Q1 rows 32:64       W4          W5          W6          W7
+
+dQ_from_J output [Q=64,D=128], layout 2 x 4:
+
+                 D0 0:32   D1 32:64   D2 64:96   D3 96:128
+Q0 rows  0:32       W0          W1          W2          W3
+Q1 rows 32:64       W4          W5          W6          W7
+
+dK/dV output [K=128,D=128], layout 4 x 2:
+
+                  D0 0:64   D1 64:128
+K0 rows   0:32       W0          W1
+K1 rows  32:64       W2          W3
+K2 rows  64:96       W4          W5
+K3 rows 96:128       W6          W7
+```
+
+The warp IDs are an illustrative row-major labeling of the source-backed
+logical topology, not exact lane-coordinate ownership. Each warp issues
+multiple instruction-sized MMA operations.
+
+For `dQ`, every warp now completes the full `B_N=128` reduction for its own
+disjoint `[Q,D]` output region. The score-oriented `dS` fragments must be
+presented through shared-memory layouts under the operand mapping needed by
+later products; another warp cannot directly read private registers. This
+trades operand layout movement for removal of eight full partial-dQ copies and
+their numeric reduction.
+
+The general rule is:
+
+```text
+split output/free dimensions -> disjoint fragments -> concatenate/store
+split a reduction dimension  -> overlapping partials -> numeric combine
+```
+
+FA2's larger 64-row Q tile exposes enough independent `[Q,D]` output regions
+to keep eight warps useful without splitting the `dQ` reduction dimension.
+
 ## 6. State Residence, Shared Memory, And Pipeline
 
 For `D=128,B_M=64,B_N=128`, the source-selected A100 path requests:
@@ -209,6 +308,59 @@ such CTA resident per SM by shared capacity. Eight resident warps provide
 the CTA's internal latency-hiding pool. This remains a source-level capacity
 argument, not a measured occupancy result.
 
+### 6.1 FA1 versus FA2 shared-memory ledger
+
+For the audited d128 paths:
+
+| Shared allocation | FA1 v1.0.9 | FA2 v2.0.0 | Delta |
+| --- | ---: | ---: | ---: |
+| Q / `dO` staging and buffering | 16 KiB | 48 KiB | +32 KiB |
+| K/V staging | 64 KiB | 64 KiB | 0 |
+| P/dS layout-conversion buffers | 8 KiB | 32 KiB | +24 KiB |
+| eight FP32 partial-dQ tiles | 64 KiB | 0 | -64 KiB |
+| **total** | **152 KiB** | **144 KiB** | **-8 KiB** |
+
+FA2 removes 64 KiB of `smem_dq`, but its Q tile grows from 16 to 64 rows, so
+Q/dO and score-shaped P/dS storage grow by 56 KiB. The net shared allocation
+falls only 8 KiB. Both paths remain one-heavy-CTA-per-SM candidates on A100 by
+shared capacity; the improvement supports more useful work and a deeper
+pipeline inside that CTA rather than obviously doubling CTA residency.
+
+These exact byte counts are specialization-specific, not a claim about every
+head dimension, mode, or architecture.
+
+### 6.2 Non-Tensor-Core work: a narrower saving than forward
+
+FA2 removes the CTA-local dQ combine. For one FA1 `[16,128]` output tile, adding
+eight partials requires approximately:
+
+```text
+16 * 128 * 7 = 14,336 FP32 additions
+```
+
+plus partial stores, shared reloads, a barrier, and buffer-generation
+synchronization. FA2's disjoint dQ ownership removes that work. Its larger Q
+tile also amortizes some loop, bounds, pointer, and synchronization overhead
+over four times as many Q rows.
+
+Backward does not receive the same online-softmax algebra simplification as
+FA2 forward. It must still perform:
+
+- `exp(S-LSE)` for every reconstructed score;
+- the pointwise `dS=P*(dP-D)` work;
+- `D=dot(G,O)`;
+- masking/dropout work;
+- cross-CTA FP32 dQ atomics and final conversion.
+
+The five mathematical GEMMs and their asymptotic Tensor Core FLOPs are also
+unchanged. Compared with the original FA1 paper, LSE-only reconstruction
+reduces saved metadata and softmax-reconstruction work; compared with the
+pinned FA1 v1.0.9 source, LSE is already present and is not a new FA2 delta.
+
+Thus the backward performance story is primarily better work ownership,
+less shared-memory communication, larger-tile amortization, and a better copy
+pipeline. It is not a claim that most backward non-matmul arithmetic vanished.
+
 ## 7. FA1-To-FA2 Backward Delta
 
 | Axis | FA1 v1.0.9 backward | FA2 v2.0.0 backward |
@@ -226,6 +378,28 @@ argument, not a measured occupancy result.
 
 FA2 improves useful work partitioning and removes the CTA-local dQ partial
 combine, but the initial release does not solve cross-CTA dQ ordering.
+
+The performance chain for the pinned backward path is:
+
+```text
+larger Q tile
+  -> fewer Q-loop iterations and more useful work per CTA
+
+output-axis warp layouts
+  -> no CTA-local eight-way dQ sum
+  -> fewer shared stores/reloads and FP32 vector additions
+
+one sequence-K CTA per J
+  -> many independent dK/dV owners and more grid work
+  -> cross-J dQ becomes an atomic many-owner destination
+
+cp.async + Q double buffering
+  -> movement/compute overlap and less ordinary payload-register staging
+```
+
+This should not be summarized as "FA2 saves a reduction kernel." The removed
+reduction lived inside the main CTA. The public v2.0.0 path still uses the
+preprocess, main, and dQ-conversion kernel protocol.
 
 ## 8. Scoped Determinism Verdict
 
