@@ -26,7 +26,9 @@ The historical learning sequence is maintained separately:
 - [FA2 v2.0.0 backward audit](flashattention_fa2_backward.md);
 - [FA2 backward visual map](flashattention_fa2_backward.html);
 - [FA3 Hopper forward/backward deep dive](flashattention_fa3.md);
-- [FA3 Hopper visual map](flashattention_fa3.html).
+- [FA3 Hopper visual map](flashattention_fa3.html);
+- [FA4 Blackwell forward/backward deep dive](flashattention_fa4.md);
+- [FA4 Blackwell visual map](flashattention_fa4.html).
 
 It does not claim one verdict for every implementation in the repository.
 ROCm/Triton/CK backends, inference KV-cache mutation, paged attention,
