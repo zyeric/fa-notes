@@ -523,19 +523,128 @@ high per-thread register demand.
 
 ### 9.1 Partial software emulation of `exp2`
 
-Hardware `MUFU.EX2` remains scarce relative to Tensor Core throughput. FA4
-evaluates a small fraction of exponentials with a degree-3-or-higher polynomial
-on FMA/ALU paths while the rest use MUFU:
+#### 9.1.1 Baseline: how the ordinary fast exponential path works
+
+This discussion is about the fast path used by an attention kernel, not every
+possible implementation of CUDA `expf`. After a softmax worker has loaded one
+FP32 score row from TMEM into lane-private registers, it first subtracts the
+row maximum. Mathematically it needs:
 
 ```text
-x = floor(x) + frac(x)
-2^x = 2^floor(x) * polynomial(frac(x))
+p_i = exp(s_i - m)
 ```
 
-The paper uses only about 10–25% emulation because doing all values this way
-would add register pressure, register traffic, and latency. For BF16 output of
-`P`, the paper reports that degree-3 approximation error is dominated by BF16
-quantization, but that is still a numerical-policy change:
+The fast GPU path rewrites the natural exponential in base 2:
+
+```text
+x_i = (s_i - m) * log2(e)
+p_i = 2^x_i
+```
+
+Each lane issues `exp2`-class work for its register-resident elements. That work
+is lowered to the specialized MUFU `EX2` path, and its result returns to
+registers before the row sum and the BF16 `P` fragment are produced:
+
+```text
+FP32 S element in RMEM
+  -> subtract row max and apply base-2 scale on FP32 ALU
+  -> MUFU.EX2
+  -> approximate FP32 exponential in RMEM
+  -> row sum + BF16 conversion
+  -> P in TMEM
+  -> Tensor Core consumes P for P @ V
+```
+
+MUFU is pipelined; this is not one lane blocking the whole SM until one scalar
+function finishes. The relevant limit is its aggregate throughput. B200
+provides 16 exponential operations per clock per SM. A `128 x 128` score tile
+contains 16,384 values, so the roofline cost is:
+
+```text
+T_exp = 128 * 128 / 16 = 1024 cycles
+```
+
+For `M=N=d=128`, the two forward MMAs `Q @ K^T` and `P @ V` together also take
+about 1024 idealized Tensor Core cycles. The exp path is therefore as heavy as
+all matrix work for the tile. FA4 overlaps the paths, but any unhidden part of
+softmax directly delays the next `P @ V`.
+
+#### 9.1.2 Why a software exponential can help
+
+Blackwell doubled BF16 Tensor Core throughput while B200 kept the previous
+generation's 16-op/clock MUFU throughput. It did not make a hardware
+`MUFU.EX2` instruction itself easier to optimize from software. Instead, FA4
+uses ordinary FMA and integer ALU capacity as a second exponential production
+path that can operate alongside MUFU.
+
+For an element assigned to the emulated path, FA4 uses range reduction:
+
+```text
+x = n + f
+n = floor(x)
+f = x - n, where f is in [0, 1)
+
+2^x = 2^n * 2^f
+2^f ~= p0 + p1*f + p2*f^2 + p3*f^3 + ...
+```
+
+The concrete steps described by the paper are:
+
+1. clamp `x` to at least `-127` to avoid underflow;
+2. obtain `floor(x)` with a round-down range-reduction trick;
+3. compute the fractional remainder `f`;
+4. evaluate the polynomial for `2^f` in Horner form using a short FMA chain;
+5. construct the `2^n` factor through IEEE-754 exponent-bit manipulation and
+   combine it with the polynomial result.
+
+Conceptually the Horner part is:
+
+```text
+t = fma(f, p3, p2)
+t = fma(f, t,  p1)
+t = fma(f, t,  p0)
+```
+
+This takes more instructions and registers than one MUFU operation, but it uses
+a different set of execution resources. It helps when MUFU is saturated while
+enough FMA/ALU issue capacity remains available.
+
+#### 9.1.3 Why only part of the row is emulated
+
+**Partial** describes a work split across independent score elements. It does
+not mean that MUFU and FMA each compute half of one exponential:
+
+```text
+one softmax row
+  about 75-90% of elements -> hardware MUFU.EX2 ---------\
+  about 10-25% of elements -> integer ALU + FMA poly ----+-> one P row
+```
+
+The paper uses only about 10–25% emulation because a polynomial needs several
+instructions and temporary registers. Moving every exponential to this path
+would shift the bottleneck to FMA issue, register traffic, latency, or spills
+instead of removing it. The optimization is thus **load balancing**, not a
+claim that software `exp2` is individually faster than `MUFU.EX2`. The fraction
+is tuned for the tile and hardware so that the MUFU and emulation paths finish
+their assigned work at roughly the same time.
+
+**Kernel-design takeaway:** after faster matrix hardware exposes softmax as the
+critical path, reducing softmax cost does not have to mean making one
+exponential instruction faster. FA4 instead uses heterogeneous execution
+resources more evenly: keep most exponentials on the specialized MUFU path and
+move only enough independent elements to the general FMA/ALU path to shorten
+the combined critical path:
+
+```text
+before: softmax time ~= all work queued through MUFU
+after:  softmax time ~= max(MUFU share, FMA-emulated share) + coordination
+```
+
+For BF16 output of `P`, the paper reports that degree-3 approximation error is
+dominated by BF16 quantization: its maximum FP32 relative error is about
+`8.8e-5`, while BF16 quantization is about `3.9e-3`, and 99% of tested values
+are within one BF16 ULP of the hardware path. That is still a numerical-policy
+change:
 
 - it may differ bitwise from hardware `EX2`;
 - the emulation fraction is a tuned specialization parameter;

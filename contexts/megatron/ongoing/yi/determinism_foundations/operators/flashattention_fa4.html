@@ -40,9 +40,9 @@
     .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(11px,1.45vw,24px);height:100%}
     .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:clamp(9px,1.1vw,18px);height:100%}
     .wide-left{grid-template-columns:1.18fr .82fr}.wide-right{grid-template-columns:.82fr 1.18fr}
-    .card{display:flex;flex-direction:column;justify-content:flex-start;min-width:0;padding:clamp(13px,1.4vw,23px);
+    .card{display:flex;flex-direction:column;justify-content:center;min-width:0;padding:clamp(13px,1.4vw,23px);
       border:1px solid var(--line);border-radius:15px;background:linear-gradient(145deg,rgba(21,50,75,.94),rgba(7,18,30,.97));box-shadow:var(--shadow)}
-    .balanced>.card,.balanced>article{justify-content:center}
+    .top-align{justify-content:flex-start}.balanced>.card,.balanced>article{justify-content:center}
     .card p:last-child,.card ul:last-child{margin-bottom:0}.cyan-edge{border-top:4px solid var(--cyan)}
     .green-edge{border-top:4px solid var(--green)}.amber-edge{border-top:4px solid var(--amber)}
     .red-edge{border-top:4px solid var(--red)}.violet-edge{border-top:4px solid var(--violet)}
@@ -261,18 +261,71 @@ D1 = [A1@B_left | A1@B_right]</div>
     <div class="footer"><span>barrier 既表达 ready，也证明 storage 可以安全 reuse</span><span></span></div>
   </section>
 
-  <section class="slide" data-section="FwdAlgorithm">
-    <div class="kicker">Forward · 两个 algorithm changes</div><h2>不只重新排 schedule，还减少 exposed softmax work</h2>
+  <section class="slide" data-section="FwdExpBaseline">
+    <div class="kicker">Forward · ordinary fast exp path</div><h2>正常路径：score 从 RMEM 经过 MUFU，再成为 P</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card cyan-edge">
+        <div class="flow"><div class="node blue-node">FP32 S<br>in RMEM</div><span class="arrow">→</span><div class="node cyan-node">subtract max<br>× log₂(e)</div><span class="arrow">→</span><div class="node amber-node">MUFU.EX2</div><span class="arrow">→</span><div class="node green-node">BF16 P<br>in TMEM</div></div>
+        <div class="equation">exp(s − m) = 2^((s − m) · log₂e)</div>
+        <ul><li>lane 对自己 register 中的 score 发射 exp2-class work；结果回到 register。</li>
+          <li>MUFU 是流水化专用单元；限制是整个 SM 约 16 exp/cycle，不是“一次只能算一个”。</li>
+          <li>row sum / BF16 conversion 后，P 写入 TMEM，供 Tensor Core 做 P@V。</li></ul>
+      </div>
+      <div class="card amber-edge">
+        <h3>为什么它成为 critical path</h3>
+        <div class="equation">128 × 128 / 16<br>= 1024 exp cycles</div>
+        <p>同一个 <code>128³</code> tile 的 <code>QKᵀ + PV</code> 合计也约 1024 ideal MMA cycles。</p>
+        <div class="quote">exp 已经和全部矩阵工作一样“重”</div>
+        <p class="muted">B200 Tensor Core 约 2×；MUFU 仍是 16 ops/cycle/SM。</p>
+      </div>
+    </div>
+    <div class="footer"><span>目标不是删除 softmax，而是缩短不能被 MMA overlap 遮住的部分</span><span>paper §3.1.1–3.1.3</span></div>
+  </section>
+
+  <section class="slide tight" data-section="FwdExpEmulation">
+    <div class="kicker">Forward · partial software exp emulation</div><h2>第二条 exp 生产线：range reduction + integer bits + FMA polynomial</h2>
     <div class="content grid-2">
-      <div class="card amber-edge"><h3>1 · partial exp emulation</h3><div class="equation">2ˣ = 2⌊ˣ⌋ · poly(x − ⌊x⌋)</div>
-        <ul><li>integer part：bit manipulation；fraction：Horner + FMA。</li><li>只把约 10–25% 搬到 FMA/ALU，其余仍走 MUFU.EX2。</li><li>100% 模拟会增加 register pressure、traffic、latency 与 spill 风险。</li></ul></div>
-      <div class="card green-edge"><h3>2 · conditional rescale</h3><div class="codebox">if rowmax(Sj) - m_ref > τ:
+      <div class="card violet-edge compact">
+        <h3>一个 emulated element 怎么算</h3>
+        <div class="equation">x = n + f, n = floor(x), f ∈ [0,1)<br>2ˣ = 2ⁿ · 2ᶠ</div>
+        <ol><li><strong>clamp</strong> <code>x ≥ −127</code>，避免 underflow；</li>
+          <li>round-down trick 得到整数部分 <code>n</code>；</li>
+          <li><code>f = x − n</code>；</li>
+          <li>Horner FMA chain 近似 <code>2ᶠ</code>；</li>
+          <li>用 IEEE-754 exponent bits 构造 <code>2ⁿ</code> 并组合。</li></ol>
+        <div class="codebox">t = fma(f, p3, p2)
+t = fma(f, t,  p1)
+t = fma(f, t,  p0)</div>
+      </div>
+      <div class="card amber-edge compact">
+        <h3>partial 是元素分流，不是拆一个 exp</h3>
+        <div class="flow"><div class="node amber-node">约 75–90%<br>MUFU.EX2</div><span class="arrow">+</span><div class="node violet-node">约 10–25%<br>FMA poly</div><span class="arrow">→</span><div class="node green-node">同一 P row</div></div>
+        <ul><li>FMA 路径单个 exp 指令更多，但可与 MUFU 使用不同硬件资源。</li>
+          <li>比例过高会转而堵住 FMA issue、register bandwidth / pressure，甚至 spill。</li>
+          <li>最佳点让两条路径差不多同时完成：<code>time ≈ max(MUFU share, FMA share)</code>。</li>
+          <li>degree-3：FP32 max relative error 约 <code>8.8e−5</code>；BF16 rounding 约 <code>3.9e−3</code>，99% 在 hardware path 的 1 BF16 ULP 内。</li></ul>
+      </div>
+    </div>
+    <div class="footer"><span>本质：扩充 softmax 总吞吐，而不是让单个 exp 更快</span><span>固定 emulation policy 才能谈 repeatability</span></div>
+  </section>
+
+  <section class="slide" data-section="FwdConditionalRescale">
+    <div class="kicker">Forward · second algorithm change</div><h2>另一部分 softmax cost：不是每个 K/V tile 都必须 rescale O_old</h2>
+    <div class="content grid-2">
+      <div class="card green-edge"><h3>conditional rescale</h3><div class="codebox">if rowmax(Sj) - m_ref > τ:
   rescale O_old; update m_ref
 else:
   keep m_ref; accumulate under old scale</div>
         <ul><li>最后用 true max / denominator normalize。</li><li>旧 P 不回头改；当前 P tile 立即进入 P@V。</li><li>warp-uniform decision 避免 lane divergence。</li></ul></div>
+      <div class="card cyan-edge">
+        <h3>它和 partial exp 解决不同的 cost</h3>
+        <table class="dense"><tr><th>optimization</th><th>减少什么</th></tr>
+          <tr><td>partial exp</td><td>把 exponentials 分摊到 MUFU + FMA，增加有效 exp throughput</td></tr>
+          <tr><td>conditional rescale</td><td>跳过不必要的 old-output correction / rescale</td></tr></table>
+        <div class="quote">一个扩吞吐，一个减工作量</div>
+      </div>
     </div>
-    <div class="footer"><span>repeatable 不代表与 FA3 / hardware EX2 bitwise 相同</span><span></span></div>
+    <div class="footer"><span>两者共同减少 exposed softmax critical path</span><span>repeatable ≠ 与 FA3 / hardware EX2 bitwise 相同</span></div>
   </section>
 
   <section class="slide" data-section="FwdDeterminism">
