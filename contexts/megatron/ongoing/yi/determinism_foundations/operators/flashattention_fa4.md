@@ -207,6 +207,51 @@ At `M=256, N=D=128`, all three roughly double:
 The lesson is not that one unit alone wins. It is that useful performance now
 requires matrix work and softmax work to overlap almost completely.
 
+### 3.3 What a GPU cycle means here
+
+A cycle is one tick of the relevant GPU clock domain. At a nominal core clock
+of 1.85 GHz:
+
+```text
+1 cycle = 1 / 1.85 GHz ≈ 0.54 ns
+```
+
+This conversion is only an intuition. Real clocks change with power,
+temperature, SKU, and boost state, and different GPU subsystems need not share
+one identical clock domain.
+
+More importantly, distinguish latency from throughput:
+
+```text
+instruction latency:
+  how many cycles pass before one instruction's result becomes usable
+
+pipeline throughput:
+  how much independent work the hardware can accept or complete per cycle
+```
+
+An MMA can have a latency of many cycles while the Tensor Core pipeline accepts
+new independent MMA work before the earlier operation completes. Therefore
+`8192 BF16 ops / cycle / SM` is an aggregate peak-throughput statement, not a
+claim that one whole MMA instruction starts and finishes in one cycle.
+
+The FA4 paper's roofline cycle counts are approximately:
+
+```text
+resource time = work assigned to that resource / peak resource throughput
+```
+
+For example, the forward MMA estimate divides the FLOPs from `QK^T` and `PV`
+by 8192 operations per cycle per SM. These estimates answer:
+
+> If this resource were the only limit and reached peak throughput, how many
+> cycles would its assigned work occupy?
+
+Taking the maximum across the Tensor Core, SMEM, and exponential paths gives a
+lower-bound bottleneck model. It is not the measured kernel wall time because
+the simplified model omits pipeline fill/drain, dependencies, instruction
+issue, register/L2 traffic, barriers, occupancy, tails, and imperfect overlap.
+
 ## 4. Blackwell Primitives Before FA4
 
 ### 4.1 tcgen05 is the instruction interface; Tensor Core is the hardware

@@ -39,7 +39,7 @@
     .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(10px,1.35vw,21px);height:100%}
     .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:clamp(8px,1vw,16px);height:100%}
     .wide-left{grid-template-columns:1.18fr .82fr}.wide-right{grid-template-columns:.82fr 1.18fr}
-    .card{display:flex;flex-direction:column;justify-content:center;min-width:0;padding:clamp(11px,1.25vw,20px);
+    .card{display:flex;flex-direction:column;justify-content:flex-start;min-width:0;padding:clamp(11px,1.25vw,20px);
       border:1px solid var(--line);border-radius:15px;background:linear-gradient(145deg,rgba(21,50,75,.94),rgba(7,18,30,.97));box-shadow:var(--shadow)}
     .card p:last-child,.card ul:last-child{margin-bottom:0}.cyan-edge{border-top:4px solid var(--cyan)}
     .green-edge{border-top:4px solid var(--green)}.amber-edge{border-top:4px solid var(--amber)}
@@ -86,432 +86,326 @@
 <main class="deck">
   <section class="slide active" data-section="Title">
     <div class="kicker">FlashAttention-4 · Blackwell deep dive</div>
-    <div class="content center">
-      <div>
-        <h1>当 Tensor Core<br>跑得太快以后</h1>
-        <p class="lead">TMEM · tcgen05 · 两层 overlap · 2-CTA · deterministic semaphore</p>
-        <p class="muted">BF16 · fixed-length MHA · head_dim 128 · B200 / SM100</p>
-      </div>
-    </div>
+    <div class="content center"><div>
+      <h1>当 Tensor Core<br>跑得太快以后</h1>
+      <p class="lead">TMEM · tcgen05 · 两层 overlap · 2-CTA · deterministic semaphore</p>
+      <p class="muted">BF16 · fixed-length MHA · head_dim 128 · B200 / SM100</p>
+    </div></div>
     <div class="footer"><span>FA4 paper + official source @ 849f660</span><span>← → / Space 导航</span></div>
   </section>
 
   <section class="slide" data-section="Map">
-    <div class="kicker">先看地图</div><h2>这次要回答五个问题</h2>
+    <div class="kicker">先看地图</div><h2>一条因果链，五个问题</h2>
     <div class="content grid-3">
-      <div class="card cyan-edge"><span class="tag">01 · WHY</span><h3>为什么 FA3 不够</h3><p>B200 的矩阵算力翻倍，SMEM 和 exp 没跟上。</p></div>
-      <div class="card green-edge"><span class="tag">02 · PRIMITIVES</span><h3>Blackwell 新给了什么</h3><p>tcgen05、TMEM、完全异步 accumulator、2-CTA。</p></div>
-      <div class="card amber-edge"><span class="tag">03 · FORWARD</span><h3>如何藏住 softmax</h3><p>两个 softmax WG、correction WG、部分 exp 模拟、条件 rescale。</p></div>
-      <div class="card violet-edge"><span class="tag">04 · BACKWARD</span><h3>如何喂饱五个 GEMM</h3><p>TMEM lifetime 复用、跨 iteration pipeline、2-CTA + DSMEM。</p></div>
-      <div class="card red-edge"><span class="tag">05 · DETERMINISM</span><h3>race 到底在哪里</h3><p>bulk FP32 reduce-add 的 writer 顺序；semaphore 固定顺序。</p></div>
-      <div class="card"><span class="tag">BOUNDARY</span><h3>什么还没证明</h3><p>CPU-only：没有 B200 SASS、profile 和 bitwise repeat。</p></div>
+      <div class="card cyan-edge"><span class="tag">WHY</span><h3>FA3 为什么不够</h3><p>B200 矩阵算力翻倍，SMEM 与 exp 没同步增长。</p></div>
+      <div class="card green-edge"><span class="tag">PRIMITIVES</span><h3>Blackwell 给了什么</h3><p>tcgen05、TMEM、fully-async accumulator、2-CTA。</p></div>
+      <div class="card amber-edge"><span class="tag">FORWARD</span><h3>如何遮住 softmax</h3><p>ping-pong WG、correction、部分 exp 模拟、条件 rescale。</p></div>
+      <div class="card violet-edge"><span class="tag">BACKWARD</span><h3>如何调度五个 GEMM</h3><p>TMEM lifetime、跨 iteration overlap、2-CTA + DSMEM。</p></div>
+      <div class="card red-edge"><span class="tag">DETERMINISM</span><h3>race 到底在哪里</h3><p>bulk FP32 reduce-add 的 writer 顺序；semaphore 固定顺序。</p></div>
+      <div class="card"><span class="tag">BOUNDARY</span><h3>什么还没证明</h3><p>CPU-only：没有 B200 SASS、profile 与 bitwise repeat。</p></div>
     </div>
-    <div class="footer"><span>先建立因果链，再看代码细节</span><span></span></div>
+    <div class="footer"><span>先找 bottleneck，再看 schedule，最后看 ownership</span><span></span></div>
   </section>
 
-  <section class="slide" data-section="Scope">
-    <div class="kicker">Scope / evidence</div><h2>论文与当前实现不是同一个静态快照</h2>
-    <div class="content grid-2">
-      <div class="card cyan-edge"><h3>论文：回答“为什么”</h3>
-        <ul><li>2026-03-05，核心目标 B200 / GB200</li><li>给 roofline、算法变化与 B200 benchmark</li><li>2-CTA 的核心论证在 backward</li></ul></div>
-      <div class="card violet-edge"><h3>当前 source：回答“现在怎么做”</h3>
-        <ul><li><code>flash_attn/cute</code> 同时含 Hopper / Blackwell 路径</li><li>SM100 forward 也可能 dispatch 2-CTA</li><li>feature、scheduler 和 tuning 已继续演进</li></ul></div>
-    </div>
-    <div class="footer"><span>结论标注 paper / source / inference</span><span>commit 849f660 · 2026-07-28</span></div>
-  </section>
-
-  <section class="slide" data-section="Delta">
-    <div class="kicker">The causal chain</div><h2>FA3 → FA4：owner graph 大体不变，瓶颈变了</h2>
-    <div class="content center">
-      <div>
-        <div class="flow">
-          <div class="node blue-node">FA2<br>更自然的 tile ownership</div><span class="arrow">→</span>
-          <div class="node cyan-node">FA3 / H100<br>TMA + WGMMA + softmax overlap</div><span class="arrow">→</span>
-          <div class="node green-node">FA4 / B200<br>TMEM + tcgen05 + bigger overlap</div>
-        </div>
-        <div class="quote">不是“把 WGMMA 改名为 tcgen05”，而是重新安排数据、生命周期和算术。</div>
+  <section class="slide" data-section="ScopeAndDelta">
+    <div class="kicker">Scope / evidence / evolution</div><h2>FA4 不是把 WGMMA 改名为 tcgen05</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card">
+        <div class="flow"><div class="node blue-node">FA2<br>tile ownership</div><span class="arrow">→</span><div class="node cyan-node">FA3 / H100<br>TMA + WGMMA overlap</div><span class="arrow">→</span><div class="node green-node">FA4 / B200<br>TMEM + bigger pipeline</div></div>
+        <div class="quote">owner graph 大体不变；数据 residence、生命周期与算术策略变了。</div>
       </div>
+      <div class="card violet-edge compact"><h3>两层证据</h3>
+        <ul><li><strong>paper：</strong>B200/GB200 的 roofline、算法与测量；2-CTA 核心论证在 backward。</li>
+          <li><strong>current source：</strong>多架构 CuTeDSL implementation；SM100 forward 也可能 dispatch 2-CTA。</li>
+          <li><strong>本轮：</strong>BF16、fixed MHA、D=128；paper/source/inference 分开。</li></ul></div>
     </div>
-    <div class="footer"><span>ownership 与 schedule 要分开分析</span><span></span></div>
+    <div class="footer"><span>commit 849f660 · 2026-07-28</span><span>production 必须重新 resolve dispatch</span></div>
   </section>
 
-  <section class="slide" data-section="Asymmetry">
-    <div class="kicker">H100 → B200</div><h2>矩阵吞吐 2×，另外两条关键路径 1×</h2>
+  <section class="slide" data-section="AsymmetryAndCycle">
+    <div class="kicker">H100 → B200 · roofline</div><h2>矩阵吞吐 2×；cycle 表示吞吐预算，不是指令瞬时完成</h2>
     <div class="content grid-2 wide-left">
       <div class="card">
         <div class="bar-row"><span>BF16 Tensor Core</span><div class="bar"><span style="--w:100%"></span></div><strong>2×</strong></div>
         <div class="bar-row"><span>MUFU / exp</span><div class="bar slow"><span style="--w:50%"></span></div><strong>1×</strong></div>
         <div class="bar-row"><span>SMEM read</span><div class="bar slow"><span style="--w:50%"></span></div><strong>1×</strong></div>
-        <p class="muted">paper model：8192 vs 4096 ops/clock/SM；exp 16 ops/clock/SM；SMEM read 128 B/clock/SM。</p>
+        <table class="dense"><tr><th>M=N=D=128 forward</th><th>paper cycles</th></tr><tr><td>2 × MMA</td><td class="green">1024</td></tr><tr><td>SMEM reads</td><td class="cyan">768</td></tr><tr><td>exp</td><td class="amber">1024</td></tr></table>
       </div>
-      <div class="card amber-edge"><h3>结果</h3><ul><li>matmul 更快结束</li><li>softmax 更容易暴露</li><li>SMEM operand 重读更贵</li><li>accumulator register pressure 更明显</li></ul></div>
+      <div class="card amber-edge compact"><h3>cycle 的四层含义</h3>
+        <div class="equation">1.85 GHz → 1 cycle ≈ 0.54 ns</div>
+        <ul><li><strong>latency：</strong>一条指令的结果多久可用。</li><li><strong>throughput：</strong>流水线每 cycle 能接收/完成多少独立工作。</li>
+          <li><code>8192 ops/cycle/SM</code> 是 aggregate peak，不是“一条 MMA 只花一 cycle”。</li>
+          <li>roofline cycles ≈ work / peak throughput；遗漏 fill/drain、barrier、occupancy、尾部与不完美 overlap。</li></ul></div>
     </div>
-    <div class="footer"><span>新硬件既带来机会，也改变 bottleneck</span><span></span></div>
+    <div class="footer"><span>目标：让 MMA、SMEM、exp 三条路径尽量重叠</span><span>paper Tables 1 &amp; 3</span></div>
   </section>
 
-  <section class="slide" data-section="Roofline">
-    <div class="kicker">Forward roofline · M=N=D=128</div><h2>一个 K/V iteration：三条路径几乎同长</h2>
-    <div class="content grid-3">
-      <div class="card green-edge center"><h3>2 × MMA</h3><p class="lead green">1024 cycles</p><p><code>QKᵀ</code> + <code>PV</code></p></div>
-      <div class="card cyan-edge center"><h3>SMEM reads</h3><p class="lead cyan">768 cycles</p><p>MMA operands</p></div>
-      <div class="card amber-edge center"><h3>exp</h3><p class="lead amber">1024 cycles</p><p>128 × 128 values</p></div>
-    </div>
-    <div class="footer"><span>目标不是只优化一个，而是让它们重叠</span><span>paper Table 1</span></div>
-  </section>
-
-  <section class="slide" data-section="Hardware">
-    <div class="kicker">Primitive 1</div><h2>tcgen05 是指令接口，Tensor Core 是物理计算单元</h2>
+  <section class="slide" data-section="TcgenAsync">
+    <div class="kicker">Primitive 1 · tcgen05 + fully async</div><h2>指令由少量 control threads 发射，结果直接落到 TMEM</h2>
     <div class="content grid-2">
       <div class="card"><table><tr><th>名词</th><th>层级</th></tr><tr><td><code>cute.gemm</code></td><td>CuTeDSL abstraction</td></tr>
-        <tr><td><code>tcgen05.mma</code></td><td>Blackwell PTX family</td></tr><tr><td>5th-gen Tensor Core</td><td>physical matrix pipelines</td></tr></table></div>
-      <div class="card cyan-edge"><div class="codebox">one elected thread issues MMA
-        ↓
-hardware computes a large matrix tile
-        ↓
-accumulator lands in TMEM</div><p>“一个 thread issue”描述控制权，不是说这个 thread 用 CUDA core 算完整个矩阵。</p></div>
+        <tr><td><code>tcgen05.mma</code></td><td>Blackwell PTX instruction</td></tr><tr><td>5th-gen Tensor Core</td><td>physical matrix pipeline</td></tr><tr><td>TMEM</td><td>MMA-oriented on-SM memory</td></tr></table>
+        <p>“one elected thread issues”描述控制权；不是这个 thread 用 CUDA Core 算完整矩阵。</p></div>
+      <div class="card green-edge">
+        <h3>accumulator dependency 改变</h3>
+        <div class="codebox">Hopper:
+SMEM → WGMMA → distributed RMEM accumulator
+
+Blackwell:
+SMEM/TMEM → tcgen05 → TMEM accumulator
+
+issue → independent work → mbarrier → TMEM load</div>
+        <p>一条 MMA latency 仍可很长，但 issuing warp 不必等待 register writeback 才继续独立工作。</p></div>
     </div>
-    <div class="footer"><span>instruction identity ≠ physical unit identity</span><span></span></div>
+    <div class="footer"><span>instruction identity ≠ physical compute-unit identity</span><span></span></div>
   </section>
 
-  <section class="slide" data-section="TMEM">
-    <div class="kicker">Primitive 2</div><h2>TMEM：专门接住 Tensor Core accumulator</h2>
-    <div class="content memory">
-      <div class="mem blue-node"><h3>HBM</h3><p>Q / K / V / O / LSE</p><span class="muted">global</span></div>
-      <div class="mem cyan-node"><h3>SMEM</h3><p>staged operands / exchange</p><span class="muted">CTA-visible</span></div>
-      <div class="mem amber-node"><h3>RMEM</h3><p>one score row / scalar state</p><span class="muted">thread-private</span></div>
-      <div class="mem green-node"><h3>TMEM</h3><p>S / P / O / gradients</p><span class="muted">MMA-oriented · 256 KiB/SM</span></div>
-    </div>
-    <div class="footer"><span>TMEM 不是 L1、SMEM 或 register 的别名</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="Async">
-    <div class="kicker">Fully asynchronous MMA</div><h2>Blackwell 少了一条 register writeback 依赖</h2>
-    <div class="content grid-2">
-      <div class="card violet-edge"><h3>Hopper</h3><div class="flow"><div class="node">SMEM</div><span class="arrow">→</span><div class="node">WGMMA</div><span class="arrow">→</span><div class="node amber-node">distributed RMEM acc</div></div></div>
-      <div class="card green-edge"><h3>Blackwell</h3><div class="flow"><div class="node">SMEM / TMEM</div><span class="arrow">→</span><div class="node">tcgen05</div><span class="arrow">→</span><div class="node green-node">TMEM acc</div></div></div>
-    </div>
-    <div class="footer"><span>issue → independent work → mbarrier completion → TMEM load</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="2CTA">
-    <div class="kicker">Primitive 3</div><h2>2-CTA：两个相邻 CTA 协作一个 MMA</h2>
-    <div class="content grid-2 wide-left">
-      <div class="card">
-        <div class="codebox">CTA 0 on SM x:  stage B-half 0 ┐
-                                  ├─ cta_group::2 MMA
-CTA 1 on SM y:  stage B-half 1 ┘
-
-accumulator M rows: half owned by each CTA
-combined M tile: up to 256</div>
-      </div>
-      <div class="card amber-edge"><h3>代价与约束</h3><ul><li>cluster co-scheduling</li><li>peer 必须一直 active</li><li>一致的 2-CTA TMEM mode</li><li>cluster barrier / DSMEM</li></ul></div>
-    </div>
-    <div class="footer"><span>两个 CTA 仍是两个 CTA；每个 CTA 只在一个 SM 上</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="Compile">
-    <div class="kicker">CuTeDSL</div><h2>Python 写源码，不等于 Python 在解释执行 kernel</h2>
-    <div class="content center">
-      <div>
-        <div class="flow"><div class="node blue-node">Python + CuTeDSL</div><span class="arrow">→</span><div class="node cyan-node">MLIR / CUTLASS lowering</div><span class="arrow">→</span><div class="node amber-node">PTX</div><span class="arrow">→</span><div class="node green-node">ptxas / cubin</div></div>
-        <p class="lead">dtype、tile、1/2-CTA、mask、scheduler、deterministic 都可能进入 specialization。</p>
-      </div>
-    </div>
-    <div class="footer"><span>编译器与 binary hash 属于 deterministic envelope</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="FwdOwnership">
-    <div class="kicker">Forward · ownership</div><h2>先固定不变的东西：每个 O row 有一个逻辑 owner</h2>
-    <div class="content grid-2">
-      <div class="card cyan-edge"><div class="codebox">owned Q rows
-  for K/V tile in fixed traversal:
-    S = Q Kᵀ
-    update (m, l, O_unnorm)
-  normalize
-  store O, LSE once</div></div>
-      <div class="card"><h3>例子：B=1, H=32, N=8192, D=128</h3><ul><li>每 head 有 64 个 128-row Q subtile</li><li>noncausal 时每个 subtile 看 64 个 K/V tile</li><li>不同 Q owner 重复读取 K/V</li></ul><p class="amber">但一个 subtile 不必等于一个 launched CTA。</p></div>
-    </div>
-    <div class="footer"><span>logical work identity ≠ CUDA CTA identity</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="FwdResidence">
-    <div class="kicker">Forward · residence</div><h2>S、P、O 不再都挤在 register / SMEM</h2>
+  <section class="slide" data-section="MemoryHierarchy">
+    <div class="kicker">Primitive 2 · memory residence</div><h2>FA4 多了一层 TMEM，但其他层没有消失</h2>
     <div class="content">
-      <table><tr><th>数据</th><th>计算时主要在哪</th><th>下一步</th></tr>
-        <tr><td>Q / K / V</td><td>HBM → TMA → SMEM</td><td>tcgen05 operand</td></tr>
-        <tr><td>S accumulator</td><td>TMEM FP32</td><td>load 到 lane RMEM 做 softmax</td></tr>
-        <tr><td>一个 S row</td><td>thread-private RMEM FP32</td><td>max / exp / sum</td></tr>
-        <tr><td>P</td><td>写回 TMEM，input precision</td><td>直接作为 <code>P @ V</code> 的 A</td></tr>
-        <tr><td>running O</td><td>TMEM FP32</td><td>correction + final normalize</td></tr>
-        <tr><td>O / LSE</td><td>HBM</td><td>public outputs / backward</td></tr>
-      </table>
+      <div class="memory">
+        <div class="mem blue-node"><h3>HBM</h3><p>Q/K/V inputs<br>O/LSE outputs</p><span class="muted">global · large · slow</span></div>
+        <div class="mem cyan-node"><h3>SMEM</h3><p>TMA-staged operands<br>CTA/cluster exchange</p><span class="muted">banked · CTA-visible</span></div>
+        <div class="mem amber-node"><h3>RMEM</h3><p>one score row<br>scalar state</p><span class="muted">thread-private</span></div>
+        <div class="mem green-node"><h3>TMEM</h3><p>MMA accumulators<br>optional operand A</p><span class="muted">256 KiB/SM · explicit lifetime</span></div>
+      </div>
+      <div class="flow"><div class="node blue-node">HBM Q/K/V</div><span class="arrow">TMA →</span><div class="node cyan-node">SMEM operands</div><span class="arrow">tcgen05 →</span><div class="node green-node">TMEM accumulator</div><span class="arrow">tcgen05.ld →</span><div class="node amber-node">lane RMEM</div></div>
     </div>
-    <div class="footer"><span>“fragment”在 tcgen05 路径常是 descriptor / TMEM address</span><span></span></div>
+    <div class="footer"><span>TMEM 不是 L1、SMEM 或 register 的别名</span><span>capacity 新增 ≠ SMEM bandwidth 变快</span></div>
+  </section>
+
+  <section class="slide" data-section="TwoCTA">
+    <div class="kicker">Primitive 3 · 2-CTA / 2SM</div><h2>两个 cluster peers 协作一个更大的 MMA</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card"><div class="codebox">CTA 0 on SM x:  local SMEM B-half 0 ┐
+                                         ├─ cta_group::2 MMA
+CTA 1 on SM y:  local SMEM B-half 1 ┘
+
+each SM: its own TMEM accumulator half
+combined M tile: up to 256 rows</div>
+        <p>一只 CTA 永远只驻留在一个 SM；“2SM”来自两只 peer CTAs 的 cooperative mode。</p></div>
+      <div class="card amber-edge"><h3>得到什么 / 付出什么</h3>
+        <table class="dense"><tr><th>gain</th><th>constraint</th></tr><tr><td>少 stage 重复 B operand</td><td>cluster co-scheduling</td></tr>
+          <tr><td>更大 MMA tile</td><td>peer 必须保持 active</td></tr><tr><td>每 CTA own 一半 output rows</td><td>一致的 2-CTA TMEM mode</td></tr><tr><td>可跨 CTA 协作</td><td>barrier / DSMEM traffic</td></tr></table></div>
+    </div>
+    <div class="footer"><span>2-CTA 是 traffic/schedule primitive，不自动等于 deterministic</span><span></span></div>
+  </section>
+
+  <section class="slide" data-section="FwdOwnershipResidence">
+    <div class="kicker">Forward · ownership + residence</div><h2>每个 O row 有一个 owner；S/P/O 的物理位置发生变化</h2>
+    <div class="content grid-2">
+      <div class="card cyan-edge"><div class="codebox">owned Q rows:
+  for K/V tile in fixed order:
+    S = QKᵀ
+    update (m, l, O_unnorm)
+  final normalize
+  store O, LSE once</div>
+        <h3>B=1, H=32, N=8192, D=128</h3><p>每 head 有 64 个 Q subtile；noncausal 每个 subtile 看 64 个 K/V tile。不同 Q owner 会重复读 K/V。</p></div>
+      <div class="card"><table class="dense"><tr><th>object</th><th>main residence</th><th>consumer</th></tr>
+        <tr><td>Q/K/V</td><td>HBM → SMEM</td><td>tcgen05</td></tr><tr><td>S acc</td><td>TMEM FP32</td><td>softmax lanes</td></tr>
+        <tr><td>one S row</td><td>RMEM FP32</td><td>max/exp/sum</td></tr><tr><td>P</td><td>TMEM low precision</td><td>P@V</td></tr>
+        <tr><td>running O</td><td>TMEM FP32</td><td>correction/finalize</td></tr><tr><td>O/LSE</td><td>HBM</td><td>caller/backward</td></tr></table>
+        <p class="amber">128-row subtile 是数学 work；不保证一一对应 launched CTA。</p></div>
+    </div>
+    <div class="footer"><span>logical work identity ≠ CUDA CTA identity ≠ physical SM</span><span></span></div>
   </section>
 
   <section class="slide" data-section="FwdRoles">
-    <div class="kicker">Forward · 16 warps / CTA</div><h2>512 个 threads 被拆成不同职业</h2>
-    <div class="content role-grid">
-      <div class="head">warp</div><div class="head">role</div><div class="head">为什么</div>
-      <div>0–3</div><div>softmax 0</div><div>128 lanes = 128 rows</div>
-      <div>4–7</div><div>softmax 1</div><div>与 stage 0 ping-pong</div>
-      <div>8–11</div><div>correction</div><div>把 O rescale 从 critical path 拿走</div>
-      <div>12</div><div>MMA control</div><div>issue tcgen05 / manage TMEM</div>
-      <div>13</div><div>epilogue</div><div>final output path</div>
-      <div>14</div><div>TMA load</div><div>搬 Q/K/V</div>
-      <div>15</div><div>empty / scheduler</div><div>动态 scheduler 时领取 work</div>
+    <div class="kicker">Forward · 16 warps / CTA</div><h2>两个 softmax WG 各自让 one lane own one row</h2>
+    <div class="content grid-2 wide-left">
+      <div class="role-grid">
+        <div class="head">warp</div><div class="head">role</div><div class="head">核心动作</div>
+        <div>0–3</div><div>softmax 0</div><div>stage 0 的 128 rows</div><div>4–7</div><div>softmax 1</div><div>stage 1 的 128 rows</div>
+        <div>8–11</div><div>correction</div><div>把 O rescale 移出 critical path</div><div>12</div><div>MMA</div><div>issue tcgen05 / manage TMEM</div>
+        <div>13</div><div>epilogue</div><div>final output path</div><div>14</div><div>TMA</div><div>load Q/K/V</div><div>15</div><div>scheduler</div><div>empty 或领取 logical work</div>
+      </div>
+      <div class="card green-edge"><div class="equation">S tile = 128 rows × 128 cols</div><div class="equation">4 warps = 128 lanes</div><div class="equation">lane r ↔ row r</div>
+        <ul><li>每个 lane 从 TMEM 取完整 row 到自己的 RMEM。</li><li>row max/sum 不再由多个 warp 拼接。</li><li>代价是每 thread 需要很多 registers。</li></ul></div>
     </div>
-    <div class="footer"><span>source-backed exact role IDs</span><span></span></div>
+    <div class="footer"><span>512 threads 是不同职业，不是 512 个相同 worker</span><span>source-backed warp IDs</span></div>
   </section>
 
-  <section class="slide" data-section="FwdPipeline">
-    <div class="kicker">Forward · ping-pong</div><h2>两个 score stage 交错，至少藏住一整段 softmax</h2>
-    <div class="content vcenter">
+  <section class="slide" data-section="FwdPipelineAliasing">
+    <div class="kicker">Forward · ping-pong + TMEM lifetime</div><h2>计算重叠与地址复用由同一套 barrier protocol 保证</h2>
+    <div class="content">
       <div class="timeline" style="--steps:6">
         <div class="label">MMA warp</div><div class="slot gemm">S₀</div><div class="slot gemm">S₁</div><div class="slot gemm">P₀V</div><div class="slot gemm">P₁V</div><div class="slot gemm">next S₀</div><div class="slot">…</div>
         <div class="label">softmax WG0</div><div class="slot wait"></div><div class="slot soft">S₀ → P₀</div><div class="slot soft">finish</div><div class="slot wait"></div><div class="slot soft">next</div><div class="slot"></div>
         <div class="label">softmax WG1</div><div class="slot wait"></div><div class="slot wait"></div><div class="slot soft">S₁ → P₁</div><div class="slot soft">finish</div><div class="slot"></div><div class="slot"></div>
         <div class="label">correction</div><div class="slot"></div><div class="slot write">correct O₀</div><div class="slot write">correct O₁</div><div class="slot"></div><div class="slot write">next</div><div class="slot"></div>
-        <div class="label">load warp</div><div class="slot copy">TMA</div><div class="slot copy">TMA next</div><div class="slot copy">TMA</div><div class="slot copy">TMA next</div><div class="slot copy">TMA</div><div class="slot"></div>
+        <div class="label">TMA load</div><div class="slot copy">K/V</div><div class="slot copy">next</div><div class="slot copy">K/V</div><div class="slot copy">next</div><div class="slot copy">K/V</div><div class="slot"></div>
       </div>
+      <div class="flow"><div class="node green-node">S ready in TMEM</div><span class="arrow">→</span><div class="node amber-node">S loaded to RMEM</div><span class="arrow">→</span><div class="node red-node">last S consumer done</div><span class="arrow">→</span><div class="node violet-node">P overwrites aliased region</div><span class="arrow">→</span><div class="node green-node">P@V</div></div>
     </div>
-    <div class="footer"><span>实际依赖由 mbarrier-backed pipelines 表达</span><span></span></div>
+    <div class="footer"><span>barrier 既表达 ready，也证明 storage 可以安全 reuse</span><span></span></div>
   </section>
 
-  <section class="slide" data-section="OneRow">
-    <div class="kicker">Forward · one lane owns one row</div><h2>为什么 128-thread warpgroup 很自然</h2>
+  <section class="slide" data-section="FwdAlgorithm">
+    <div class="kicker">Forward · 两个 algorithm changes</div><h2>不只重新排 schedule，还减少 exposed softmax work</h2>
     <div class="content grid-2">
-      <div class="card green-edge center"><div class="equation">Blackwell S tile = 128 rows × 128 cols</div><div class="equation">4 warps = 128 lanes</div><div class="equation">lane r ↔ row r</div></div>
-      <div class="card"><ul><li>一个 thread 从 TMEM 读完整 128-element row</li><li>在自己的 registers 做 max / exp / sum</li><li>不再需要几个 warp 拼同一行的 max/sum</li></ul><p class="red">代价：每 thread 的 register 压力很大。</p></div>
-    </div>
-    <div class="footer"><span>TMEM capacity 换来了更自然的 row ownership</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="Aliasing">
-    <div class="kicker">Forward · TMEM lifetime</div><h2>S 和 P 可以复用地址，但必须先证明 last consumer</h2>
-    <div class="content center">
-      <div class="flow"><div class="node green-node">S ready in TMEM</div><span class="arrow">→</span><div class="node amber-node">softmax loads S to RMEM</div><span class="arrow">→</span><div class="node red-node">S lifetime ends</div><span class="arrow">→</span><div class="node violet-node">P overwrites aliased TMEM</div><span class="arrow">→</span><div class="node green-node">P @ V</div></div>
-    </div>
-    <div class="footer"><span>barrier 是 reuse correctness proof 的一部分</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="Exp">
-    <div class="kicker">Forward algorithm change 1</div><h2>只把一小部分 exp 搬到 FMA / ALU 路径</h2>
-    <div class="content grid-2">
-      <div class="card amber-edge"><div class="equation">2ˣ = 2⌊ˣ⌋ · poly(x − ⌊x⌋)</div><ul><li>integer part：bit manipulation</li><li>fraction：Horner polynomial + FMA</li><li>其余值仍走 MUFU.EX2</li></ul></div>
-      <div class="card"><h3>为什么不是 100% emulation</h3><ul><li>更多临时 registers</li><li>更高 register bandwidth</li><li>更长 latency / 可能 spill</li></ul><p>paper：通常只模拟约 10–25%。</p></div>
-    </div>
-    <div class="footer"><span>repeatable ≠ 与 hardware EX2 bitwise 相同</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="Rescale">
-    <div class="kicker">Forward algorithm change 2</div><h2>不是每次 max 轻微变大都 rescale 整个 O</h2>
-    <div class="content grid-2">
-      <div class="card"><h3>传统 online softmax</h3><div class="equation">Oⱼ = e^(m_old−m_new) O_old
-   + e^(Sⱼ−m_new) Vⱼ</div></div>
-      <div class="card green-edge"><h3>FA4 conditional rescale</h3><div class="codebox">if rowmax(Sj) - m_ref > τ:
-    rescale O_old; update m_ref
+      <div class="card amber-edge"><h3>1 · partial exp emulation</h3><div class="equation">2ˣ = 2⌊ˣ⌋ · poly(x − ⌊x⌋)</div>
+        <ul><li>integer part：bit manipulation；fraction：Horner + FMA。</li><li>只把约 10–25% 搬到 FMA/ALU，其余仍走 MUFU.EX2。</li><li>100% 模拟会增加 register pressure、traffic、latency 与 spill 风险。</li></ul></div>
+      <div class="card green-edge"><h3>2 · conditional rescale</h3><div class="codebox">if rowmax(Sj) - m_ref > τ:
+  rescale O_old; update m_ref
 else:
-    keep m_ref; accumulate under old scale</div><p>最后用 true max / denominator normalize。</p></div>
+  keep m_ref; accumulate under old scale</div>
+        <ul><li>最后用 true max / denominator normalize。</li><li>旧 P 不回头改；当前 P tile 立即进入 P@V。</li><li>warp-uniform decision 避免 lane divergence。</li></ul></div>
     </div>
-    <div class="footer"><span>旧 P 不会回头改；每个 P tile 被立即消费</span><span></span></div>
+    <div class="footer"><span>repeatable 不代表与 FA3 / hardware EX2 bitwise 相同</span><span></span></div>
   </section>
 
-  <section class="slide" data-section="FwdDet">
-    <div class="kicker">Forward determinism</div><h2>async 不等于 nondeterministic</h2>
+  <section class="slide" data-section="FwdDeterminism">
+    <div class="kicker">Forward · determinism</div><h2>异步只改变“何时完成”；ownership 与 dependencies 决定算术图</h2>
     <div class="content grid-3">
-      <div class="card green-edge"><h3>一个 owner</h3><p>每个 output row 只有一个逻辑 owner / 固定 cooperative group。</p></div>
-      <div class="card cyan-edge"><h3>固定 dependency</h3><p>mbarrier 约束 TMEM / SMEM handoff 和 reuse。</p></div>
-      <div class="card amber-edge"><h3>固定 artifact</h3><p>tile、exp policy、compiler、RNG 不变，才谈 repeatability。</p></div>
+      <div class="card green-edge"><h3>一个 owner</h3><p>每个 ordinary output row 只有一个 logical owner，或一个固定 2-CTA cooperative group；独立 work 不争写同一 O。</p></div>
+      <div class="card cyan-edge"><h3>固定 dependency</h3><p>mbarrier 约束 TMA→MMA、S→softmax、P→PV、O→correction 和 storage reuse。</p></div>
+      <div class="card amber-edge"><h3>固定 envelope</h3><p>dispatch、tile、1/2-CTA、exp policy、compiler/cubin、device 与 RNG 都必须固定。</p></div>
     </div>
-    <div class="footer"><span>SplitKV / dropout 需要单独审计</span><span></span></div>
+    <div class="footer"><span>SplitKV combine 与 dropout RNG 仍需单独 audit</span><span>source reasoning ≠ B200 repeat proof</span></div>
   </section>
 
-  <section class="slide" data-section="BwdGraph">
-    <div class="kicker">Backward · dataflow</div><h2>五个 GEMM + 两段 elementwise</h2>
-    <div class="content">
-      <div class="flow"><div class="node green-node">KQᵀ → Sᵀ</div><span class="arrow">→</span><div class="node amber-node">S,LSE → P</div><span class="arrow">→</span><div class="node green-node">PᵀdO → dV</div></div>
-      <div class="flow"><div class="node green-node">VdOᵀ → dPᵀ</div><span class="arrow">→</span><div class="node amber-node">P,dP,D → dS</div><span class="arrow">→</span><div class="node green-node">dSᵀQ → dK</div><span class="arrow">+</span><div class="node green-node">dSK → dQ partial</div></div>
-      <table class="dense"><tr><th>GEMM</th><th>output partition</th><th>reduction</th></tr>
-        <tr><td>Sᵀ / dPᵀ</td><td>K/V rows</td><td>D / Dv</td></tr><tr><td>dV / dK</td><td>K rows</td><td>Q rows</td></tr><tr><td>dQ partial</td><td>Q rows</td><td>K rows owned by this work item</td></tr></table>
-    </div>
-    <div class="footer"><span>transpose 是 layout / view 选择，不代表写完整 global transpose</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="BwdOwnership">
-    <div class="kicker">Backward · ownership</div><h2>固定 K/V tile，遍历 Q tile</h2>
-    <div class="content grid-2">
+  <section class="slide" data-section="BwdGraphOwnership">
+    <div class="kicker">Backward · dataflow + ownership</div><h2>五个 GEMM，但只有 dQ 是 sequence-K many-to-one</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card">
+        <div class="flow"><div class="node green-node">KQᵀ→Sᵀ</div><span class="arrow">→</span><div class="node amber-node">P</div><span class="arrow">→</span><div class="node green-node">PᵀdO→dV</div></div>
+        <div class="flow"><div class="node green-node">VdOᵀ→dPᵀ</div><span class="arrow">→</span><div class="node amber-node">dS</div><span class="arrow">→</span><div class="node green-node">dSᵀQ→dK</div><span class="arrow">+</span><div class="node red-node">dSK→dQ partial</div></div>
+        <table class="dense"><tr><th>GEMM</th><th>output partition</th><th>reduction</th></tr><tr><td>Sᵀ / dPᵀ</td><td>K rows</td><td>D / Dv</td></tr>
+          <tr><td>dV / dK</td><td>K rows</td><td>Q rows</td></tr><tr><td>dQ partial</td><td>Q rows</td><td>this owner's K rows</td></tr></table></div>
       <div class="card violet-edge"><div class="codebox">one K/V owner:
-  dK = 0; dV = 0
-  for each relevant Q tile:
+  dK=0; dV=0
+  for relevant Q tiles:
     recompute P, dS
-    dK += dSᵀ Q
-    dV += Pᵀ dO
-    emit dQ_partial = dS K</div></div>
-      <div class="card"><h3>N=8192, tile_n=128</h3><p class="lead amber">64 K/V owners / head</p><p>一个 Q tile 最多接收 64 份 dQ partial。</p><div class="quote red">dK/dV owned；dQ many-to-one。</div></div>
+    dK += dSᵀQ; dV += PᵀdO
+    emit dQ_partial = dSK</div>
+        <p><code>N=8192, tile_n=128</code> → 64 K/V owners/head；一个 Q tile 最多接收 64 份 partial。</p><div class="quote red">dK/dV owned；dQ many-to-one。</div></div>
     </div>
-    <div class="footer"><span>determinism 的关键边在这里</span><span></span></div>
+    <div class="footer"><span>transpose 是 layout/view，不代表 materialize global transpose</span><span></span></div>
   </section>
 
-  <section class="slide" data-section="BwdTMEM">
-    <div class="kicker">Backward · TMEM coloring</div><h2>四块 accumulator 空间，靠 lifetime alias 塞下五个 GEMM</h2>
-    <div class="content grid-4">
-      <div class="card green-edge"><h3>A</h3><p><code>S ↔ P</code></p><p class="muted">short-lived</p></div>
-      <div class="card cyan-edge"><h3>B</h3><p><code>dV accum</code></p><p class="muted">whole Q loop</p></div>
-      <div class="card amber-edge"><h3>C</h3><p><code>dP ↔ dS ↔ dQ</code></p><p class="muted">offset differs in 2-CTA</p></div>
-      <div class="card violet-edge"><h3>D</h3><p><code>dK accum</code></p><p class="muted">whole Q loop</p></div>
-    </div>
-    <div class="footer"><span>dK 与 dV 生命周期重叠，不能互相覆盖</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="BwdPipeline">
-    <div class="kicker">Backward · cross-iteration pipeline</div><h2>用上一轮的 dQ / dK MMA 去遮当前轮 elementwise</h2>
-    <div class="content vcenter">
-      <div class="timeline" style="--steps:5">
+  <section class="slide" data-section="BwdTMEMPipe">
+    <div class="kicker">Backward · TMEM coloring + cross-iteration overlap</div><h2>四块 accumulator 空间，靠 lifetime 塞下五个 GEMM</h2>
+    <div class="content">
+      <div class="grid-4" style="height:auto">
+        <div class="card green-edge"><h3>A · S ↔ P</h3><p>short-lived</p></div><div class="card cyan-edge"><h3>B · dV accum</h3><p>whole Q loop</p></div>
+        <div class="card amber-edge"><h3>C · dP ↔ dS ↔ dQ</h3><p>2-CTA offsets differ</p></div><div class="card violet-edge"><h3>D · dK accum</h3><p>whole Q loop</p></div>
+      </div>
+      <div class="timeline" style="--steps:5;margin-top:14px">
         <div class="label">iteration j</div><div class="slot gemm">Sⱼ</div><div class="slot gemm">dPⱼ</div><div class="slot soft">Pⱼ / dSⱼ</div><div class="slot gemm">dVⱼ</div><div class="slot gemm">tail</div>
         <div class="label">iteration j−1</div><div class="slot"></div><div class="slot gemm">dQⱼ₋₁</div><div class="slot gemm">dKⱼ₋₁</div><div class="slot write">reduce / epilogue</div><div class="slot"></div>
-        <div class="label">load</div><div class="slot copy">Q/LSE</div><div class="slot copy">dO/D</div><div class="slot copy">next</div><div class="slot copy">next</div><div class="slot"></div>
+        <div class="label">TMA load</div><div class="slot copy">Q/LSE</div><div class="slot copy">dO/D</div><div class="slot copy">next</div><div class="slot copy">next</div><div class="slot"></div>
       </div>
     </div>
-    <div class="footer"><span>TMEM 解除 FA3 register accumulator 的部分 ordering constraint</span><span></span></div>
+    <div class="footer"><span>dK 与 dV 生命周期重叠，不能 alias</span><span>TMEM 解开部分 FA3 RMEM ordering constraint</span></div>
   </section>
 
   <section class="slide" data-section="BwdRoles">
-    <div class="kicker">Backward · 16 warps / CTA</div><h2>warp role 与 forward 不一样</h2>
-    <div class="content role-grid">
-      <div class="head">warp</div><div class="head">role</div><div class="head">核心动作</div>
-      <div>0–3</div><div>dQ reduce</div><div>TMEM → RMEM → SMEM → global reduce-add</div>
-      <div>4–11</div><div>compute</div><div>P / dS elementwise；dK/dV epilogue</div>
-      <div>12</div><div>MMA control</div><div>issue five tcgen05 flows</div>
-      <div>13</div><div>TMA load</div><div>Q / K / V / dO / stats</div>
-      <div>14</div><div>relay</div><div>2-CTA dS exchange</div>
-      <div>15</div><div>empty</div><div>低 register budget</div>
-    </div>
-    <div class="footer"><span>16 warps 仍全部驻留在一个 SM 内的一只 CTA</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="BwdRoofline">
-    <div class="kicker">Backward roofline</div><h2>1-CTA 最大项变成 SMEM traffic</h2>
-    <div class="content grid-3">
-      <div class="card green-edge center"><h3>5 × MMA</h3><p class="lead green">2560</p><p>cycles</p></div>
-      <div class="card red-edge center"><h3>total SMEM</h3><p class="lead red">3328</p><p>cycles</p></div>
-      <div class="card amber-edge center"><h3>exp</h3><p class="lead amber">1024</p><p>cycles</p></div>
-    </div>
-    <div class="footer"><span>dQ FP32 write + read 单独约 1024 cycles</span><span>paper Table 3</span></div>
-  </section>
-
-  <section class="slide" data-section="2CTABwd">
-    <div class="kicker">2-CTA backward</div><h2>先省 B operand，再处理 dQ reduction-axis 冲突</h2>
-    <div class="content grid-2">
-      <div class="card green-edge"><h3>S / dP / dV / dK</h3><p>pair 做 combined <code>M=256, N=K=128</code>。</p><p>每 CTA stage 一半 B，own 一半 accumulator rows。</p></div>
-      <div class="card amber-edge"><h3>dQ 例外</h3><p>K rows 恰好是 reduction axis；只拿一半 K 不能得到 final partial。</p><p>必须 exchange / repack dS。</p></div>
-    </div>
-    <div class="footer"><span>“tile 变大”必须说明 partition 的是哪一维</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="DSMEM">
-    <div class="kicker">2-CTA dQ · DSMEM</div><h2>交换半块 dS，让每个 CTA 拿完整 256-K reduction</h2>
-    <div class="content">
-      <div class="flow"><div class="node blue-node">CTA0<br>128 K rows of dS</div><div class="node violet-node">CTA1<br>128 K rows of dS</div></div>
-      <div class="flow"><span class="arrow">↓ DSMEM exchange + repack ↓</span></div>
-      <div class="flow"><div class="node green-node">CTA0 owns 128 Q rows<br>reduction K=256</div><div class="node green-node">CTA1 owns other 128 Q rows<br>reduction K=256</div></div>
-      <p class="lead center">每 CTA 写一半 dQ rows → global reduce-add 数量减半。</p>
-    </div>
-    <div class="footer"><span>dQ MMA：M=128，reduction K=256</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="Traffic">
-    <div class="kicker">2-CTA payoff</div><h2>增加 DSMEM，仍把 total SMEM 从 3328 降到 2688 cycles</h2>
-    <div class="content">
-      <table><tr><th>traffic</th><th>1-CTA</th><th>2-CTA</th></tr>
-        <tr><td>MMA operand SMEM</td><td>2048</td><td class="green">1536</td></tr>
-        <tr><td>dS write / DSMEM</td><td>256 / 0</td><td>256 / 384</td></tr>
-        <tr><td>dQ write + read</td><td>1024</td><td class="green">512</td></tr>
-        <tr><td><strong>total</strong></td><td class="red">3328</td><td class="green">2688</td></tr></table>
-      <p class="lead center">优化不是“没有额外通信”，而是净流量更小。</p>
-    </div>
-    <div class="footer"><span>modeled SMEM excess over MMA：~30% → ~5%</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="Atomic">
-    <div class="kicker">The nondeterministic edge</div><h2>当前代码不是 lane-wise scalar atomicAdd，而是 bulk reduce-add</h2>
-    <div class="content center">
-      <div>
-        <div class="flow"><div class="node green-node">TMEM dQ partial</div><span class="arrow">→</span><div class="node amber-node">lane RMEM</div><span class="arrow">→</span><div class="node cyan-node">cooperative SMEM</div><span class="arrow">→</span><div class="node red-node">cp.async.bulk reduce-add.f32</div><span class="arrow">→</span><div class="node violet-node">global dQ_accum</div></div>
-        <div class="quote">atomic 的本质是 many writers 安全相加；不确定的是浮点 writer arrival order。</div>
+    <div class="kicker">Backward · 16 warps / CTA</div><h2>reduce、elementwise、MMA、load、relay 各有独立角色</h2>
+    <div class="content grid-2 wide-left">
+      <div class="role-grid">
+        <div class="head">warp</div><div class="head">role</div><div class="head">核心动作</div>
+        <div>0–3</div><div>dQ reduce</div><div>TMEM→RMEM→SMEM→global</div><div>4–11</div><div>compute</div><div>P/dS；dK/dV epilogue</div>
+        <div>12</div><div>MMA</div><div>issue five tcgen05 flows</div><div>13</div><div>TMA</div><div>Q/K/V/dO/stats</div>
+        <div>14</div><div>relay</div><div>2-CTA dS exchange</div><div>15</div><div>empty</div><div>low register budget</div>
       </div>
+      <div class="card amber-edge"><h3>不要误读 16 warps</h3><ul><li>一只 CTA 的 512 threads 全部驻留在一个 SM。</li><li>多个 warp scheduler 交错 issue ready warps。</li><li>16 warps 不代表 16 个 MMA 同时完成，也不对应 16 个固定 Tensor Cores。</li><li>不同 role 的 register budget 可以不同。</li></ul></div>
     </div>
-    <div class="footer"><span>2-CTA 只是减少 update 次数，没有固定顺序</span><span></span></div>
+    <div class="footer"><span>物理并行度来自流水线与 ready warps，不是“一 warp 一计算单元”</span><span></span></div>
   </section>
 
-  <section class="slide" data-section="Semaphore">
-    <div class="kicker">deterministic=True</div><h2>不删除 writers；给 writers 编号并排队</h2>
+  <section class="slide" data-section="BwdRoofTwoCTA">
+    <div class="kicker">Backward roofline → 2-CTA motivation</div><h2>1-CTA 被 SMEM 卡住；2-CTA 先省 B operand traffic</h2>
     <div class="content grid-2">
-      <div class="card violet-edge"><div class="codebox">writer r:
+      <div class="card red-edge"><h3>1-CTA · M=N=D=128</h3><table><tr><th>resource</th><th>cycles</th></tr><tr><td>5 × MMA</td><td class="green">2560</td></tr>
+        <tr><td>MMA operand SMEM</td><td>2048</td></tr><tr><td>dS write</td><td>256</td></tr><tr><td>dQ FP32 write+read</td><td>1024</td></tr>
+        <tr><td><strong>total SMEM</strong></td><td class="red"><strong>3328</strong></td></tr><tr><td>exp</td><td class="amber">1024</td></tr></table></div>
+      <div class="card green-edge"><h3>2-CTA · combined M=256</h3><ul><li><code>S / dP / dV / dK</code>：pair 做更大 cooperative tile。</li>
+        <li>每 CTA stage 一半 B、own 一半 output rows。</li><li>MMA work 仍约 2560 cycles，但 operand SMEM 2048→1536。</li>
+        <li><strong>dQ 是例外：</strong>K rows 是 reduction axis，不能简单各算一半。</li></ul></div>
+    </div>
+    <div class="footer"><span>更大 tile 的收益来自具体 partition，不只是“CTA 更多”</span><span></span></div>
+  </section>
+
+  <section class="slide" data-section="DSMEMTraffic">
+    <div class="kicker">2-CTA dQ · DSMEM exchange + net traffic</div><h2>交换半块 dS，换取完整 reduction 与更少 global updates</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card">
+        <div class="flow"><div class="node blue-node">CTA0<br>128 K rows dS</div><div class="node violet-node">CTA1<br>128 K rows dS</div></div>
+        <div class="flow"><span class="arrow">↓ DSMEM exchange + repack ↓</span></div>
+        <div class="flow"><div class="node green-node">CTA0: 128 Q rows<br>K reduction=256</div><div class="node green-node">CTA1: other Q rows<br>K reduction=256</div></div>
+        <p><code>dQ MMA: M=128, reduction K=256</code>；每 CTA 只写一半 dQ rows。</p></div>
+      <div class="card cyan-edge"><table><tr><th>traffic cycles</th><th>1-CTA</th><th>2-CTA</th></tr><tr><td>MMA operand</td><td>2048</td><td class="green">1536</td></tr>
+        <tr><td>dS write / exchange</td><td>256 / 0</td><td>256 / 384</td></tr><tr><td>dQ write+read</td><td>1024</td><td class="green">512</td></tr>
+        <tr><td><strong>total SMEM</strong></td><td class="red">3328</td><td class="green">2688</td></tr></table>
+        <div class="quote">不是没有额外通信，而是净流量更小。</div></div>
+    </div>
+    <div class="footer"><span>modeled SMEM excess over MMA：~30% → ~5%</span><span>global dQ update 数量减半</span></div>
+  </section>
+
+  <section class="slide tight" data-section="AtomicSemaphore">
+    <div class="kicker">Nondeterministic fast path → deterministic writer order</div><h2>当前是 bulk reduce-add；semaphore 固定浮点 association</h2>
+    <div class="content grid-2">
+      <div class="card red-edge"><h3>default fast path</h3>
+        <div class="flow"><div class="node green-node">TMEM dQ</div><span class="arrow">→</span><div class="node amber-node">RMEM</div><span class="arrow">→</span><div class="node cyan-node">SMEM</div><span class="arrow">→</span><div class="node red-node">bulk reduce-add.f32</div><span class="arrow">→</span><div class="node violet-node">global dQ</div></div>
+        <p>不是旧 kernel 的 lane-wise scalar <code>atomicAdd</code>，但语义仍是 many writers 安全相加。不同 CTA arrival order 不固定，FP32 又不满足结合律。</p>
+        <p class="amber">2-CTA 只把 update 减半，没有规定先后。</p></div>
+      <div class="card violet-edge"><h3><code>deterministic=True</code></h3><div class="codebox">writer r:
   wait(semaphore == r)
   bulk_reduce_add(all stages)
   wait global visibility
-  release(semaphore = r + 1)</div></div>
-      <div class="card"><h3>为什么这就够</h3><ul><li>每个 writer 内部顺序固定</li><li>writer r+1 不能 overtaking</li><li>release 带 memory-ordering fence</li><li>浮点 association 固定</li></ul></div>
+  release(semaphore = r + 1)</div>
+        <ul><li>writer r+1 不能 overtaking；release 包含 ordering fence。</li><li>GQA/MQA shared dK/dV 另有 semaphores。</li><li>固定的是同一 destination 的 contributor 顺序。</li></ul></div>
     </div>
-    <div class="footer"><span>GQA/MQA 的 shared dK/dV 另有 semaphore</span><span></span></div>
+    <div class="footer"><span>atomic safety ≠ deterministic arithmetic order</span><span></span></div>
   </section>
 
-  <section class="slide" data-section="Scheduling">
-    <div class="kicker">Do not conflate</div><h2>persistent、LPT 与 deterministic 是三条轴</h2>
-    <div class="content grid-3">
-      <div class="card cyan-edge"><h3>Persistent CTA</h3><p>resident worker 连续领取 logical tiles；降低 tail / scheduler overhead。</p></div>
-      <div class="card green-edge"><h3>LPT</h3><p>长 causal / varlen work 先跑；减少最后的 straggler。</p></div>
-      <div class="card violet-edge"><h3>Writer order</h3><p>同一 address 的 contributors 按 semaphore 次序相加。</p></div>
-    </div>
-    <div class="footer"><span>当前 public SM100 backward 实际传 is_persistent=False</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="Cost">
-    <div class="kicker">Deterministic cost</div><h2>固定顺序会付出 fence、等待与 head-of-line blocking</h2>
-    <div class="content grid-2">
-      <div class="card red-edge"><ul><li>poll / wait semaphore</li><li>device visibility fence</li><li>不能自由 overlap global reductions</li><li>causal imbalance 时可能排队</li></ul></div>
-      <div class="card green-edge center"><p class="muted">paper reported</p><p class="lead green">up to 75%</p><p>of nondeterministic 1-CTA backward speed</p><p class="muted">不是 0 overhead，也不是所有 shape 的固定比例。</p></div>
+  <section class="slide tight" data-section="SchedulingCost">
+    <div class="kicker">Scheduling and deterministic cost</div><h2>persistent、LPT、writer order 是三条轴；固定顺序确实有代价</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card"><table><tr><th>mechanism</th><th>controls</th><th>does not prove</th></tr>
+        <tr><td>persistent CTA</td><td>resident worker lifetime / work queue</td><td>arithmetic order</td></tr>
+        <tr><td>LPT</td><td>long causal/varlen tiles earlier</td><td>same-address combine order</td></tr>
+        <tr><td>semaphore</td><td>contributors to one address</td><td>cross-build equality</td></tr></table>
+        <p>当前 public SM100 backward 实际传 <code>is_persistent=False</code>；deterministic backward 选择 LPT/head-swizzled scheduler。</p></div>
+      <div class="card red-edge"><h3>ordered path cost</h3><ul><li>semaphore polling / waiting</li><li>device visibility fence</li><li>更少的 global-reduction overlap</li><li>causal imbalance 的 head-of-line blocking</li></ul>
+        <p class="lead green">paper: up to 75%</p><p>of nondeterministic 1-CTA backward speed；不是 0 overhead，也不是固定比例。</p></div>
     </div>
     <div class="footer"><span>SPT-style write order 用来减少 ordered queue 的空等</span><span></span></div>
   </section>
 
-  <section class="slide tight" data-section="PaperSource">
-    <div class="kicker">Paper vs current implementation</div><h2>“FA4”是演进中的实现族，不是一只 kernel</h2>
-    <div class="content">
-      <table><tr><th>问题</th><th>paper</th><th>current source</th></tr>
-        <tr><td>target</td><td>B200 / GB200</td><td>Hopper + multiple Blackwell families</td></tr>
-        <tr><td>forward 2-CTA</td><td>非核心论点</td><td>eligible SM100 path 可开启</td></tr>
-        <tr><td>backward 2-CTA</td><td>核心优化</td><td>d128 默认支持时选择</td></tr>
-        <tr><td>determinism</td><td>ordered semaphore</td><td><code>wait_eq → bulk reduce-add → arrive_inc</code></td></tr>
-        <tr><td>B300 exp</td><td>MUFU throughput doubled</td><td>SM103 family 关闭 exp emulation</td></tr>
-      </table>
+  <section class="slide tight" data-section="CompilePaperSource">
+    <div class="kicker">CuTeDSL + paper/source boundary</div><h2>“FA4”是编译 specialization 的实现族，不是一只 immutable kernel</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card"><div class="flow"><div class="node blue-node">Python/CuTeDSL</div><span class="arrow">→</span><div class="node cyan-node">MLIR/CUTLASS</div><span class="arrow">→</span><div class="node amber-node">PTX</div><span class="arrow">→</span><div class="node green-node">ptxas/cubin</div></div>
+        <p>dtype、tile、1/2-CTA、mask、scheduler、deterministic 都可能进入 compile key。Python 是源码层，不是 runtime 解释循环。</p>
+        <p class="amber">compiler/CuTeDSL/CUTLASS versions 与 cubin hash 都属于 deterministic envelope。</p></div>
+      <div class="card violet-edge"><table class="dense"><tr><th>question</th><th>paper</th><th>current source</th></tr>
+        <tr><td>target</td><td>B200/GB200</td><td>Hopper + Blackwell families</td></tr><tr><td>fwd 2-CTA</td><td>非核心</td><td>eligible SM100 可选</td></tr>
+        <tr><td>bwd 2-CTA</td><td>核心优化</td><td>d128 支持时选择</td></tr><tr><td>determinism</td><td>ordered semaphore</td><td>wait→bulk add→release</td></tr>
+        <tr><td>B300 exp</td><td>MUFU 2×</td><td>SM103 关闭 emulation</td></tr></table></div>
     </div>
-    <div class="footer"><span>生产审计必须 resolve dispatch</span><span></span></div>
+    <div class="footer"><span>paper 解释因果；pinned source 解释当前 protocol</span><span></span></div>
   </section>
 
   <section class="slide tight" data-section="Scorecard">
-    <div class="kicker">Determinism scorecard</div><h2>结论必须带 component 与 dispatch</h2>
-    <div class="content">
-      <table><tr><th>component</th><th>default</th><th>deterministic mode</th><th>why</th></tr>
-        <tr><td>ordinary forward O/LSE</td><td class="green">expected deterministic</td><td>same owner</td><td>single logical owner</td></tr>
-        <tr><td>2-CTA forward</td><td class="green">expected deterministic</td><td>same</td><td>fixed pair, disjoint rows</td></tr>
-        <tr><td>SplitKV forward</td><td class="amber">separate audit</td><td>separate audit</td><td>partial combine</td></tr>
-        <tr><td>backward dQ</td><td class="red">nondeterministic</td><td class="green">ordered</td><td>global bulk FP32 reduce-add</td></tr>
-        <tr><td>MHA dK/dV</td><td class="green">owned</td><td>owned</td><td>one KV owner/head</td></tr>
-        <tr><td>GQA dK/dV</td><td class="red">many-to-one</td><td class="green">ordered</td><td>Q heads share KV head</td></tr>
-      </table>
-    </div>
-    <div class="footer"><span>“expected”仍需 B200 exact-repeat 验证</span><span></span></div>
+    <div class="kicker">Determinism scorecard</div><h2>结论必须带 component、dispatch 与 combine path</h2>
+    <div class="content"><table><tr><th>component</th><th>default</th><th>deterministic mode</th><th>reason</th></tr>
+      <tr><td>ordinary forward O/LSE</td><td class="green">expected deterministic</td><td>same owner</td><td>single logical owner</td></tr>
+      <tr><td>2-CTA forward</td><td class="green">expected deterministic</td><td>same</td><td>fixed pair, disjoint rows</td></tr>
+      <tr><td>SplitKV forward</td><td class="amber">separate audit</td><td>separate audit</td><td>partial combine</td></tr>
+      <tr><td>backward dQ</td><td class="red">nondeterministic</td><td class="green">ordered</td><td>global bulk FP32 reduce-add</td></tr>
+      <tr><td>MHA dK/dV</td><td class="green">owned</td><td>owned</td><td>one KV owner/head</td></tr>
+      <tr><td>GQA dK/dV</td><td class="red">many-to-one</td><td class="green">ordered</td><td>Q heads share KV head</td></tr></table></div>
+    <div class="footer"><span>“expected”仍需 B200 exact-repeat 验证</span><span>fixed artifact repeatability ≠ cross-artifact equality</span></div>
   </section>
 
   <section class="slide" data-section="Guidance">
-    <div class="kicker">Reusable kernel questions</div><h2>从 FA4 抽出的检查顺序</h2>
+    <div class="kicker">Reusable kernel questions</div><h2>从 FA4 抽出的十个检查问题</h2>
     <div class="content grid-2 compact">
-      <div class="card cyan-edge"><ol><li>什么资源 scaling 不对称？</li><li>每个 intermediate 在 HBM / SMEM / TMEM / RMEM 哪层？</li><li>final output 的 owner 是谁？</li><li>tile 到底沿 output 维还是 reduction 维切？</li><li>alias 前的 last consumer 在哪？</li></ol></div>
-      <div class="card violet-edge"><ol start="6"><li>non-matmul 能与多少 MMA overlap？</li><li>优化是省 traffic，还是搬到 DSMEM？</li><li>atomic 是减少了，还是消失了？</li><li>哪些 numerical policy 会改变 bits？</li><li>public API 最后 dispatch 到哪只 kernel？</li></ol></div>
+      <div class="card cyan-edge"><ol><li>什么资源 scaling 不对称？</li><li>intermediate 在 HBM/SMEM/TMEM/RMEM 哪层？</li><li>final output owner 是谁？</li><li>tile 沿 output 维还是 reduction 维切？</li><li>alias 前的 last consumer 在哪？</li></ol></div>
+      <div class="card violet-edge"><ol start="6"><li>non-matmul 能与多少 MMA overlap？</li><li>优化省了 traffic，还是搬到 DSMEM？</li><li>atomic 是减少了，还是消失了？</li><li>哪些 numerical policy 会改变 bits？</li><li>public API 最后 dispatch 到哪只 kernel？</li></ol></div>
     </div>
-    <div class="footer"><span>这些问题比记某组 tile size 更可迁移</span><span></span></div>
+    <div class="footer"><span>这些问题比死记一组 tile size 更可迁移</span><span></span></div>
   </section>
 
   <section class="slide" data-section="Validation">
@@ -520,19 +414,19 @@ else:
       <div class="card cyan-edge"><h3>1 · Resolve</h3><p>commit、arch、tile、1/2-CTA、scheduler、CuTeDSL、cubin hash。</p></div>
       <div class="card green-edge"><h3>2 · Observe</h3><p>tcgen05、TMEM、TMA、MUFU/FMA、DSMEM、reduce-add count。</p></div>
       <div class="card amber-edge"><h3>3 · Repeat</h3><p>≥100 次 exact compare O/LSE/dQ/dK/dV；det off/on。</p></div>
-      <div class="card violet-edge"><h3>4 · Localize</h3><p>op-guard + tensor hash：先 dQ_accum / semaphore，再看 GQA combine。</p></div>
+      <div class="card violet-edge"><h3>4 · Localize</h3><p>op-guard + tensor hash：先 dQ_accum/semaphore，再看 GQA combine。</p></div>
     </div>
-    <div class="footer"><span>CPU source model 只完成前半个闭环</span><span></span></div>
+    <div class="footer"><span>CPU source model 只完成前半个闭环</span><span>no local browser / B200</span></div>
   </section>
 
   <section class="slide" data-section="Summary">
     <div class="kicker">Takeaway</div><h2>把 FA4 压缩成六句话</h2>
     <div class="content grid-3 compact">
-      <div class="card"><p><strong class="cyan">1.</strong> B200 Tensor Core 2×，SMEM / exp 1×，所以 FA3 pipeline 不够。</p></div>
-      <div class="card"><p><strong class="green">2.</strong> tcgen05 把 accumulator 写到 TMEM，解除 register dependency。</p></div>
-      <div class="card"><p><strong class="amber">3.</strong> forward 用两个 softmax WG、correction WG、部分 exp 模拟与条件 rescale。</p></div>
-      <div class="card"><p><strong class="violet">4.</strong> backward 用 TMEM lifetime overlap 五个 GEMM。</p></div>
-      <div class="card"><p><strong class="cyan">5.</strong> 2-CTA 省 SMEM、用 DSMEM 重排 dQ，并把 global update 减半。</p></div>
+      <div class="card"><p><strong class="cyan">1.</strong> B200 Tensor Core 2×，SMEM/exp 1×，FA3 pipeline 因而不够。</p></div>
+      <div class="card"><p><strong class="green">2.</strong> tcgen05 把 accumulator 写到 TMEM，解除 register writeback dependency。</p></div>
+      <div class="card"><p><strong class="amber">3.</strong> forward 用两个 softmax WG、correction、partial exp 与 conditional rescale。</p></div>
+      <div class="card"><p><strong class="violet">4.</strong> backward 用 TMEM lifetime 与跨 iteration schedule overlap 五个 GEMM。</p></div>
+      <div class="card"><p><strong class="cyan">5.</strong> 2-CTA 省 SMEM、用 DSMEM 重排 dQ，并把 global updates 减半。</p></div>
       <div class="card red-edge"><p><strong class="red">6.</strong> 减半仍不 deterministic；固定 semaphore writer order 才是证明。</p></div>
     </div>
     <div class="footer"><span>Source of truth: flashattention_fa4.md</span><span>End</span></div>
