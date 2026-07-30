@@ -21,65 +21,67 @@
     a{color:var(--cyan);text-underline-offset:3px} strong{color:#fff}
     code,.mono{font-family:"SFMono-Regular",Consolas,monospace;font-size:.9em}
     .deck{position:relative;width:100%;height:100%}
-    .slide{position:absolute;inset:0;display:none;grid-template-rows:auto auto minmax(0,1fr) auto;gap:clamp(10px,1.35vh,19px);
-      padding:clamp(23px,3.6vh,50px) clamp(32px,4.7vw,78px) clamp(22px,3vh,42px)}
+    .slide{position:absolute;inset:0;display:none;grid-template-rows:auto auto minmax(0,1fr) auto;gap:clamp(11px,1.45vh,21px);
+      padding:clamp(24px,3.7vh,52px) clamp(34px,4.8vw,82px) clamp(23px,3.1vh,44px)}
     .slide.title-slide{grid-template-rows:auto minmax(0,1fr) auto}
     .slide.active{display:grid;animation:enter .2s ease-out}
     @keyframes enter{from{opacity:.2;transform:translateX(10px)}to{opacity:1;transform:none}}
-    .kicker{color:var(--cyan);font-size:clamp(11px,.9vw,16px);font-weight:800;letter-spacing:.12em;text-transform:uppercase}
-    h1,h2,h3,p{margin-top:0} h1{margin-bottom:.22em;font-size:clamp(45px,5.7vw,94px);line-height:.98;letter-spacing:-.045em}
-    h2{margin-bottom:0;font-size:clamp(30px,3.7vw,61px);line-height:1.04;letter-spacing:-.035em}
-    h3{margin-bottom:.4em;font-size:clamp(17px,1.5vw,26px);line-height:1.16}
-    p,li,td,th{font-size:clamp(13px,1.08vw,20px);line-height:1.3} p{margin-bottom:.58em}
-    ul,ol{margin:.18em 0;padding-left:1.12em}li{margin:.14em 0}
+    .kicker{color:var(--cyan);font-size:clamp(12px,.95vw,17px);font-weight:800;letter-spacing:.12em;text-transform:uppercase}
+    h1,h2,h3,p{margin-top:0} h1{margin-bottom:.22em;font-size:clamp(47px,5.9vw,98px);line-height:.98;letter-spacing:-.045em}
+    h2{margin-bottom:0;font-size:clamp(32px,4vw,66px);line-height:1.04;letter-spacing:-.035em}
+    h3{margin-bottom:.4em;font-size:clamp(19px,1.65vw,29px);line-height:1.16}
+    p,li,td,th{font-size:clamp(15px,1.25vw,23px);line-height:1.32} p{margin-bottom:.6em}
+    ul,ol{margin:.2em 0;padding-left:1.14em}li{margin:.16em 0}
     .content{min-height:0;align-self:stretch}.center{display:grid;place-items:center;text-align:center}.vcenter{align-self:center}
-    .lead{font-size:clamp(21px,2.25vw,39px);line-height:1.18;color:#deebf4}.small{font-size:clamp(11px,.9vw,16px)}
-    .tiny{font-size:clamp(10px,.72vw,13px)}.muted{color:var(--muted)}.cyan{color:var(--cyan)}
+    .lead{font-size:clamp(23px,2.4vw,43px);line-height:1.19;color:#deebf4}.small{font-size:clamp(13px,1vw,18px)}
+    .tiny{font-size:clamp(11px,.8vw,15px)}.muted{color:var(--muted)}.cyan{color:var(--cyan)}
     .green{color:var(--green)}.amber{color:var(--amber)}.red{color:var(--red)}.violet{color:var(--violet)}
-    .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:clamp(14px,2vw,32px);align-items:stretch;height:100%}
-    .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(10px,1.35vw,21px);height:100%}
-    .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:clamp(8px,1vw,16px);height:100%}
+    .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:clamp(16px,2.2vw,36px);align-items:stretch;height:100%}
+    .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(11px,1.45vw,24px);height:100%}
+    .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:clamp(9px,1.1vw,18px);height:100%}
     .wide-left{grid-template-columns:1.18fr .82fr}.wide-right{grid-template-columns:.82fr 1.18fr}
-    .card{display:flex;flex-direction:column;justify-content:flex-start;min-width:0;padding:clamp(11px,1.25vw,20px);
+    .card{display:flex;flex-direction:column;justify-content:flex-start;min-width:0;padding:clamp(13px,1.4vw,23px);
       border:1px solid var(--line);border-radius:15px;background:linear-gradient(145deg,rgba(21,50,75,.94),rgba(7,18,30,.97));box-shadow:var(--shadow)}
+    .balanced>.card,.balanced>article{justify-content:center}
     .card p:last-child,.card ul:last-child{margin-bottom:0}.cyan-edge{border-top:4px solid var(--cyan)}
     .green-edge{border-top:4px solid var(--green)}.amber-edge{border-top:4px solid var(--amber)}
     .red-edge{border-top:4px solid var(--red)}.violet-edge{border-top:4px solid var(--violet)}
     .tag{display:inline-block;width:max-content;margin-bottom:.45em;padding:.22em .55em;border:1px solid var(--line);
-      border-radius:999px;color:var(--muted);background:rgba(3,10,18,.64);font-size:clamp(9px,.65vw,12px);font-weight:780;letter-spacing:.06em}
-    .quote{border-left:5px solid var(--cyan);padding:.12em 0 .12em .7em;font-size:clamp(24px,2.6vw,46px);line-height:1.16}
+      border-radius:999px;color:var(--muted);background:rgba(3,10,18,.64);font-size:clamp(10px,.72vw,13px);font-weight:780;letter-spacing:.06em}
+    .quote{border-left:5px solid var(--cyan);padding:.12em 0 .12em .7em;font-size:clamp(26px,2.8vw,50px);line-height:1.16}
     .equation,.codebox{white-space:pre-wrap;margin:.42em 0;padding:clamp(10px,1.15vw,18px);border:1px solid var(--line);
-      border-radius:12px;background:#030910;font-family:"SFMono-Regular",Consolas,monospace;font-size:clamp(11px,.9vw,17px);line-height:1.33}
-    .equation{color:var(--amber);text-align:center;font-size:clamp(14px,1.25vw,22px)}
+      border-radius:12px;background:#030910;font-family:"SFMono-Regular",Consolas,monospace;font-size:clamp(12px,.98vw,18px);line-height:1.35}
+    .equation{color:var(--amber);text-align:center;font-size:clamp(15px,1.35vw,24px)}
     .flow{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:7px;margin:.55em 0}
-    .node{padding:.52em .7em;border:1px solid var(--line);border-radius:11px;background:var(--panel);font-size:clamp(12px,.92vw,18px);font-weight:690;text-align:center}
+    .node{padding:.56em .74em;border:1px solid var(--line);border-radius:11px;background:var(--panel);font-size:clamp(13px,1.03vw,20px);font-weight:690;text-align:center}
     .cyan-node{border-color:var(--cyan);background:rgba(84,221,255,.08)}.green-node{border-color:var(--green);background:rgba(107,228,173,.08)}
     .amber-node{border-color:var(--amber);background:rgba(255,208,114,.08)}.violet-node{border-color:var(--violet);background:rgba(192,169,255,.08)}
     .red-node{border-color:var(--red);background:rgba(255,137,137,.08)}.blue-node{border-color:var(--blue);background:rgba(119,170,255,.08)}
     .arrow{color:var(--cyan);font-size:clamp(19px,1.65vw,30px)}
     table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{padding:.38em .44em;border-bottom:1px solid var(--line);vertical-align:top}
-    th{color:var(--cyan);text-align:left}.dense td,.dense th{font-size:clamp(10px,.76vw,14px);line-height:1.18;padding:.28em .32em}
+    th{color:var(--cyan);text-align:left}.dense td,.dense th{font-size:clamp(11px,.84vw,16px);line-height:1.22;padding:.3em .35em}
     .bar-row{display:grid;grid-template-columns:145px 1fr 66px;gap:9px;align-items:center;margin:.58em 0}
     .bar{height:16px;border:1px solid var(--line);border-radius:999px;background:#030910;overflow:hidden}
     .bar span{display:block;width:var(--w);height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--cyan),var(--green))}
     .bar.slow span{background:linear-gradient(90deg,var(--blue),var(--violet))}
     .memory{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;height:100%;align-items:stretch}
+    .memory-2x2{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;height:auto}
     .mem{display:flex;flex-direction:column;justify-content:center;text-align:center;padding:1em;border:1px solid var(--line);border-radius:14px}
     .timeline{display:grid;grid-template-columns:125px repeat(var(--steps,6),1fr);gap:5px;align-items:stretch}
-    .label,.slot{display:grid;place-items:center;min-width:0;padding:.42em .3em;border-radius:8px;text-align:center;font-size:clamp(9px,.72vw,13px)}
+    .label,.slot{display:grid;place-items:center;min-width:0;padding:.44em .32em;border-radius:8px;text-align:center;font-size:clamp(10px,.77vw,14px)}
     .label{color:var(--muted);background:#0a1928;border:1px solid var(--line)}.slot{min-height:39px;border:1px solid rgba(255,255,255,.06)}
     .copy{background:rgba(84,221,255,.14)}.gemm{background:rgba(107,228,173,.14)}.soft{background:rgba(255,208,114,.14)}
     .wait{background:rgba(255,137,137,.12)}.write{background:rgba(192,169,255,.14)}
     .role-grid{display:grid;grid-template-columns:90px 1fr 1.2fr;gap:6px;height:100%;align-content:center}
-    .role-grid>div{padding:.45em .55em;border:1px solid var(--line);border-radius:8px;font-size:clamp(10px,.8vw,15px)}
+    .role-grid>div{padding:.48em .58em;border:1px solid var(--line);border-radius:8px;font-size:clamp(11px,.86vw,16px)}
     .role-grid .head{color:var(--cyan);font-weight:760;background:#0b1d2d}
-    .footer{display:flex;justify-content:space-between;color:var(--muted);font-size:clamp(9px,.68vw,13px)}
+    .footer{display:flex;justify-content:space-between;color:var(--muted);font-size:clamp(10px,.72vw,14px)}
     .hud{position:fixed;right:18px;bottom:13px;z-index:10;display:flex;align-items:center;gap:7px;padding:6px 8px;
       border:1px solid var(--line);border-radius:999px;background:rgba(3,9,16,.84);backdrop-filter:blur(8px)}
     .hud button{width:30px;height:30px;border:1px solid var(--line);border-radius:50%;color:var(--ink);background:var(--panel);cursor:pointer}
     .counter{min-width:56px;text-align:center;color:var(--muted);font-size:12px}.progress{position:fixed;left:0;right:0;bottom:0;height:4px;background:rgba(255,255,255,.05)}
     .progress span{display:block;height:100%;background:linear-gradient(90deg,var(--cyan),var(--violet));transition:width .2s}
-    .compact p,.compact li{font-size:clamp(11px,.9vw,16px)}.tight p,.tight li,.tight td,.tight th{font-size:.9em}.tight .card{padding:9px 12px}
+    .compact p,.compact li{font-size:clamp(13px,1vw,18px)}.tight p,.tight li,.tight td,.tight th{font-size:.92em}.tight .card{padding:10px 13px}
     @media(max-width:900px){.grid-3,.grid-4{grid-template-columns:1fr 1fr}.timeline{grid-template-columns:85px repeat(var(--steps,6),1fr)}}
   </style>
 </head>
@@ -97,7 +99,7 @@
 
   <section class="slide" data-section="Map">
     <div class="kicker">先看地图</div><h2>一条因果链，五个问题</h2>
-    <div class="content grid-3">
+    <div class="content grid-3 balanced">
       <div class="card cyan-edge"><span class="tag">WHY</span><h3>FA3 为什么不够</h3><p>B200 矩阵算力翻倍，SMEM 与 exp 没同步增长。</p></div>
       <div class="card green-edge"><span class="tag">PRIMITIVES</span><h3>Blackwell 给了什么</h3><p>tcgen05、TMEM、fully-async accumulator、2-CTA。</p></div>
       <div class="card amber-edge"><span class="tag">FORWARD</span><h3>如何遮住 softmax</h3><p>ping-pong WG、correction、部分 exp 模拟、条件 rescale。</p></div>
@@ -138,41 +140,37 @@
           <li><code>8192 ops/cycle/SM</code> 是 aggregate peak，不是“一条 MMA 只花一 cycle”。</li>
           <li>roofline cycles ≈ work / peak throughput；遗漏 fill/drain、barrier、occupancy、尾部与不完美 overlap。</li></ul></div>
     </div>
-    <div class="footer"><span>目标：让 MMA、SMEM、exp 三条路径尽量重叠</span><span>paper Tables 1 &amp; 3</span></div>
+    <div class="footer"><span>目标：让 MMA、SMEM、exp 三条路径尽量重叠</span><span><a href="https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/clock-cycles-and-pipelines.md">clock / cycle 基础</a> · paper Tables 1 &amp; 3</span></div>
   </section>
 
-  <section class="slide" data-section="TcgenAsync">
-    <div class="kicker">Primitive 1 · tcgen05 + fully async</div><h2>指令由少量 control threads 发射，结果直接落到 TMEM</h2>
-    <div class="content grid-2">
-      <div class="card"><table><tr><th>名词</th><th>层级</th></tr><tr><td><code>cute.gemm</code></td><td>CuTeDSL abstraction</td></tr>
-        <tr><td><code>tcgen05.mma</code></td><td>Blackwell PTX instruction</td></tr><tr><td>5th-gen Tensor Core</td><td>physical matrix pipeline</td></tr><tr><td>TMEM</td><td>MMA-oriented on-SM memory</td></tr></table>
-        <p>“one elected thread issues”描述控制权；不是这个 thread 用 CUDA Core 算完整矩阵。</p></div>
+  <section class="slide tight" data-section="TcgenAndMemory">
+    <div class="kicker">Primitive 1 + 2 · tcgen05, fully async, and memory residence</div><h2>发射、计算、accumulator 与普通 ALU 消费是四个位置</h2>
+    <div class="content grid-2 wide-left">
       <div class="card green-edge">
-        <h3>accumulator dependency 改变</h3>
-        <div class="codebox">Hopper:
-SMEM → WGMMA → distributed RMEM accumulator
-
-Blackwell:
-SMEM/TMEM → tcgen05 → TMEM accumulator
-
-issue → independent work → mbarrier → TMEM load</div>
-        <p>一条 MMA latency 仍可很长，但 issuing warp 不必等待 register writeback 才继续独立工作。</p></div>
-    </div>
-    <div class="footer"><span>instruction identity ≠ physical compute-unit identity</span><span></span></div>
-  </section>
-
-  <section class="slide" data-section="MemoryHierarchy">
-    <div class="kicker">Primitive 2 · memory residence</div><h2>FA4 多了一层 TMEM，但其他层没有消失</h2>
-    <div class="content">
-      <div class="memory">
-        <div class="mem blue-node"><h3>HBM</h3><p>Q/K/V inputs<br>O/LSE outputs</p><span class="muted">global · large · slow</span></div>
-        <div class="mem cyan-node"><h3>SMEM</h3><p>TMA-staged operands<br>CTA/cluster exchange</p><span class="muted">banked · CTA-visible</span></div>
-        <div class="mem amber-node"><h3>RMEM</h3><p>one score row<br>scalar state</p><span class="muted">thread-private</span></div>
-        <div class="mem green-node"><h3>TMEM</h3><p>MMA accumulators<br>optional operand A</p><span class="muted">256 KiB/SM · explicit lifetime</span></div>
+        <table class="dense"><tr><th>名词</th><th>层级 / 作用</th></tr><tr><td><code>cute.gemm</code></td><td>CuTeDSL abstraction</td></tr>
+          <tr><td><code>tcgen05.mma</code></td><td>Blackwell PTX instruction</td></tr><tr><td>5th-gen Tensor Core</td><td>physical matrix pipeline</td></tr>
+          <tr><td>TMEM</td><td>MMA accumulator / operand storage</td></tr></table>
+        <div class="codebox">one elected control thread issues
+        ↓
+SMEM / TMEM → tcgen05 → TMEM accumulator
+        ↓ independent work
+mbarrier completion → tcgen05.ld → lane RMEM
+        ↓
+CUDA-core / MUFU instructions consume values</div>
+        <p>一条 MMA latency 仍可很长；async 只让 issuing warp 在等待结果期间继续做独立工作。</p>
       </div>
-      <div class="flow"><div class="node blue-node">HBM Q/K/V</div><span class="arrow">TMA →</span><div class="node cyan-node">SMEM operands</div><span class="arrow">tcgen05 →</span><div class="node green-node">TMEM accumulator</div><span class="arrow">tcgen05.ld →</span><div class="node amber-node">lane RMEM</div></div>
+      <div class="card">
+        <div class="memory memory-2x2">
+          <div class="mem blue-node"><h3>HBM</h3><p>Q/K/V<br>O/LSE</p><span class="small muted">global</span></div>
+          <div class="mem cyan-node"><h3>SMEM</h3><p>TMA operands<br>cluster exchange</p><span class="small muted">CTA-visible</span></div>
+          <div class="mem green-node"><h3>TMEM</h3><p>MMA accumulator<br>optional operand A</p><span class="small muted">256 KiB/SM</span></div>
+          <div class="mem amber-node"><h3>RMEM</h3><p>one score row<br>scalar state</p><span class="small muted">thread-private</span></div>
+        </div>
+        <div class="flow"><div class="node blue-node">HBM</div><span class="arrow">TMA →</span><div class="node cyan-node">SMEM</div><span class="arrow">MMA →</span><div class="node green-node">TMEM</div><span class="arrow">load →</span><div class="node amber-node">RMEM</div></div>
+        <p class="small">“one thread issues”描述控制权，不是这个 thread 用 CUDA Core 算完整矩阵。TMEM 新增容量，也不代表 SMEM bandwidth 变快。</p>
+      </div>
     </div>
-    <div class="footer"><span>TMEM 不是 L1、SMEM 或 register 的别名</span><span>capacity 新增 ≠ SMEM bandwidth 变快</span></div>
+    <div class="footer"><span>instruction identity ≠ compute unit identity ≠ result residence</span><span>async 仍需要 barrier 证明完成</span></div>
   </section>
 
   <section class="slide" data-section="TwoCTA">
@@ -257,7 +255,7 @@ else:
 
   <section class="slide" data-section="FwdDeterminism">
     <div class="kicker">Forward · determinism</div><h2>异步只改变“何时完成”；ownership 与 dependencies 决定算术图</h2>
-    <div class="content grid-3">
+    <div class="content grid-3 balanced">
       <div class="card green-edge"><h3>一个 owner</h3><p>每个 ordinary output row 只有一个 logical owner，或一个固定 2-CTA cooperative group；独立 work 不争写同一 O。</p></div>
       <div class="card cyan-edge"><h3>固定 dependency</h3><p>mbarrier 约束 TMA→MMA、S→softmax、P→PV、O→correction 和 storage reuse。</p></div>
       <div class="card amber-edge"><h3>固定 envelope</h3><p>dispatch、tile、1/2-CTA、exp policy、compiler/cubin、device 与 RNG 都必须固定。</p></div>
@@ -409,28 +407,27 @@ else:
     <div class="footer"><span>这些问题比死记一组 tile size 更可迁移</span><span></span></div>
   </section>
 
-  <section class="slide" data-section="Validation">
-    <div class="kicker">Future B200 qualification</div><h2>最小闭环：resolve → observe → repeat → localize</h2>
-    <div class="content grid-4 compact">
-      <div class="card cyan-edge"><h3>1 · Resolve</h3><p>commit、arch、tile、1/2-CTA、scheduler、CuTeDSL、cubin hash。</p></div>
-      <div class="card green-edge"><h3>2 · Observe</h3><p>tcgen05、TMEM、TMA、MUFU/FMA、DSMEM、reduce-add count。</p></div>
-      <div class="card amber-edge"><h3>3 · Repeat</h3><p>≥100 次 exact compare O/LSE/dQ/dK/dV；det off/on。</p></div>
-      <div class="card violet-edge"><h3>4 · Localize</h3><p>op-guard + tensor hash：先 dQ_accum/semaphore，再看 GQA combine。</p></div>
+  <section class="slide tight" data-section="ValidationAndSummary">
+    <div class="kicker">Future B200 qualification + takeaway</div><h2>先记住因果链，再用四步闭环验证真实 artifact</h2>
+    <div class="content grid-2 wide-right">
+      <div class="grid-2 compact" style="gap:12px">
+        <div class="card cyan-edge"><h3>1 · Resolve</h3><p>commit、arch、tile、1/2-CTA、scheduler、CuTeDSL、cubin hash。</p></div>
+        <div class="card green-edge"><h3>2 · Observe</h3><p>tcgen05、TMEM、TMA、MUFU/FMA、DSMEM、reduce-add count。</p></div>
+        <div class="card amber-edge"><h3>3 · Repeat</h3><p>≥100 次 exact compare O/LSE/dQ/dK/dV；det off/on。</p></div>
+        <div class="card violet-edge"><h3>4 · Localize</h3><p>op-guard + tensor hash：先 dQ_accum/semaphore，再看 GQA combine。</p></div>
+      </div>
+      <div class="card red-edge compact">
+        <ol>
+          <li>B200 Tensor Core 2×，SMEM/exp 1×，FA3 pipeline 因而不够。</li>
+          <li>tcgen05 把 accumulator 放到 TMEM，解除 register writeback dependency。</li>
+          <li>forward 用两个 softmax WG、correction、partial exp 与 conditional rescale。</li>
+          <li>backward 用 TMEM lifetime 与跨 iteration schedule overlap 五个 GEMM。</li>
+          <li>2-CTA 省 SMEM、用 DSMEM 重排 dQ，并把 global updates 减半。</li>
+          <li><strong class="red">减半仍不 deterministic；固定 semaphore writer order 才是证明。</strong></li>
+        </ol>
+      </div>
     </div>
-    <div class="footer"><span>CPU source model 只完成前半个闭环</span><span>no local browser / B200</span></div>
-  </section>
-
-  <section class="slide" data-section="Summary">
-    <div class="kicker">Takeaway</div><h2>把 FA4 压缩成六句话</h2>
-    <div class="content grid-3 compact">
-      <div class="card"><p><strong class="cyan">1.</strong> B200 Tensor Core 2×，SMEM/exp 1×，FA3 pipeline 因而不够。</p></div>
-      <div class="card"><p><strong class="green">2.</strong> tcgen05 把 accumulator 写到 TMEM，解除 register writeback dependency。</p></div>
-      <div class="card"><p><strong class="amber">3.</strong> forward 用两个 softmax WG、correction、partial exp 与 conditional rescale。</p></div>
-      <div class="card"><p><strong class="violet">4.</strong> backward 用 TMEM lifetime 与跨 iteration schedule overlap 五个 GEMM。</p></div>
-      <div class="card"><p><strong class="cyan">5.</strong> 2-CTA 省 SMEM、用 DSMEM 重排 dQ，并把 global updates 减半。</p></div>
-      <div class="card red-edge"><p><strong class="red">6.</strong> 减半仍不 deterministic；固定 semaphore writer order 才是证明。</p></div>
-    </div>
-    <div class="footer"><span>Source of truth: flashattention_fa4.md</span><span>End</span></div>
+    <div class="footer"><span>CPU source model 只完成前半个闭环 · no local B200</span><span>Source of truth: flashattention_fa4.md</span></div>
   </section>
 </main>
 
