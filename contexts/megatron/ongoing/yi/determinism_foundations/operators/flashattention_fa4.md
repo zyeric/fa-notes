@@ -126,17 +126,42 @@ FA3 -> FA4:
   because Blackwell matrix compute scales faster than SMEM and exp
 ```
 
-FA4 has four central moves:
+### 2.1 The human-memory version: move, reorder, reduce, order
 
-1. **fully asynchronous tcgen05 MMA plus TMEM:** accumulators no longer occupy
-   the issuing threads' registers;
-2. **larger tiles and deeper overlap:** keep at least two matrix operations in
-   flight while CUDA-core/MUFU work handles another tile;
-3. **less exposed softmax work:** share exponential work across MUFU and FMA
-   paths, and skip most unnecessary output rescaling;
-4. **2-CTA backward:** pair adjacent CTAs, reduce duplicated SMEM operand
-   traffic, reshape the `dQ` reduction through DSMEM, and halve global `dQ`
-   reduce-add operations.
+The most useful one-sentence comparison is:
+
+> **FA3 teaches Hopper to overlap TMA, WGMMA, and softmax. FA4 responds to
+> Blackwell making matrix compute about 2x faster without similarly scaling
+> SMEM or exponential throughput: move accumulator state, deepen the overlap,
+> and reduce the non-MMA work that can no longer be hidden.**
+
+Do not remember FA4 primarily as “a faster GEMM implementation.” B200 already
+provides faster Tensor Cores. FA4 changes how the kernel feeds them, where
+their results live, what overlaps their execution, and how much surrounding
+work remains:
+
+```text
+B200 Tensor Core ~= 2x, while SMEM / exp ~= 1x
+  -> the bottleneck moves outside the matrix engine
+  -> move intermediate state out of scarce RMEM
+  -> reorder the pipeline around fully asynchronous MMA
+  -> reduce exposed softmax, SMEM traffic, and global reductions
+  -> when exact replay is requested, order the remaining many-writer reductions
+```
+
+For human recall, use four verbs:
+
+| Verb | Concrete FA3 -> FA4 change | Why it matters |
+| --- | --- | --- |
+| **Move / 搬家** | WGMMA accumulator in RMEM -> tcgen05 accumulator in TMEM | frees accumulator registers and removes ordinary register-writeback dependency |
+| **Reorder / 重排** | larger fully-async MMA, two forward softmax groups plus correction, backward cross-iteration overlap | keeps more independent matrix and non-matrix work in flight |
+| **Reduce / 减负** | partial exp, conditional rescale, TMEM residency, 2-CTA B staging, fewer `dQ` global updates | increases effective exp throughput and removes exposed ALU/SMEM/reduction work |
+| **Order / 定序** | optional semaphore order for `dQ` and GQA `dK/dV` writers | converts a safe but arrival-ordered global reduction into a fixed floating-point association |
+
+The first three are performance responses to asymmetric scaling. The fourth is
+an optional reproducibility constraint. It is related to performance because
+FA4 carefully schedules the ordered writers, but it is not free and is not
+enabled by the ordinary fast path.
 
 The important negative statement is:
 
@@ -144,7 +169,33 @@ The important negative statement is:
 
 Default backward still has many K/V-owner work items contributing to the same
 `dQ`. The fast path is therefore nondeterministic. The deterministic path
-imposes a fixed semaphore order on those global reductions.
+imposes a fixed semaphore order on those global reductions. Most GEMM,
+softmax, and data-movement work can remain parallel; only contributors to the
+same destination are ordered.
+
+### 2.2 What “minimal deterministic overhead” does and does not mean
+
+The paper's introduction calls the deterministic mode “minimal performance
+overhead,” but its reported quantitative statement is more informative:
+
+```text
+best reported deterministic speed
+  = up to 75% of nondeterministic 1-CTA backward speed
+```
+
+At a `0.75x` throughput ratio, the same work has:
+
+```text
+throughput loss = 1 - 0.75 = 25%
+runtime increase = 1 / 0.75 - 1 ~= 33%
+```
+
+This does **not** mean zero overhead, does not guarantee `0.75x` for every
+shape, mask, or head grouping, and is not a direct comparison against the
+fastest nondeterministic 2-CTA path. The useful claim is narrower: ordering
+only the conflicting global writes, then using swizzling and an SPT-style
+writer order, preserves much more of the surrounding kernel parallelism than
+a naive globally serialized implementation.
 
 ## 3. Why Blackwell Requires Another Redesign
 
@@ -962,8 +1013,12 @@ Deterministic mode pays for:
 
 The paper reports up to 75% of the nondeterministic 1-CTA backward speed for
 its deterministic kernel. Thus "minimal overhead" should not be interpreted as
-zero overhead or as one fixed percentage for all shapes. It is substantially
-better than a naive ordered schedule, but still shape- and mask-dependent.
+zero overhead or as one fixed percentage for all shapes. At a `0.75x`
+throughput ratio this is 25% lower throughput, or about 33% longer runtime for
+the same work. The comparison is against the nondeterministic 1-CTA path, not a
+proof of parity with the fastest nondeterministic 2-CTA path. It is
+substantially better than a naive ordered schedule, but still shape- and
+mask-dependent.
 
 ## 17. Scheduling: LPT, Persistent CTA, And Determinism Are Separate Axes
 

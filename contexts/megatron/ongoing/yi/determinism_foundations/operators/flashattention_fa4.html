@@ -37,6 +37,7 @@
     .tiny{font-size:clamp(11px,.8vw,15px)}.muted{color:var(--muted)}.cyan{color:var(--cyan)}
     .green{color:var(--green)}.amber{color:var(--amber)}.red{color:var(--red)}.violet{color:var(--violet)}
     .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:clamp(16px,2.2vw,36px);align-items:stretch;height:100%}
+    .grid-2x2{display:grid;grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(2,1fr);gap:clamp(11px,1.45vw,24px);height:100%}
     .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(11px,1.45vw,24px);height:100%}
     .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:clamp(9px,1.1vw,18px);height:100%}
     .wide-left{grid-template-columns:1.18fr .82fr}.wide-right{grid-template-columns:.82fr 1.18fr}
@@ -123,6 +124,17 @@
           <li><strong>本轮：</strong>BF16、fixed MHA、D=128；paper/source/inference 分开。</li></ul></div>
     </div>
     <div class="footer"><span>commit 849f660 · 2026-07-28</span><span>production 必须重新 resolve dispatch</span></div>
+  </section>
+
+  <section class="slide" data-section="HumanMemoryModel">
+    <div class="kicker">FA3 → FA4 · human-memory model</div><h2>先记四个动词：搬家、重排、减负、定序</h2>
+    <div class="content grid-2x2">
+      <div class="card cyan-edge"><span class="tag">MOVE</span><h3>搬家</h3><p>WGMMA accumulator 从 RMEM 搬到 tcgen05 TMEM。</p><p class="muted">省 accumulator registers；解除普通 register writeback dependency。</p></div>
+      <div class="card green-edge"><span class="tag">REORDER</span><h3>重排</h3><p>fully-async MMA、更大 tile、forward 多 softmax/correction roles、backward 跨 iteration overlap。</p><p class="muted">让更多 MMA 与非 MMA 工作同时 in flight。</p></div>
+      <div class="card amber-edge"><span class="tag">REDUCE</span><h3>减负</h3><p>partial exp、conditional rescale、TMEM residence、2-CTA B staging、减少 dQ global updates。</p><p class="muted">扩 exp 吞吐，并削减 ALU、SMEM 与 reduction cost。</p></div>
+      <div class="card red-edge"><span class="tag">ORDER</span><h3>定序</h3><p>deterministic mode 用 semaphore 固定同一 destination 的 writer order。</p><p class="muted">只约束冲突 combine；有等待/fence 代价，普通 fast path 仍 nondeterministic。</p></div>
+    </div>
+    <div class="footer"><span>根因：B200 Tensor Core ≈ 2×，SMEM / exp ≈ 1×</span><span>不是让单个 GEMM magically 更快</span></div>
   </section>
 
   <section class="slide tight" data-section="PrimitiveEvolution">
@@ -442,7 +454,9 @@ else:
         <tr><td>semaphore</td><td>contributors to one address</td><td>cross-build equality</td></tr></table>
         <p>当前 public SM100 backward 实际传 <code>is_persistent=False</code>；deterministic backward 选择 LPT/head-swizzled scheduler。</p></div>
       <div class="card red-edge"><h3>ordered path cost</h3><ul><li>semaphore polling / waiting</li><li>device visibility fence</li><li>更少的 global-reduction overlap</li><li>causal imbalance 的 head-of-line blocking</li></ul>
-        <p class="lead green">paper: up to 75%</p><p>of nondeterministic 1-CTA backward speed；不是 0 overhead，也不是固定比例。</p></div>
+        <p class="lead green">paper: up to 0.75× speed</p>
+        <div class="equation">throughput −25%<br>same-work runtime ≈ +33%</div>
+        <p>比较对象是 nondeterministic 1-CTA，不是最快 2-CTA；也不是所有 shape 的固定比例。</p></div>
     </div>
     <div class="footer"><span>SPT-style write order 用来减少 ordered queue 的空等</span><span></span></div>
   </section>
