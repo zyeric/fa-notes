@@ -315,6 +315,32 @@
       <footer class="footer"><span>FA3 uses WGMMA, not A100-era WMMA · 4 contiguous warps → one collective → distributed accumulator</span><span>WGMMA</span></footer>
     </section>
 
+    <section class="slide tight" data-section="WGMMA B reuse">
+      <div class="kicker">WGMMA B reuse · separate HBM staging from fragment delivery</div>
+      <h2>省的是 per-warp B fragment，不等于 HBM 或物理 SRAM 精确少 4×</h2>
+      <div class="content grid-2 wide-left">
+        <div class="card cyan-edge">
+          <h3>warp-scoped MMA</h3>
+          <div class="codebox">HBM → CTA SMEM once
+  ├→ warp0 B regs → A0 @ B
+  ├→ warp1 B regs → A1 @ B
+  ├→ warp2 B regs → A2 @ B
+  └→ warp3 B regs → A3 @ B</div>
+          <h3>WGMMA</h3>
+          <div class="codebox">HBM → CTA SMEM once
+  → one B descriptor
+  → [A0; A1; A2; A3] @ B</div>
+        </div>
+        <div class="card green-edge">
+          <h3>ISA 明确给出的收益</h3>
+          <ul><li>去掉四套显式 SMEM→B-register fragment load。</li><li>去掉 B 的 per-warp register replication。</li><li>四个 warp 作为一个 collective 复用同一逻辑 B tile。</li></ul>
+          <h3 class="amber">不要越过证据边界</h3>
+          <ul><li>好的 warp kernel 也能只 stage 一次 HBM→SMEM。</li><li>PTX 不公布内部 bank read、broadcast、replay 次数。</li></ul>
+        </div>
+      </div>
+      <footer class="footer"><span>优化边界上移：硬件封装更大 microkernel；FA3 仍负责 tile、layout、pipeline、barrier 与 reduction</span><span><a href="https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/cuda-kernel-patterns.md">hardware note</a></span></footer>
+    </section>
+
     <section class="slide" data-section="Warpgroup">
       <div class="kicker">Warpgroup · an ISA-visible group of 128 threads</div>
       <div class="content center">

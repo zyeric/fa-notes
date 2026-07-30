@@ -125,6 +125,24 @@
     <div class="footer"><span>commit 849f660 · 2026-07-28</span><span>production 必须重新 resolve dispatch</span></div>
   </section>
 
+  <section class="slide tight" data-section="PrimitiveEvolution">
+    <div class="kicker">WMMA → WGMMA → tcgen05 · optimization boundary</div><h2>硬件封装越来越大的矩阵 microkernel；kernel 优化移到更高一层</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card cyan-edge">
+        <table class="dense"><tr><th>path</th><th>collective</th><th>B feed</th><th>D residence</th></tr>
+          <tr><td>WMMA / <code>mma.sync</code></td><td>1 warp</td><td>per-warp RMEM fragment</td><td>warp RMEM</td></tr>
+          <tr><td>WGMMA</td><td>4 warps</td><td>one SMEM descriptor</td><td>warpgroup RMEM</td></tr>
+          <tr><td><code>tcgen05</code></td><td>1-/2-CTA async MMA</td><td>current / peer SMEM</td><td>TMEM</td></tr>
+        </table>
+        <div class="flow"><div class="node blue-node">lane/warp fragments</div><span class="arrow">→</span><div class="node cyan-node">warpgroup collective</div><span class="arrow">→</span><div class="node green-node">TMEM + CTA-pair routing</div></div>
+      </div>
+      <div class="card amber-edge"><h3>NVIDIA 接管什么</h3><p>更大的 collective、operand routing、Tensor Core pipeline，以及 direct-to-TMEM accumulator。</p>
+        <h3>FA4 仍要优化什么</h3><ul><li>Q/K tile 与 output owner；</li><li>SMEM layout、TMEM alias、pipeline/barrier；</li><li>warp roles、occupancy、tail 与 scheduler；</li><li>dQ many-to-one 的固定或 racing combine order。</li></ul>
+        <div class="quote">primitive 不是完整 kernel</div></div>
+    </div>
+    <div class="footer"><span>局部 MMA 更像黑盒；喂饱它、消费它、组合它仍是软件责任</span><span><a href="https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/cuda-kernel-patterns.md">generic hardware note</a></span></div>
+  </section>
+
   <section class="slide" data-section="AsymmetryAndCycle">
     <div class="kicker">H100 → B200 · roofline</div><h2>矩阵吞吐 2×；cycle 表示吞吐预算，不是指令瞬时完成</h2>
     <div class="content grid-2 wide-left">
@@ -167,27 +185,31 @@ CUDA-core / MUFU instructions consume values</div>
           <div class="mem amber-node"><h3>RMEM</h3><p>one score row<br>scalar state</p><span class="small muted">thread-private</span></div>
         </div>
         <div class="flow"><div class="node blue-node">HBM</div><span class="arrow">TMA →</span><div class="node cyan-node">SMEM</div><span class="arrow">MMA →</span><div class="node green-node">TMEM</div><span class="arrow">load →</span><div class="node amber-node">RMEM</div></div>
-        <p class="small">“one thread issues”描述控制权，不是这个 thread 用 CUDA Core 算完整矩阵。TMEM 新增容量，也不代表 SMEM bandwidth 变快。</p>
+        <div class="equation">128 × 128 × FP32 = 64 KiB accumulator</div>
+        <p class="small">四块即 256 KiB。TMEM 把 bulk accumulator 移出 general RMEM；“one thread issues”描述控制权，不是这个 thread 用 CUDA Core 算完整矩阵，也不代表 SMEM bandwidth 变快。</p>
       </div>
     </div>
     <div class="footer"><span>instruction identity ≠ compute unit identity ≠ result residence</span><span>async 仍需要 barrier 证明完成</span></div>
   </section>
 
-  <section class="slide" data-section="TwoCTA">
-    <div class="kicker">Primitive 3 · 2-CTA / 2SM</div><h2>两个 cluster peers 协作一个更大的 MMA</h2>
+  <section class="slide tight" data-section="TwoCTA">
+    <div class="kicker">Primitive 3 · 2-CTA / 2SM</div><h2>B 沿 N 分布，A/D 沿 M 归属；硬件组合两边的 B</h2>
     <div class="content grid-2 wide-left">
-      <div class="card"><div class="codebox">CTA 0 on SM x:  local SMEM B-half 0 ┐
-                                         ├─ cta_group::2 MMA
-CTA 1 on SM y:  local SMEM B-half 1 ┘
+      <div class="card"><div class="codebox">M=256, N=K=128
 
-each SM: its own TMEM accumulator half
-combined M tile: up to 256 rows</div>
-        <p>一只 CTA 永远只驻留在一个 SM；“2SM”来自两只 peer CTAs 的 cooperative mode。</p></div>
+CTA0: A[0:128,:]   + local B[:,0:64]
+      owns D[0:128,:] in TMEM
+CTA1: A[128:256,:] + local B[:,64:128]
+      owns D[128:256,:] in TMEM
+
+D0 = [A0@B_left | A0@B_right]
+D1 = [A1@B_left | A1@B_right]</div>
+        <p>pair 总共 stage 一份分布式 B；不是 CTA0 先用普通 load 把 CTA1 的 B-half 复制回来。</p></div>
       <div class="card amber-edge"><h3>得到什么 / 付出什么</h3>
         <table class="dense"><tr><th>gain</th><th>constraint</th></tr><tr><td>少 stage 重复 B operand</td><td>cluster co-scheduling</td></tr>
           <tr><td>更大 MMA tile</td><td>peer 必须保持 active</td></tr><tr><td>每 CTA own 一半 output rows</td><td>一致的 2-CTA TMEM mode</td></tr><tr><td>可跨 CTA 协作</td><td>barrier / DSMEM traffic</td></tr></table></div>
     </div>
-    <div class="footer"><span>2-CTA 是 traffic/schedule primitive，不自动等于 deterministic</span><span></span></div>
+    <div class="footer"><span>2-CTA 是 spatial sharing；collector 是跨 MMA 的 opportunistic temporal reuse</span><span>都不公开精确 SRAM transaction count</span></div>
   </section>
 
   <section class="slide" data-section="FwdOwnershipResidence">
@@ -319,7 +341,7 @@ else:
         <tr><td>MMA operand SMEM</td><td>2048</td></tr><tr><td>dS write</td><td>256</td></tr><tr><td>dQ FP32 write+read</td><td>1024</td></tr>
         <tr><td><strong>total SMEM</strong></td><td class="red"><strong>3328</strong></td></tr><tr><td>exp</td><td class="amber">1024</td></tr></table></div>
       <div class="card green-edge"><h3>2-CTA · combined M=256</h3><ul><li><code>S / dP / dV / dK</code>：pair 做更大 cooperative tile。</li>
-        <li>每 CTA stage 一半 B、own 一半 output rows。</li><li>MMA work 仍约 2560 cycles，但 operand SMEM 2048→1536。</li>
+        <li>每 CTA stage B 的 N-half、own output 的 M-half；hardware 给两个 owner 完整逻辑 B。</li><li>MMA work 仍约 2560 cycles，但 operand SMEM 2048→1536。</li>
         <li><strong>dQ 是例外：</strong>K rows 是 reduction axis，不能简单各算一半。</li></ul></div>
     </div>
     <div class="footer"><span>更大 tile 的收益来自具体 partition，不只是“CTA 更多”</span><span></span></div>

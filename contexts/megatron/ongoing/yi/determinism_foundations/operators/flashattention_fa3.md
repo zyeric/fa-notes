@@ -274,6 +274,40 @@ instruction (`RS` versus `SS` in FA3 notation); the other operand uses a SMEM
 descriptor. FP32 accumulators remain distributed across private registers of
 the 128 participating threads.
 
+#### 4.2.1 WGMMA saves per-warp B staging, not automatically HBM bytes
+
+For the same B tile reused across four different M-row slices, a well-tiled
+warp-MMA kernel can already copy B from HBM into CTA SMEM once. The repeated
+work is the SMEM-to-register fragment load performed separately by each warp:
+
+```text
+warp-scoped MMA:
+  B in CTA SMEM
+    -> warp 0 B registers -> A0 @ B
+    -> warp 1 B registers -> A1 @ B
+    -> warp 2 B registers -> A2 @ B
+    -> warp 3 B registers -> A3 @ B
+
+WGMMA:
+  B in CTA SMEM
+    -> one B descriptor for the four-warp collective
+    -> [A0; A1; A2; A3] @ B
+```
+
+WGMMA therefore removes the software-visible per-warp B fragment loads and B
+register replication. It does **not** prove that HBM-to-SMEM bytes shrink, and
+PTX does not specify that each B element causes exactly one physical SMEM SRAM
+read. Internal broadcasts, bank accesses, and replays remain undocumented.
+
+This is also the right abstraction boundary for the architecture change:
+Hopper packages a larger matrix microkernel, but FA3 still has to design the Q
+tile, WGMMA macrotile ownership, SMEM layout, TMA stages, ping-pong schedule,
+barriers, register budgets, and every reduction outside WGMMA. The primitive
+reduces lane/warp micro-orchestration; it does not replace kernel scheduling.
+
+The workload-independent comparison is maintained in
+[`gpu-hardware-notes/docs/notes/cuda-kernel-patterns.md`](https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/cuda-kernel-patterns.md#which-b-reads-does-wgmma-save).
+
 ### 4.3 TMA lifecycle
 
 TMA is a dedicated Hopper tensor-copy engine:

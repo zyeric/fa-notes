@@ -269,6 +269,19 @@ One elected thread issues a tcgen05 MMA for a 1-CTA operation, or one elected
 thread in a CTA pair issues a 2-CTA operation. That does not mean one thread
 computes the matrix. It describes instruction issue ownership.
 
+The architecture progression is:
+
+| Path | Collective packaged by hardware | B operand | Accumulator |
+| --- | --- | --- | --- |
+| warp WMMA / `mma.sync` | one warp's matrix microtile | explicit per-warp register fragments | warp registers |
+| Hopper WGMMA | four warps / one warpgroup | one SMEM descriptor for the collective | warpgroup registers |
+| Blackwell `tcgen05` | larger 1- or 2-CTA asynchronous MMA | current and optionally peer-CTA SMEM | TMEM |
+
+The growing primitive reduces software-visible fragment and routing work. It
+does not choose FA4's logical Q/K tiles, SMEM layouts, TMEM aliasing, role
+split, pipeline order, or deterministic reduction protocol. Those remain
+kernel responsibilities.
+
 ### 4.2 Fully asynchronous means the accumulator does not block register writeback
 
 Hopper WGMMA is asynchronous, but its accumulator is ultimately a distributed
@@ -286,6 +299,19 @@ The issuing warp can launch MMA and continue independent instruction work.
 Consumers wait through `tcgen05.commit` / `mbarrier` protocols before loading
 the result from TMEM. Dependency freedom, not merely the spelling "async",
 creates the overlap opportunity.
+
+A `128 x 128` FP32 accumulator occupies 64 KiB:
+
+```text
+128 * 128 * 4 bytes = 64 KiB
+```
+
+Four such live regions reach Blackwell's 256 KiB/SM TMEM capacity. On Hopper,
+the corresponding WGMMA fragments consume the participating threads' general
+register budget. Direct-to-TMEM accumulation is therefore what makes several
+large intermediate lifetimes and the more flexible FA4 schedule plausible.
+CUDA-core softmax or epilogue work still needs `tcgen05.ld` to move selected
+TMEM slices into lane registers.
 
 ### 4.3 TMEM is neither register file nor shared memory
 
@@ -308,16 +334,32 @@ A 2-CTA operation is one cooperative MMA issued by a fixed pair of adjacent
 CTAs in the same cluster:
 
 ```text
-CTA 0: stages its share of operand B, owns half of accumulator M rows
-CTA 1: stages its share of operand B, owns the other half
-                         |
-               one cta_group::2 MMA
-                         |
-               combined M = 256 tile
+representative M=256, N=K=128:
+
+CTA 0:
+  A0 = A[0:128, :]
+  local SMEM B_left  = B[:, 0:64]
+  local TMEM D0      = D[0:128, :]
+
+CTA 1:
+  A1 = A[128:256, :]
+  local SMEM B_right = B[:, 64:128]
+  local TMEM D1      = D[128:256, :]
+
+one cta_group::2 MMA:
+  D0 = [A0 @ B_left | A0 @ B_right]
+  D1 = [A1 @ B_left | A1 @ B_right]
 ```
 
-Compared with two independent 1-CTA MMAs, the pair can avoid redundantly
-staging the full B operand. The pair must:
+The output and A ownership split is along M; B storage is split across the peer
+CTAs along N. The pair holds one logical B tile as two local SMEM halves, and
+the `cta_group::2` hardware path consumes the combined operand. CTA 0 does not
+first copy all of CTA 1's half into its own SMEM with ordinary thread loads.
+
+Compared with two independent 1-CTA MMAs that each need the complete B tile,
+the pair removes one full duplicated B residence and roughly halves B operand
+SMEM traffic across the pair. It does not halve total SMEM traffic because
+other MMA operands, DSMEM exchange, and epilogue paths remain. The pair must:
 
 - be launched together in a cluster;
 - remain resident while the operation is in flight;
@@ -327,6 +369,15 @@ staging the full B operand. The pair must:
 Two CTAs remain two CUDA CTAs. They are not merged into a single 1024-thread
 CTA, and neither CTA spans multiple SMs. The cluster contract co-schedules
 them and permits cross-CTA cooperation.
+
+The `tcgen05` collector buffer is a separate mechanism. The 2-CTA split is
+spatial reuse across peers for one logical operand; collector `fill/use/lastuse`
+annotations permit opportunistic temporal reuse of an unchanged A or B across
+successive MMA instructions. Neither contract exposes the exact physical SRAM
+bank or crossbar transaction count.
+
+The generic operand-path explanation lives in
+[`gpu-hardware-notes/docs/notes/cuda-kernel-patterns.md`](https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/cuda-kernel-patterns.md#how-2-cta-tcgen05-distributes-b).
 
 ### 4.5 CuTeDSL is part of the implementation envelope
 
@@ -665,8 +716,10 @@ the motivation for 2-CTA, not merely "more CTAs means more parallelism."
 ### 14.1 Four GEMMs use a larger cooperative tile
 
 The CTA pair covers a combined `M=256, N=K=128` tile for `S`, `dP`, `dV`, and
-`dK`. Each CTA stages only half of the shared B operand and owns its half of
-the output-row accumulator.
+`dK`. Each CTA stages the N-half of the shared B operand and owns its M-half of
+the output-row accumulator. The paired Tensor Core path supplies both B halves
+to both M-row owners; this is why B can be distributed without turning the
+output into a partial-K reduction.
 
 Paper roofline:
 
