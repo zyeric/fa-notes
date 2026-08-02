@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FlashAttention Notes</title>
+  <style>
+    :root {
+      --bg: #f4f1ea;
+      --paper: #fffdf8;
+      --ink: #182026;
+      --muted: #647078;
+      --line: #d8d6ce;
+      --blue: #245f7a;
+      --teal: #18786f;
+      --amber: #a55d18;
+      --violet: #67548c;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+        "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--bg); color: var(--ink); line-height: 1.62; }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { width: min(1160px, calc(100% - 32px)); margin: auto; }
+    header { border-bottom: 1px solid var(--line); background: var(--paper); }
+    .hero {
+      min-height: 78vh;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 42px;
+      align-items: center;
+      padding: 52px 0;
+    }
+    .eyebrow { color: var(--amber); font-size: 13px; font-weight: 850; letter-spacing: .09em; text-transform: uppercase; }
+    h1 { margin: 10px 0 18px; font-size: clamp(44px, 7vw, 78px); line-height: .98; letter-spacing: -.045em; }
+    .subtitle { max-width: 720px; color: #39444b; font-size: 20px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; }
+    .button { display: inline-flex; padding: 10px 15px; border: 1px solid var(--line); border-radius: 8px; background: var(--ink); color: #fff; font-weight: 780; }
+    .button.secondary { background: #fff; color: var(--ink); }
+    .ladder { padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: #faf9f5; }
+    .era { display: grid; grid-template-columns: 72px 1fr; gap: 15px; align-items: start; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+    .era strong { color: var(--teal); font-size: 18px; }
+    .era span { display: block; color: var(--muted); font-size: 14px; }
+    .arrow { padding: 4px 0; text-align: center; color: var(--amber); font-weight: 900; }
+    main { padding: 34px 0 72px; }
+    section { margin: 18px 0; padding: 26px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+    h2 { margin: 0 0 15px; font-size: 29px; line-height: 1.15; }
+    h3 { margin: 0 0 8px; font-size: 19px; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
+    .card { display: block; padding: 17px; border: 1px solid var(--line); border-radius: 9px; background: #fbfbf8; }
+    .card p { margin: 7px 0 0; color: var(--muted); font-size: 14px; }
+    .tag { display: inline-block; margin-bottom: 8px; color: var(--amber); font-size: 11px; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; }
+    .versions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 13px; }
+    .version { padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+    .version-head { display: flex; justify-content: space-between; gap: 14px; align-items: baseline; }
+    .version-head strong { font-size: 24px; }
+    .version-head span { color: var(--violet); font-size: 13px; font-weight: 800; }
+    .version p { color: var(--muted); }
+    .links { display: flex; flex-wrap: wrap; gap: 8px; }
+    .links a { padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px; background: #f8faf9; font-size: 13px; font-weight: 720; }
+    .table { overflow: auto; }
+    table { width: 100%; min-width: 780px; border-collapse: collapse; }
+    th, td { padding: 11px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #edf2ef; }
+    .note { padding: 13px 16px; border-left: 4px solid var(--teal); background: #eff8f5; }
+    footer { padding: 28px 0 44px; color: var(--muted); font-size: 13px; }
+    @media (max-width: 880px) {
+      .hero { min-height: auto; grid-template-columns: 1fr; padding: 34px 0; }
+      h1 { font-size: 46px; }
+      .grid, .versions { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap hero">
+      <div>
+        <div class="eyebrow">FA1 → FA4 · source-backed learning notes</div>
+        <h1>FlashAttention<br>from first principles</h1>
+        <p class="subtitle">从 attention 数学、online softmax 和 tiling 出发，逐层走到 CTA/warp ownership、memory movement、Tensor Core primitive、pipeline、performance 与 deterministic backward。</p>
+        <div class="actions">
+          <a class="button" href="slides/fa1-forward.html">从 FA1 forward 开始</a>
+          <a class="button secondary" href="notes.html#doc-evolution">先看四代演化</a>
+          <a class="button secondary" href="notes.html">Long-form HTML</a>
+        </div>
+      </div>
+      <div class="ladder" aria-label="FlashAttention generations">
+        <div class="era"><strong>FA1</strong><div>IO-aware tiling<span>避免 N² score / probability 的 HBM round trip</span></div></div>
+        <div class="arrow">↓ ownership</div>
+        <div class="era"><strong>FA2</strong><div>Better work partition<span>Q-block CTA ownership，减少 partial 与 non-MMA work</span></div></div>
+        <div class="arrow">↓ async pipeline</div>
+        <div class="era"><strong>FA3</strong><div>Hopper specialization<span>TMA + WGMMA + warp specialization + persistent scheduler</span></div></div>
+        <div class="arrow">↓ asymmetric scaling</div>
+        <div class="era"><strong>FA4</strong><div>Blackwell co-design<span>TMEM + tcgen05 + 2-CTA + softmax algorithm changes</span></div></div>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section>
+      <h2>Choose a reading path</h2>
+      <div class="grid">
+        <a class="card" href="slides/fa1-forward.html">
+          <span class="tag">Beginner · visual</span>
+          <h3>从一个 FA1 forward CTA 开始</h3>
+          <p>先补 A100、grid/CTA/warp、register/SMEM、MMA、online softmax，再讨论为什么 forward deterministic。</p>
+        </a>
+        <a class="card" href="notes.html#doc-evolution">
+          <span class="tag">Top-down · 20 min</span>
+          <h3>只记住 FA1 → FA4 的主线</h3>
+          <p>每一代在解决什么瓶颈、owner graph 哪些变了、哪些只是 hardware pipeline 的升级。</p>
+        </a>
+        <a class="card" href="notes.html#doc-current-implementation-and-determinism">
+          <span class="tag">Audit · determinism</span>
+          <h3>从 multi-writer reduction 入手</h3>
+          <p>default atomic/reduce-add、split workspace、fixed reduction、semaphore writer order 和 dispatch envelope。</p>
+        </a>
+      </div>
+    </section>
+
+    <section>
+      <h2>Generation-by-generation</h2>
+      <div class="versions">
+        <article class="version">
+          <div class="version-head"><strong>FA1</strong><span>Ampere foundation</span></div>
+          <p>数学、IO complexity、CTA/warp 物理执行、memory lifetime、forward/backward ownership 与最初的 deterministic split。</p>
+          <div class="links">
+            <a href="slides/fa1-forward.html">Forward slides</a>
+            <a href="slides/fa1-backward.html">Backward slides</a>
+            <a href="notes.html#doc-fa1-foundations">Full note</a>
+            <a href="notes.html#doc-fa1-checkpoint">Checkpoint</a>
+          </div>
+        </article>
+        <article class="version">
+          <div class="version-head"><strong>FA2</strong><span>ownership first</span></div>
+          <p>为什么更自然的 Q-block / warp partition 能减少 partial-O communication、同步和昂贵的 non-MMA 工作。</p>
+          <div class="links">
+            <a href="slides/fa2-forward.html">Forward slides</a>
+            <a href="slides/fa2-backward.html">Backward slides</a>
+            <a href="notes.html#doc-fa2-forward">Forward note</a>
+            <a href="notes.html#doc-fa2-backward">Backward note</a>
+          </div>
+        </article>
+        <article class="version">
+          <div class="version-head"><strong>FA3</strong><span>Hopper</span></div>
+          <p>H100 相对 A100 的新机会，以及 TMA/matrix、WGMMA/softmax 两层 overlap、warp specialization 和 persistent CTA。</p>
+          <div class="links">
+            <a href="slides/fa3.html">Combined slides</a>
+            <a href="notes.html#doc-fa3">Markdown in HTML</a>
+            <a href="notes/fa3.md">Markdown source</a>
+          </div>
+        </article>
+        <article class="version">
+          <div class="version-head"><strong>FA4</strong><span>Blackwell</span></div>
+          <p>当 MMA 继续加速但 SMEM/exp 没有等比例扩展：TMEM、tcgen05、2-CTA cooperation、deeper pipeline 与 partial exp。</p>
+          <div class="links">
+            <a href="slides/fa4.html">Combined slides</a>
+            <a href="notes.html#doc-fa4">Markdown in HTML</a>
+            <a href="notes/fa4.md">Markdown source</a>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>The compact mental model</h2>
+      <div class="table">
+        <table>
+          <thead><tr><th>Generation</th><th>Primary bottleneck</th><th>Schedule / primitive response</th><th>Do not misremember it as</th></tr></thead>
+          <tbody>
+            <tr><td>FA1</td><td>N² intermediate HBM IO</td><td>tiling + online softmax</td><td>an approximate attention algorithm</td></tr>
+            <tr><td>FA2</td><td>weak work partition and excess non-MMA work</td><td>Q-block CTA ownership + split-Q warps</td><td>mainly a new hardware feature</td></tr>
+            <tr><td>FA3</td><td>Hopper compute waiting on movement / softmax</td><td>TMA + WGMMA + specialized asynchronous pipeline</td><td>a fundamentally new owner graph</td></tr>
+            <tr><td>FA4</td><td>MMA scales faster than SMEM and exp</td><td>TMEM + tcgen05 + 2-CTA + softmax co-design</td><td>“B is physically read exactly once”</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Evidence and scope contract</h2>
+      <p class="note">Markdown is the source of truth. The notes separate mathematical facts, pinned-source observations, paper-reported measurements, hardware inference, and GPU validation still pending. “FlashAttention deterministic” is never used as a repository-wide boolean: the useful claim names forward/backward, backend, shape/mode, combine protocol, compiler artifact, device, and RNG state.</p>
+      <p>FlashMLA、paged/decode attention、inference scheduling、batch invariance、linear attention 和 model-specific large-head-dim dispatch 暂不并入这一轮。</p>
+    </section>
+  </main>
+
+  <footer class="wrap">Markdown sources · standalone HTML decks · dependency-free GitHub Pages</footer>
+</body>
+</html>

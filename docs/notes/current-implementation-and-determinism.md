@@ -19,16 +19,16 @@ example and checks how the current CuTe path generalizes it.
 
 The historical learning sequence is maintained separately:
 
-- [FA1 one-page checkpoint](flashattention_fa1_checkpoint.md);
-- [full FA1 foundations and v1.0.9 audit](flashattention_fa1_foundations.md);
-- [FA2 v2.0.0 forward delta](flashattention_fa2_forward.md);
-- [FA2 forward delta visual map](flashattention_fa2_forward.html);
-- [FA2 v2.0.0 backward audit](flashattention_fa2_backward.md);
-- [FA2 backward visual map](flashattention_fa2_backward.html);
-- [FA3 Hopper forward/backward deep dive](flashattention_fa3.md);
-- [FA3 Hopper visual map](flashattention_fa3.html);
-- [FA4 Blackwell forward/backward deep dive](flashattention_fa4.md);
-- [FA4 Blackwell visual map](flashattention_fa4.html).
+- [FA1 one-page checkpoint](fa1-checkpoint.md);
+- [full FA1 foundations and v1.0.9 audit](fa1-foundations.md);
+- [FA2 v2.0.0 forward delta](fa2-forward.md);
+- [FA2 forward delta visual map](../slides/fa2-forward.html);
+- [FA2 v2.0.0 backward audit](fa2-backward.md);
+- [FA2 backward visual map](../slides/fa2-backward.html);
+- [FA3 Hopper forward/backward deep dive](fa3.md);
+- [FA3 Hopper visual map](../slides/fa3.html);
+- [FA4 Blackwell forward/backward deep dive](fa4.md);
+- [FA4 Blackwell visual map](../slides/fa4.html).
 
 It does not claim one verdict for every implementation in the repository.
 ROCm/Triton/CK backends, inference KV-cache mutation, paged attention,
@@ -36,8 +36,8 @@ score/mask modifications, and block-sparse variants need separate dispatch
 records.
 
 DeepSeek-V4 and Gemma 4 large-head-dimension inference paths are tracked
-separately in
-[large-head-dimension attention](large_head_dim_attention.md). Their
+separately in the axis-training-dev-tools
+[large-head-dimension attention investigation](https://github.com/rStar-RL/axis-training-dev-tools/blob/master/contexts/megatron/ongoing/yi/determinism_foundations/operators/large_head_dim_attention.md). Their
 `d=512`, MQA/GQA, FA4/FlashMLA, and SplitKV choices must not inherit the
 ordinary-attention verdict in this file without a resolved dispatch.
 

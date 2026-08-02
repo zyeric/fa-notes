@@ -6,7 +6,7 @@ Status: compact re-entry guide derived from the completed FA1 paper and
 historical CUDA source study; GPU validation remains pending
 
 This is the short reading surface for
-[the full FA1 foundations and source audit](flashattention_fa1_foundations.md).
+[the full FA1 foundations and source audit](fa1-foundations.md).
 It intentionally omits most derivations, layouts, dispatch tables, and source
 proof. Use it to rebuild the ownership and determinism model before reading a
 later FlashAttention generation.

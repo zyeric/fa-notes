@@ -7,12 +7,12 @@ complete; CPU-only reasoning, with GPU validation deferred and backward kept
 in its separate companion audit
 
 Read the
-[FA1 one-page checkpoint](flashattention_fa1_checkpoint.md)
+[FA1 one-page checkpoint](fa1-checkpoint.md)
 first. This note treats FA2 as a delta study: it does not repeat ordinary
 attention, safe softmax, CUDA hierarchy, or the full FA1 derivation.
 
 For a graphical reading surface, open the standalone
-[FA2 forward delta visual map](flashattention_fa2_forward.html). It keeps the
+[FA2 forward delta visual map](../slides/fa2-forward.html). It keeps the
 same pinned source scope but reorganizes the conclusions around why FA2 is
 faster than the audited FA1 path: Q-block CTA ownership, on-chip running state,
 split-Q warp ownership, SM80 `cp.async`, causal work balance, costs, and the
@@ -639,7 +639,7 @@ For every candidate tile and worker mapping, fill this table before calling it
 | What validates the performance story? | pinned ablation/profile plus resolved specialization | theoretical peak or source shape alone is insufficient |
 
 This scorecard is also maintained in the cross-project
-[`kernel_communication_research.md`](../../../../../kernel_communication_research.md)
+[`kernel_communication_research.md`](https://github.com/rStar-RL/axis-training-dev-tools/blob/master/contexts/kernel_communication_research.md)
 workflow so future kernel studies ask the same questions.
 
 ## 10. Stop Line And Next Questions
@@ -654,8 +654,8 @@ without a separate audit:
 - cross-version bitwise equality.
 
 The pinned v2.0.0 backward source audit now lives in
-[FA2 backward](flashattention_fa2_backward.md), with a companion
-[backward visual map](flashattention_fa2_backward.html). It is kept separate
+[FA2 backward](fa2-backward.md), with a companion
+[backward visual map](../slides/fa2-backward.html). It is kept separate
 because its sequence-K atomic ownership and three-kernel protocol require a
 different determinism proof.
 

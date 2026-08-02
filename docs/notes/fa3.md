@@ -7,14 +7,14 @@ FP16/BF16 mechanism; CPU-only source reasoning, with SASS/profile and repeated
 GPU validation deferred
 
 Read the
-[FA2 forward delta](flashattention_fa2_forward.md) and
-[FA2 backward audit](flashattention_fa2_backward.md) first. This note assumes
+[FA2 forward delta](fa2-forward.md) and
+[FA2 backward audit](fa2-backward.md) first. This note assumes
 the reader already understands tiled online softmax, FA2's one-Q-block forward
 ownership, and the backward fact that one K/V-owner CTA produces complete
 `dK/dV` but only a partial `dQ`.
 
 For a graphical reading surface, open the standalone
-[FA3 Hopper deep-dive visual map](flashattention_fa3.html). Forward and
+[FA3 Hopper deep-dive visual map](../slides/fa3.html). Forward and
 backward live in one document because they share the same Hopper primitives,
 but their ownership and determinism proofs remain separate. This Markdown file
 is the source of truth.

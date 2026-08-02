@@ -374,7 +374,7 @@ G_I,V_J → dP[I,J] ────────────────┘</div><di
   <section class="slide" data-section="Summary">
     <div class="kicker">One-screen checkpoint</div>
     <div class="content center"><div><div class="flow"><span class="node cyan-node">one CTA owns K/V tile J</span><span class="arrow">→</span><span class="node green-node">dK/dV complete owner</span><span class="arrow">→</span><span class="node red-node">dQ partial atomic publisher</span></div><p class="lead">FA2 backward 的优势：<span class="cyan">larger tiles、output-axis warp partition、sequence-K workers、cp.async pipeline</span>。</p><p class="lead muted">它的代价：three kernels、128 MiB-class FP32 dQ workspace、heavy CTA，以及没有固定顺序的 cross-J atomic dQ。</p><span class="equation">local partition improved ≠ global reduction deterministic</span></div></div>
-    <footer class="footer"><span>source of truth: flashattention_fa2_backward.md</span><span>Summary</span></footer>
+    <footer class="footer"><span>source of truth: ../notes/fa2-backward.md</span><span>Summary</span></footer>
   </section>
 
   <section class="slide" data-section="Next">

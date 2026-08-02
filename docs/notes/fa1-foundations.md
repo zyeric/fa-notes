@@ -10,10 +10,10 @@ reasoning, with GPU validation still pending
 
 This note stops at FlashAttention-1 (FA1). It is the mathematical and
 mechanical foundation for the broader
-[FlashAttention source audit](flashattention.md); it does not expand FA2,
+[FlashAttention source audit](current-implementation-and-determinism.md); it does not expand FA2,
 FA3, FA4, CuTe, paged attention, or inference-engine scheduling.
-The separate
-[large-head-dimension attention note](large_head_dim_attention.md) uses this
+The separate axis-training-dev-tools
+[large-head-dimension attention investigation](https://github.com/rStar-RL/axis-training-dev-tools/blob/master/contexts/megatron/ongoing/yi/determinism_foundations/operators/large_head_dim_attention.md) uses this
 FA1 layout as a counterfactual for DeepSeek-V4 and Gemma 4 `d=512` paths
 without attributing FA1's work partition to those later implementations.
 
@@ -43,8 +43,8 @@ concurrently, and what the `deterministic` option actually changes.
 ### Document role and reader frontier
 
 This is both the human learning narrative and the pinned FA1 source audit. It
-follows the repo-level
-[kernel and communication research workflow](../../../../../kernel_communication_research.md)
+follows the source repo's
+[kernel and communication research workflow](https://github.com/rStar-RL/axis-training-dev-tools/blob/master/contexts/kernel_communication_research.md)
 without splitting one tightly coupled operator across several files.
 
 The assumed reader frontier is:
@@ -62,12 +62,12 @@ The assumed reader frontier is:
 ### Recommended reading paths
 
 For a short re-entry before a later-generation comparison, read the
-[FA1 one-page checkpoint](flashattention_fa1_checkpoint.md). It compresses the
+[FA1 one-page checkpoint](fa1-checkpoint.md). It compresses the
 forward/backward ownership, state residence, and scoped determinism verdict
 without replacing the evidence in this file.
 
 For a graphical forward-only reading surface, open the standalone
-[FA1 forward visual map](flashattention_fa1_forward.html). It reorganizes the
+[FA1 forward visual map](../slides/fa1-forward.html). It reorganizes the
 same source-audited conclusions into beginner-oriented 16:9 diagrams. It first
 introduces A100 compute/memory architecture and the
 grid/CTA/warp/register/synchronization model before tiling, then follows a
@@ -76,7 +76,7 @@ movement, shared-bank swizzles, the four-warp pipeline, modes, and the
 determinism proof. This Markdown file remains the source of truth.
 
 For the corresponding backward reading surface, open the standalone
-[FA1 backward visual map](flashattention_fa1_backward.html). It assumes the
+[FA1 backward visual map](../slides/fa1-backward.html). It assumes the
 forward deck's CUDA vocabulary, then follows the same
 `B=1,H=32,N=8192,d=128` example from the five gradient equations through
 recomputed P, eight-warp K/V-tile ownership, shared-memory transpose
@@ -1145,7 +1145,7 @@ removes replicated complete-width partial O, but both groups need the complete
 P rows, so the implementation must redistribute, reload, or publish P through
 a shared producer/consumer boundary. The detailed V4/Gemma/FA4 source signals
 and the distinction from cross-CTA SplitKV live in
-[the large-head-dimension note](large_head_dim_attention.md).
+[the large-head-dimension investigation](https://github.com/rStar-RL/axis-training-dev-tools/blob/master/contexts/megatron/ongoing/yi/determinism_foundations/operators/large_head_dim_attention.md).
 
 ##### Why distributed K/V can fit in registers
 

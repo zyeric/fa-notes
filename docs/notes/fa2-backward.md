@@ -5,10 +5,10 @@ Date: 2026-07-29
 Status: official v2.0.0 SM80 CUDA backward source study complete for the
 standard sequence-K path; CPU-only reasoning, with GPU validation deferred
 
-Read the [FA1 backward visual map](flashattention_fa1_backward.html) and the
-[FA2 forward delta](flashattention_fa2_forward.md) first. For a graphical
+Read the [FA1 backward visual map](../slides/fa1-backward.html) and the
+[FA2 forward delta](fa2-forward.md) first. For a graphical
 reading surface, open the
-[FA2 backward visual map](flashattention_fa2_backward.html). This Markdown
+[FA2 backward visual map](../slides/fa2-backward.html). This Markdown
 file is the source of truth.
 
 ## 1. Scope And Evidence

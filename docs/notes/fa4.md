@@ -7,13 +7,13 @@ BF16 fixed-length, head-dimension-128 mechanism; CPU-only source reasoning,
 with B200 SASS/profile and repeated GPU validation deferred
 
 Read the
-[FA3 Hopper deep dive](flashattention_fa3.md) first. This note assumes the
+[FA3 Hopper deep dive](fa3.md) first. This note assumes the
 reader already understands TMA, warp specialization, online softmax,
 persistent scheduling, and the backward ownership fact that a K/V-owner CTA
 produces complete `dK/dV` but only a partial `dQ`.
 
 For a graphical reading surface, open the standalone
-[FA4 Blackwell visual map](flashattention_fa4.html). Forward and backward live
+[FA4 Blackwell visual map](../slides/fa4.html). Forward and backward live
 in one document because both are responses to the same asymmetric Blackwell
 scaling, but their ownership and determinism arguments remain separate. This
 Markdown file is the source of truth.
