@@ -25,6 +25,7 @@ This path introduces CUDA vocabulary before relying on it, follows the common
 4. [FA3 Hopper deep dive](fa3.md)
 5. [FA4 Blackwell deep dive](fa4.md)
 6. [Current implementation and determinism audit](current-implementation-and-determinism.md)
+7. [Rubin Attention opportunity and challenge map](rubin-attention-projection.md)
 
 The later-generation documents assume the earlier ownership and memory model.
 They intentionally explain deltas instead of repeating all of FA1.
@@ -63,7 +64,7 @@ The notes distinguish:
 - facts visible in pinned paper/source snapshots;
 - performance mechanisms inferred from those facts;
 - measurements reported by papers;
-- checks still pending on A100, H100, or B200-class hardware.
+- checks still pending on A100, H100, B200-class, or Rubin hardware.
 
 “FlashAttention is deterministic” is intentionally rejected as an unscoped
 statement. A useful claim names forward or backward, the resolved backend,
@@ -79,3 +80,8 @@ Tensor Core vocabulary live in
 Model-specific large-head-dimension, FlashMLA, inference, batch-invariance,
 and linear-attention investigations remain separate until they have enough
 coherent material to extend this reading graph without weakening its scope.
+
+The Rubin note is an explicit architecture projection rather than a fifth
+FlashAttention generation. It keeps exact dense Attention separate from
+activation-sparse/model-co-designed alternatives and records what still needs
+a public implementation or GPU measurement.

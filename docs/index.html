@@ -117,6 +117,11 @@
           <h3>从 multi-writer reduction 入手</h3>
           <p>default atomic/reduce-add、split workspace、fixed reduction、semaphore writer order 和 dispatch envelope。</p>
         </a>
+        <a class="card" href="notes.html#doc-rubin-attention-projection">
+          <span class="tag">Projection · Rubin</span>
+          <h3>Rubin 会让哪些假设失效？</h3>
+          <p>EX2、HBM4、K-loop、tile trigger、counted writes 带来的机会，以及 exact attention、backward 和 determinism 边界。</p>
+        </a>
       </div>
     </section>
 
@@ -159,6 +164,14 @@
             <a href="slides/fa4.html">Combined slides</a>
             <a href="notes.html#doc-fa4">Markdown in HTML</a>
             <a href="notes/fa4.md">Markdown source</a>
+          </div>
+        </article>
+        <article class="version">
+          <div class="version-head"><strong>Rubin</strong><span>architecture projection</span></div>
+          <p>不命名为 FA5：从更快 EX2、HBM4、K 维处理、tile-level trigger 与 counted writes 出发，列出要重新搜索和验证的问题。</p>
+          <div class="links">
+            <a href="notes.html#doc-rubin-attention-projection">Projection in HTML</a>
+            <a href="notes/rubin-attention-projection.md">Markdown source</a>
           </div>
         </article>
       </div>

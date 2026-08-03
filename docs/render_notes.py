@@ -23,6 +23,7 @@ DOCS = [
     ("fa3.md", "FA3 / Hopper", "TMA, WGMMA, warp specialization, and two-level overlap."),
     ("fa4.md", "FA4 / Blackwell", "TMEM, tcgen05, 2-CTA cooperation, and softmax changes."),
     ("current-implementation-and-determinism.md", "Current Determinism Audit", "Resolved ownership and ordered-reduction mechanisms."),
+    ("rubin-attention-projection.md", "Rubin Projection", "Attention opportunities, bottleneck migration, exactness boundaries, and validation questions."),
 ]
 
 
@@ -246,7 +247,7 @@ def build() -> str:
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>FlashAttention Reading Notes</title><style>""" + STYLE + """</style></head><body>
 <div class="layout"><aside><div class="brand">FlashAttention<br>Reading Notes</div>
-<div class="meta">Generated 2026-08-02<br>Markdown is the source of truth</div>
+<div class="meta">Generated 2026-08-03<br>Markdown is the source of truth</div>
 <nav class="nav"><a href="#top">Overview</a>""" + "".join(nav) + """</nav></aside>
 <main><section class="hero" id="top"><h1>FlashAttention Reading Notes</h1>
 <p class="subtitle">A progressive FA1-to-FA4 reading surface from online softmax and CTA ownership to Hopper/Blackwell pipelines and deterministic backward protocols.</p>
