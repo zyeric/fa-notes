@@ -370,8 +370,22 @@ In the pinned d128 forward path:
   two consumer groups: 240 registers/thread target
 ```
 
-The values are implementation-specific and should not be treated as H100
-constants.
+The resulting CTA register-allocation envelope is:
+
+```text
+producer: 128 threads * 24  =  3,072 32-bit registers
+consumer: 256 threads * 240 = 61,440 32-bit registers
+total                         = 64,512 registers = 252 KiB
+```
+
+A100 and H100 both expose 65,536 32-bit registers per SM, so Hopper did not
+solve this pressure by enlarging the per-SM register file. `setmaxnreg`
+redistributes the admitted CTA pool toward the consumer warpgroups and brings
+this specialization close to the one-SM limit. These are allocation targets,
+not proof that every target register contains a simultaneously live value; the
+compiled artifact is still required for exact register, spill, and residency
+claims. The values are implementation-specific and should not be treated as
+H100 constants.
 
 ## 5. Three Different Meanings Of "Tile"
 
@@ -752,6 +766,32 @@ more overlap
   -> pressure against tile size, spills, and occupancy
 ```
 
+This pressure is about overlapping **live ranges**, not the number of variable
+names in source. Extending the schedule to another stage keeps more future
+score/probability and scaling state live before the prior state can release its
+registers. The possible outcomes must be kept separate:
+
+```text
+more live state
+  -> a larger registers/thread allocation and lower CTA residency, without spill
+  -> compiler-generated spill loads/stores to thread-local memory
+  -> or a smaller tile / fewer stages chosen to avoid either cost
+```
+
+Spilling is fixed by the compiler/backend; the running H100 does not
+dynamically move excess fragments into SMEM. Explicit SMEM staging would be a
+different kernel design with its own capacity, traffic, and synchronization
+cost. The generic formal model and `ptxas` checks live in
+[`gpu-memory-hierarchy.md`](https://github.com/zyeric/gpu-hardware-notes/blob/main/docs/notes/gpu-memory-hierarchy.md#register-pressure-allocation-and-spilling).
+
+The paper's proposed three-stage variant makes this tradeoff concrete: it
+needs another future `P_tilde`-like state and per-row output-rescaling state in
+addition to the two-stage buffers. The authors report that the extra register
+demand conflicts with larger blocks, while the compiler did not realize the
+intended overlap of the second WGMMA with softmax. The tested three-stage path
+therefore did not beat two stages. This is a paper-reported compiler/resource
+result, not a claim that every three-stage implementation must spill.
+
 The paper notes that compiler reordering can improve or disrupt the intended
 sequence. A source-level `commit` is not a measured overlap percentage; SASS
 and Nsight Compute are needed for the realized schedule.
@@ -1009,6 +1049,76 @@ independent tiles can still proceed where dependencies allow.
 | softmax/GEMM schedule | more synchronous dependency chain | pingpong plus intra-WG pipeline |
 | physical scheduling | ordinary CTA grid in pinned FA2 | persistent CTA schedulers in pinned FA3 |
 | numeric ownership | disjoint O rows | still disjoint O rows |
+
+#### 9.1.1 Representative BF16 d128 causal resource accounting
+
+The logical schedule remains comparable, but the physical tile and on-chip
+footprint do not. For BF16, no dropout, head dimension 128, and causal forward,
+compare the pinned FA2 v2.0.0 SM80 path with this note's pinned FA3 SM90 path:
+
+| Resource | FA2 SM80 | FA3 SM90 |
+| --- | ---: | ---: |
+| CTA tile `B_M x B_N` | `128 x 64` | `128 x 128` |
+| resident threads in the CTA | 4 warps / 128 threads | 12 warps / 384 threads |
+| logical Q/O ownership | four warp slices of one 128-row output tile | two consumer warpgroups, 64 rows each |
+| K/V SMEM generations | one K region plus one V region | two circular K stages plus two circular V stages |
+| Q/K/V SMEM payload | 64 KiB | 160 KiB |
+| register policy | one compiler-fixed allocation for all warps | 24-register producer target and 240-register consumer target |
+
+The SMEM payload follows directly from the source layouts. FA2 uses:
+
+```text
+Q = 128 * 128 * 2 B = 32 KiB
+K =  64 * 128 * 2 B = 16 KiB
+V =  64 * 128 * 2 B = 16 KiB
+total                     = 64 KiB
+```
+
+FA3 doubles `B_N` and keeps two physical K/V generations:
+
+```text
+Q       =     128 * 128 * 2 B = 32 KiB
+K[2]    = 2 * 128 * 128 * 2 B = 64 KiB
+V[2]    = 2 * 128 * 128 * 2 B = 64 KiB
+payload                           = 160 KiB
+```
+
+`sizeof(SharedStorage)` is slightly larger because it also includes pipeline
+barriers, a semaphore, and alignment. Final O staging reuses the V allocation
+through a union, so it does not add another complete 32 KiB at peak.
+
+FA2 has no source-level `setmaxnreg` target from which to quote an exact final
+register count. A useful accumulator accounting, not a substitute for `ptxas`,
+is:
+
+```text
+running O: 128 * 128 FP32 = 16,384 registers = 64 KiB
+current S: 128 *  64 FP32 =  8,192 registers = 32 KiB
+combined core payload     = 24,576 registers = 96 KiB
+                          = 192 registers/thread across 128 threads
+```
+
+Operand fragments, online-softmax state, pointers, predicates, and compiler
+lifetime reuse determine the actual allocation. FA3 instead exposes the
+64,512-register / 252-KiB role-allocation envelope calculated in Section 4.5.
+Its `128 x 128` FP32 score tile alone is 64 KiB across both consumer groups;
+the intra-warpgroup pipeline pays for another in-flight score-sized state to
+overlap iterations.
+
+Register and SMEM bytes are separate physical capacity pools and should not be
+summed into one memory number. The comparison nevertheless shows the design
+direction:
+
+```text
+FA2: a smaller CTA footprint that can preserve more residency
+FA3: a near-SM-sized persistent CTA that spends SMEM and registers on
+     larger K/V steps, TMA buffering, and GEMM/softmax overlap
+```
+
+The larger `B_N` reduces the number of K/V-loop iterations, but does not remove
+the mathematical K/V bytes required for a complete Q tile. Numeric ownership
+also remains one logical Q/O tile, so this resource change does not introduce
+another floating-point contributor to forward O.
 
 ### 9.2 Backward
 

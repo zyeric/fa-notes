@@ -530,10 +530,10 @@ CUDA/MUFU:   max, exp, sum, rescale</div>
         <div class="card" style="grid-column:1/-1">
           <div class="flow">
             <span class="node cyan-node">WG0: 128 × 24 regs</span><span class="arrow">+</span>
-            <span class="node green-node">WG1+WG2: 256 × 240 regs</span><span class="arrow">≈</span>
-            <span class="node amber-node">64K-register SM budget</span>
+            <span class="node green-node">WG1+WG2: 256 × 240 regs</span><span class="arrow">=</span>
+            <span class="node amber-node">64,512 regs = 252 KiB</span>
           </div>
-          <p class="small center">Nominal targets make one large CTA/SM plausible；exact residency still needs compiled metadata and an occupancy/profile check。</p>
+          <p class="small center">A100 和 H100 都只有 65,536 个 32-bit registers/SM；FA3 靠 redistribution，不是更大的 register file。Nominal targets 仍需 compiled metadata 验证 residency/spill。</p>
         </div>
       </div>
       <footer class="footer"><span>consumer WGs own disjoint rows, not partial copies of O</span><span>Forward roles</span></footer>
@@ -619,6 +619,39 @@ same CTA loops until no work remains</div>
           <span class="red">proof:</span> source 只证明合法，SASS/profile 才证明实际 interleave。</p>
       </div>
       <footer class="footer"><span>WG1/WG2 still own disjoint rows · paper d128/N8192: ~570 → 620–640 TFLOP/s</span><span>Forward Layer B</span></footer>
+    </section>
+
+    <section class="slide" data-section="Why two stages">
+      <div class="kicker">Pipeline depth · why register pressure stops “just add another stage”</div>
+      <div class="content grid-2">
+        <article class="card cyan-edge">
+          <span class="tag">2-stage cost</span>
+          <h3>Overlap needs another live score state</h3>
+          <div class="equation">S_next: 128 × 128 × FP32 = 64 KiB / CTA</div>
+          <p>分到 256 个 consumer threads，payload 约等于每 thread 再增加 <strong>64 个 32-bit registers</strong>。</p>
+          <p class="small muted">running O、当前 P/S、max/sum、operand fragments 与地址状态也仍然 live。</p>
+        </article>
+        <article class="card amber-edge">
+          <span class="tag">3-stage pressure</span>
+          <h3>More future state, longer overlapping lifetimes</h3>
+          <ul>
+            <li>额外 future <code>P_tilde</code>-like state；</li>
+            <li>额外 per-row output-rescaling state；</li>
+            <li>更难同时保留 large tile 和 zero spill。</li>
+          </ul>
+          <p class="small">Paper 报告 compiler 没实现预期的第二个 WGMMA/softmax overlap，tested 3-stage 没有胜过 2-stage。</p>
+        </article>
+        <div class="card" style="grid-column:1/-1">
+          <div class="flow">
+            <span class="node blue-node">more live ranges</span><span class="arrow">→</span>
+            <span class="node amber-node">more regs / lower residency</span><span class="arrow">or</span>
+            <span class="node red-node">compiler spill → thread-local memory</span><span class="arrow">or</span>
+            <span class="node green-node">smaller tile / fewer stages</span>
+          </div>
+          <p class="small center"><code>nvcc -Xptxas=-v</code> 检查 registers 与 spill loads/stores；spill 在编译期写进指令流，不会运行时自动 fallback 到 SMEM。</p>
+        </div>
+      </div>
+      <footer class="footer"><span>zero spill is desirable but not sufficient · inspect occupancy, tile size and hot-path local traffic together</span><span>Register pressure</span></footer>
     </section>
 
     <section class="slide" data-section="Forward determinism">
@@ -759,6 +792,29 @@ KV CTA 9  ─┘ → same FP32 dQ words</div>
         </table>
       </div>
       <footer class="footer"><span>keep owner, redesign execution and publication</span><span>Delta</span></footer>
+    </section>
+
+    <section class="slide" data-section="FA2 vs FA3 resources">
+      <div class="kicker">Representative BF16 d=128 causal forward · same logical owner, different physical budget</div>
+      <div class="content">
+        <table class="dense">
+          <thead><tr><th>Per-CTA resource</th><th>FA2 / A100</th><th>FA3 / H100</th><th>Why it changes</th></tr></thead>
+          <tbody>
+            <tr><td>CTA tile</td><td><code>128×64</code></td><td><code>128×128</code></td><td>larger K/V step</td></tr>
+            <tr><td>resident threads</td><td>4 warps / 128</td><td>12 warps / 384</td><td>producer + 2 consumer WGs</td></tr>
+            <tr><td>Q SMEM</td><td>32 KiB</td><td>32 KiB</td><td>same 128×128 BF16 Q tile</td></tr>
+            <tr><td>K/V SMEM</td><td>16 + 16 KiB</td><td>64 + 64 KiB</td><td>B_N doubles and each has 2 stages</td></tr>
+            <tr><td>Q/K/V payload total</td><td><strong>64 KiB</strong></td><td><strong>160 KiB</strong> + metadata</td><td>FA3 spends capacity on overlap</td></tr>
+            <tr><td>register accounting</td><td>compiler-fixed；core O+S payload ≈ 192 regs/thread</td><td>role targets total 64,512 regs</td><td>long-lived WGMMA/softmax state</td></tr>
+          </tbody>
+        </table>
+        <div class="grid-2" style="height:auto;margin-top:12px">
+          <article class="card cyan-edge"><h3>FA2 direction</h3><p class="small">smaller CTA footprint；SMEM alone can leave room for more residency，exact result still depends on compiled registers。</p></article>
+          <article class="card green-edge"><h3>FA3 direction</h3><p class="small">near-SM-sized persistent CTA；amortize setup and overlap TMA、WGMMA、softmax instead of minimizing on-chip bytes。</p></article>
+        </div>
+        <p class="small center amber">Register file 与 SMEM 是两个独立 capacity pools，不能把 252 KiB + 160 KiB 当成一个统一内存占用。</p>
+      </div>
+      <footer class="footer"><span>larger B_N halves K/V loop steps but does not remove the mathematical K/V bytes for a complete Q tile</span><span>Resource ledger</span></footer>
     </section>
 
     <section class="slide" data-section="Determinism scorecard">
