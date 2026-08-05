@@ -23,6 +23,7 @@ DOCS = [
     ("fa2-backward.md", "FA2 Backward", "Backward ownership, partial dQ, and deterministic combine."),
     ("fa3.md", "FA3 / Hopper", "TMA, WGMMA, warp specialization, and two-level overlap."),
     ("fa4.md", "FA4 / Blackwell", "TMEM, tcgen05, 2-CTA cooperation, and softmax changes."),
+    ("large-head-dimension-inference.md", "Large-D Inference", "How d=512 changes QK/PV ownership, pipeline balance, and engine dispatch."),
     ("current-implementation-and-determinism.md", "Current Determinism Audit", "Resolved ownership and ordered-reduction mechanisms."),
     ("rubin-attention-projection.md", "Rubin Projection", "Attention opportunities, bottleneck migration, exactness boundaries, and validation questions."),
 ]

@@ -36,9 +36,8 @@ ROCm/Triton/CK backends, inference KV-cache mutation, paged attention,
 score/mask modifications, and block-sparse variants need separate dispatch
 records.
 
-DeepSeek-V4 and Gemma 4 large-head-dimension inference paths are tracked
-separately in the axis-training-dev-tools
-[large-head-dimension attention investigation](https://github.com/rStar-RL/axis-training-dev-tools/blob/master/contexts/megatron/ongoing/yi/determinism_foundations/operators/large_head_dim_attention.md). Their
+DeepSeek-V4 and Gemma 4 large-head-dimension inference paths are tracked in the
+[large-head-dimension inference schedule comparison](large-head-dimension-inference.md). Their
 `d=512`, MQA/GQA, FA4/FlashMLA, and SplitKV choices must not inherit the
 ordinary-attention verdict in this file without a resolved dispatch.
 

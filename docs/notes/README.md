@@ -27,8 +27,9 @@ ground that model in the common `B=1, H=32, N=8192, d=128` example.
 3. [FA2 backward delta](fa2-backward.md)
 4. [FA3 Hopper deep dive](fa3.md)
 5. [FA4 Blackwell deep dive](fa4.md)
-6. [Current implementation and determinism audit](current-implementation-and-determinism.md)
-7. [Rubin Attention opportunity and challenge map](rubin-attention-projection.md)
+6. [Large-head-dimension inference schedule comparison](large-head-dimension-inference.md)
+7. [Current implementation and determinism audit](current-implementation-and-determinism.md)
+8. [Rubin Attention opportunity and challenge map](rubin-attention-projection.md)
 
 The later-generation documents assume the earlier ownership and memory model.
 They intentionally explain deltas instead of repeating all of FA1.
@@ -83,9 +84,12 @@ foundations. Generic CTA/warp/SM, memory hierarchy, clocks, pipelines, and
 Tensor Core vocabulary live in
 [gpu-hardware-notes](https://github.com/zyeric/gpu-hardware-notes).
 
-Model-specific large-head-dimension, FlashMLA, inference, batch-invariance,
-and linear-attention investigations remain separate until they have enough
-coherent material to extend this reading graph without weakening its scope.
+A narrow [large-head-dimension inference](large-head-dimension-inference.md)
+extension now owns the `d=512` forward schedule comparison. It does not qualify
+every FlashMLA/paged-decode backend or large-d training backward.
+Batch-invariance and linear-attention investigations remain separate until
+they have enough coherent material to extend this reading graph without
+weakening its scope.
 
 The Rubin note is an explicit architecture projection rather than a fifth
 FlashAttention generation. It keeps exact dense Attention separate from

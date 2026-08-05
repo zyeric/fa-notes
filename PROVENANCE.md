@@ -22,3 +22,11 @@ repository's history.
 After the migration, `fa-notes` is the canonical home for the FA1–FA4 learning
 notes and visual decks. `axis-training-dev-tools` retains a pointer and the
 model/training qualification work that consumes these foundations.
+
+On 2026-08-05, the coherent inference-forward portion of the previously
+excluded large-head-dimension investigation was rewritten into
+`docs/notes/large-head-dimension-inference.md` and a new visual comparison.
+The new files preserve the narrower evidence boundary: public reference and
+engine/backend sources explain forward ownership and dispatch, while selected
+production binaries, GPU timelines, and large-d training backward remain
+unqualified.

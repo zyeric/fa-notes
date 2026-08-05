@@ -248,7 +248,8 @@ The representative rows above inherit the evidence envelopes of:
 - [FA4](fa4.md), pinned to the SM100 CuTeDSL snapshot and d128 teaching scope
   documented there.
 
-This spec excludes SplitKV/decode, paged attention, FlashMLA, model-specific
-large-head-dimension paths, linear attention, and inference scheduling. Those
-paths can change the owner graph and need their own filled spec rather than an
-unqualified extension of this one.
+This ordinary-attention spec excludes SplitKV/decode, paged attention,
+FlashMLA, linear attention, and inference scheduling. The narrow
+[large-head-dimension inference comparison](large-head-dimension-inference.md)
+provides its own owner map rather than extending these representative rows
+without qualification.

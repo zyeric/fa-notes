@@ -122,6 +122,11 @@
           <h3>Rubin 会让哪些假设失效？</h3>
           <p>EX2、HBM4、K-loop、tile trigger、counted writes 带来的机会，以及 exact attention、backward 和 determinism 边界。</p>
         </a>
+        <a class="card" href="slides/d512-inference.html">
+          <span class="tag">Inference · large-d visual</span>
+          <h3>d=512 为什么要换 schedule</h3>
+          <p>对照 FA3 d128、FA4 d128 与 SM90 large-d：score tile、softmax overlap、P handoff、output-column ownership 和 SplitKV。</p>
+        </a>
       </div>
     </section>
 
@@ -167,6 +172,15 @@
           </div>
         </article>
         <article class="version">
+          <div class="version-head"><strong>d=512</strong><span>inference extension</span></div>
+          <p>为什么更宽的 QK/PV 改变 MMA/softmax 比例，并把 FA3 的独立 Q-row owners 推向共享 P producer 与 disjoint output-column owners。</p>
+          <div class="links">
+            <a href="slides/d512-inference.html">Visual comparison</a>
+            <a href="notes.html#doc-large-head-dimension-inference">Markdown in HTML</a>
+            <a href="notes/large-head-dimension-inference.md">Markdown source</a>
+          </div>
+        </article>
+        <article class="version">
           <div class="version-head"><strong>Rubin</strong><span>architecture projection</span></div>
           <p>不命名为 FA5：从更快 EX2、HBM4、K 维处理、tile-level trigger 与 counted writes 出发，列出要重新搜索和验证的问题。</p>
           <div class="links">
@@ -195,7 +209,7 @@
     <section>
       <h2>Evidence and scope contract</h2>
       <p class="note">Markdown is the source of truth. The notes separate mathematical facts, pinned-source observations, paper-reported measurements, hardware inference, and GPU validation still pending. “FlashAttention deterministic” is never used as a repository-wide boolean: the useful claim names forward/backward, backend, shape/mode, combine protocol, compiler artifact, device, and RNG state.</p>
-      <p>FlashMLA、paged/decode attention、inference scheduling、batch invariance、linear attention 和 model-specific large-head-dim dispatch 暂不并入这一轮。</p>
+      <p>Large-head-dimension inference 现有一个明确标界的 forward extension；FlashMLA/paged-decode 的全 backend qualification、training backward、batch invariance 与 linear attention 仍未纳入核心 verdict。</p>
     </section>
   </main>
 

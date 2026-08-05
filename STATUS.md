@@ -1,6 +1,6 @@
 # Project Status
 
-Date: 2026-08-02
+Date: 2026-08-05
 
 The first source-based learning pass over FlashAttention 1 through 4 is
 complete. The repository is ready for reader review and incremental
@@ -18,6 +18,7 @@ has been qualified on hardware.
 | FA3 forward/backward | complete first pass | early SM90 source pinned | complete | pending |
 | FA4 forward/backward | complete first pass | paper plus current SM100 source pinned | complete | pending |
 | Current determinism mechanism | complete first pass | legacy CUDA and current CuTe paths | long-form note | pending |
+| Large-d inference forward | complete narrow extension | public DeepSeek/FA4/FlashMLA/vLLM/SGLang evidence | complete | pending |
 
 ## Evidence Labels
 
@@ -35,9 +36,10 @@ has been qualified on hardware.
   deterministic and default dispatches;
 - current-main refreshes after source or compiler changes;
 - FP8/FP4 and specialized head dimensions;
-- FlashMLA, paged/decode attention, inference-engine scheduling, batch
-  invariance, sparse attention, and linear attention;
-- model-specific `d=512` and MQA/GQA dispatches.
+- full FlashMLA/paged-decode backend qualification, inference-engine
+  scheduling, batch invariance, sparse attention, and linear attention;
+- production-kernel resource/timeline validation and training backward for
+  model-specific `d=512` and MQA/GQA dispatches.
 
 These are future extensions, not blockers for using the current notes as a
 mental model and source-reading guide.

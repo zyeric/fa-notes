@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="比较 d=512 inference 与 FA3/FA4 d128 默认 schedule：score tile、warpgroup ownership、softmax overlap、prefill 与 SplitKV decode">
+  <title>Large-D Inference · d=512 Schedule</title>
+  <style>
+    :root{--bg:#050912;--panel:#0c1b2c;--panel2:#122a40;--ink:#f4f8fb;--muted:#98adbf;--line:#29445b;
+      --cyan:#55dcff;--green:#6ee7b2;--amber:#ffd071;--violet:#bea9ff;--red:#ff8b8b;--blue:#7ba9ff;
+      font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--ink)}
+    body::before{content:"";position:fixed;inset:0;pointer-events:none;background:
+      radial-gradient(circle at 90% 8%,rgba(85,220,255,.11),transparent 30%),radial-gradient(circle at 8% 92%,rgba(190,169,255,.1),transparent 29%)}
+    a{color:var(--cyan);text-underline-offset:3px}strong{color:#fff}code,.mono{font-family:"SFMono-Regular",Consolas,monospace;font-size:.9em}
+    .deck{position:relative;width:100%;height:100%}.slide{position:absolute;inset:0;display:none;grid-template-rows:auto auto minmax(0,1fr) auto;
+      gap:clamp(10px,1.35vh,19px);padding:clamp(23px,3.5vh,49px) clamp(32px,4.6vw,78px) clamp(22px,3vh,42px)}
+    .slide.title-slide{grid-template-rows:auto minmax(0,1fr) auto}.slide.active{display:grid;animation:enter .2s ease-out}
+    @keyframes enter{from{opacity:.2;transform:translateX(10px)}to{opacity:1;transform:none}}
+    .kicker{color:var(--cyan);font-size:clamp(12px,.95vw,17px);font-weight:850;letter-spacing:.12em;text-transform:uppercase}
+    h1,h2,h3,p{margin-top:0}h1{margin-bottom:.22em;font-size:clamp(46px,5.8vw,96px);line-height:.98;letter-spacing:-.045em}
+    h2{margin-bottom:0;font-size:clamp(31px,3.8vw,63px);line-height:1.04;letter-spacing:-.035em}h3{margin-bottom:.4em;font-size:clamp(18px,1.55vw,28px);line-height:1.16}
+    p,li,td,th{font-size:clamp(14px,1.18vw,21px);line-height:1.31}p{margin-bottom:.58em}ul,ol{margin:.18em 0;padding-left:1.13em}li{margin:.15em 0}
+    .content{min-height:0;align-self:stretch}.center{display:grid;place-items:center;text-align:center}.lead{font-size:clamp(22px,2.35vw,42px);line-height:1.18;color:#dce9f3}
+    .small{font-size:clamp(12px,.96vw,17px)}.tiny{font-size:clamp(10px,.78vw,14px)}.muted{color:var(--muted)}.cyan{color:var(--cyan)}
+    .green{color:var(--green)}.amber{color:var(--amber)}.violet{color:var(--violet)}.red{color:var(--red)}
+    .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:clamp(14px,2vw,32px);height:100%}.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(11px,1.45vw,23px);height:100%}
+    .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:clamp(9px,1.1vw,18px);height:100%}.grid-2x2{display:grid;grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(2,1fr);gap:clamp(10px,1.35vw,21px);height:100%}
+    .wide-left{grid-template-columns:1.18fr .82fr}.wide-right{grid-template-columns:.82fr 1.18fr}.card{display:flex;flex-direction:column;justify-content:center;min-width:0;
+      padding:clamp(12px,1.35vw,22px);border:1px solid var(--line);border-radius:15px;background:linear-gradient(145deg,rgba(18,42,64,.95),rgba(6,16,27,.98));box-shadow:0 20px 58px rgba(0,0,0,.36)}
+    .top{justify-content:flex-start}.cyan-edge{border-top:4px solid var(--cyan)}.green-edge{border-top:4px solid var(--green)}.amber-edge{border-top:4px solid var(--amber)}
+    .violet-edge{border-top:4px solid var(--violet)}.red-edge{border-top:4px solid var(--red)}.tag{display:inline-block;width:max-content;margin-bottom:.43em;padding:.2em .52em;
+      border:1px solid var(--line);border-radius:999px;color:var(--muted);background:rgba(3,10,18,.65);font-size:clamp(9px,.69vw,12px);font-weight:800;letter-spacing:.06em}
+    .quote{border-left:5px solid var(--cyan);padding:.12em 0 .12em .7em;font-size:clamp(24px,2.65vw,47px);line-height:1.15}
+    .equation,.codebox{white-space:pre-wrap;margin:.4em 0;padding:clamp(9px,1.05vw,16px);border:1px solid var(--line);border-radius:12px;background:#030810;
+      font-family:"SFMono-Regular",Consolas,monospace;font-size:clamp(12px,.96vw,17px);line-height:1.34}.equation{color:var(--amber);text-align:center;font-size:clamp(14px,1.28vw,23px)}
+    .flow{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:7px;margin:.5em 0}.node{padding:.53em .7em;border:1px solid var(--line);border-radius:11px;
+      background:var(--panel);font-size:clamp(12px,1vw,19px);font-weight:700;text-align:center}.arrow{color:var(--cyan);font-size:clamp(18px,1.55vw,28px)}
+    .cyan-node{border-color:var(--cyan);background:rgba(85,220,255,.08)}.green-node{border-color:var(--green);background:rgba(110,231,178,.08)}
+    .amber-node{border-color:var(--amber);background:rgba(255,208,113,.08)}.violet-node{border-color:var(--violet);background:rgba(190,169,255,.08)}.red-node{border-color:var(--red);background:rgba(255,139,139,.08)}
+    table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{padding:.36em .42em;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--cyan);text-align:left}
+    .dense td,.dense th{font-size:clamp(10px,.8vw,15px);line-height:1.21;padding:.29em .34em}.timeline{display:grid;grid-template-columns:128px repeat(var(--steps,6),1fr);gap:5px;align-items:stretch}
+    .label,.slot{display:grid;place-items:center;min-width:0;padding:.4em .28em;border-radius:8px;text-align:center;font-size:clamp(9px,.73vw,13px)}
+    .label{color:var(--muted);background:#0a1928;border:1px solid var(--line)}.slot{min-height:37px;border:1px solid rgba(255,255,255,.06)}
+    .copy{background:rgba(85,220,255,.14)}.gemm{background:rgba(110,231,178,.14)}.soft{background:rgba(255,208,113,.14)}.handoff{background:rgba(190,169,255,.14)}.wait{background:rgba(255,139,139,.12)}
+    .footer{display:flex;justify-content:space-between;color:var(--muted);font-size:clamp(9px,.69vw,13px)}.hud{position:fixed;right:18px;bottom:13px;z-index:10;display:flex;align-items:center;gap:7px;
+      padding:6px 8px;border:1px solid var(--line);border-radius:999px;background:rgba(3,9,16,.85);backdrop-filter:blur(8px)}.hud button{width:30px;height:30px;border:1px solid var(--line);
+      border-radius:50%;color:var(--ink);background:var(--panel);cursor:pointer}.counter{min-width:56px;text-align:center;color:var(--muted);font-size:12px}.progress{position:fixed;left:0;right:0;bottom:0;height:4px;background:rgba(255,255,255,.05)}
+    .progress span{display:block;height:100%;background:linear-gradient(90deg,var(--cyan),var(--violet));transition:width .2s}.tight p,.tight li,.tight td,.tight th{font-size:.91em}.tight .card{padding:10px 13px}.ultra-tight p,.ultra-tight li,.ultra-tight td,.ultra-tight th{font-size:.82em}
+    @media(max-width:900px){.grid-3,.grid-4{grid-template-columns:1fr 1fr}.timeline{grid-template-columns:84px repeat(var(--steps,6),1fr)}}
+  </style>
+</head>
+<body>
+<main class="deck">
+  <section class="slide title-slide active" data-section="Title">
+    <div class="kicker">Large-head-dimension inference · SM90 / SM100</div>
+    <div class="content center"><div>
+      <h1><span class="cyan">d = 512</span><br>为什么要换 schedule</h1>
+      <p class="lead">score tile · WGMMA / tcgen05 · softmax overlap · output-column ownership · SplitKV</p>
+      <p class="muted">Inference forward only · DeepSeek-style MLA + Gemma 4 global attention</p>
+    </div></div>
+    <div class="footer"><span>与 FA3 d128、FA4 d128 默认 schedule 对照</span><span>← → / Space 导航</span></div>
+  </section>
+
+  <section class="slide" data-section="Scope">
+    <div class="kicker">Scope first</div><h2>这不是“把 FA3 的 D 改成 512”</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card cyan-edge">
+        <div class="flow"><span class="node cyan-node">FA3 d128<br>Q-row owners</span><span class="arrow">→</span><span class="node green-node">large d<sub>v</sub><br>output-column owners</span><span class="arrow">→</span><span class="node violet-node">prefill / decode<br>different dispatch</span></div>
+        <div class="quote">数学不变；owner、residence、handoff 和 overlap 边界改变。</div>
+      </div>
+      <div class="card amber-edge top"><h3>证据边界</h3><ul>
+        <li>DeepSeek TileLang：可读 reference ownership；</li><li>FA PR 2422：SM90 large-d 设计讨论，仍 open；</li>
+        <li>vLLM：FA4 + SM90 + paged KV + hdim512 integration 已 merge；</li><li>FlashMLA/SGLang：公开 sparse prefill / decode contract。</li>
+      </ul><p class="small amber">没有 H100/B200 SASS、profile 或本地 GPU measurement。</p></div>
+    </div>
+    <div class="footer"><span>backend artifact matters more than the label “FlashAttention”</span><span>Evidence</span></div>
+  </section>
+
+  <section class="slide" data-section="Dimensions">
+    <div class="kicker">First separate the axes</div><h2><code>d_qk</code> 是 reduction；<code>d_v</code> 是 output columns</h2>
+    <div class="content grid-2">
+      <div class="card green-edge">
+        <div class="equation">S = Q Kᵀ
+one score = Σᵣ Q[r]K[r]
+r = 0 ... d_qk-1</div>
+        <p>切 <code>d_qk</code> 会产生 partial score；softmax 前必须 numeric combine。</p>
+      </div>
+      <div class="card violet-edge">
+        <div class="equation">O = P V
+O[:,0:256] | O[:,256:512]</div>
+        <p>切 <code>d_v</code> 会产生互不重叠的输出列；最后 concat / disjoint store。</p>
+      </div>
+      <p class="lead center" style="grid-column:1/-1">FlashMLA MLA：<code>d_qk=576</code> / <code>d_v=512</code>；Gemma 4：sliding 256 / global 512。先 resolve layer 与两条 d。</p>
+    </div>
+    <div class="footer"><span>MQA reduces KV duplication, not the per-score reduction width</span><span>Math</span></div>
+  </section>
+
+  <section class="slide" data-section="ReferenceTile">
+    <div class="kicker">Readable DeepSeek TileLang reference</div><h2><code>[16,512] @ [64,512]ᵀ → S[16,64]</code></h2>
+    <div class="content grid-2 wide-left">
+      <div class="card cyan-edge">
+        <div class="codebox">grid = (query_position, batch)
+one CTA = all h_local Q heads
+
+Q_shared  [16,512] BF16
+KV_shared [64,512] BF16
+acc_s     [16, 64] FP32
+acc_o     [16,512] FP32</div>
+        <div class="flow"><span class="node cyan-node">16 local heads</span><span class="arrow">×</span><span class="node green-node">64 selected KV tokens</span><span class="arrow">→</span><span class="node amber-node">1024 scores</span></div>
+      </div>
+      <div class="card amber-edge"><h3>别把 16 读成 query positions</h3><ul><li>第一轴是 local Q heads；</li><li>softmax 沿 64 个 selected KV tokens；</li><li>每个 score 仍归约完整 512（或实际 <code>d_qk</code>）；</li><li>一个 KV tile 被多 Q heads 复用。</li></ul></div>
+    </div>
+    <div class="footer"><span>reference map ≠ every FlashMLA/vLLM leaf kernel</span><span>Tile</span></div>
+  </section>
+
+  <section class="slide" data-section="Resources">
+    <div class="kicker">Why it fits</div><h2>不是 SMEM 变大；是同时 live 的 512-wide state 被控制住</h2>
+    <div class="content grid-2">
+      <div class="card green-edge">
+        <table><tr><th>explicit shared payload</th><th>size</th></tr><tr><td>Q <code>[16,512]</code> BF16</td><td>16 KiB</td></tr>
+          <tr><td>KV <code>[64,512]</code> BF16</td><td>64 KiB</td></tr><tr><td>O <code>[16,512]</code> BF16</td><td>16 KiB</td></tr><tr><td>P <code>[16,64]</code> BF16</td><td>2 KiB</td></tr><tr><th>total</th><th class="green">98 KiB</th></tr></table>
+      </div>
+      <div class="card violet-edge"><h3>distributed FP32 fragments</h3><div class="equation">acc_o = 32 KiB across CTA
+acc_s =  4 KiB across CTA</div><ul><li>一个 bounded KV tile；</li><li>多 Q heads 复用；</li><li>没有 dQ/dK/dV partial arrays；</li><li>compiled registers/spills 仍需实测。</li></ul></div>
+    </div>
+    <div class="footer"><span>large-d inference forward is materially easier than large-d training backward</span><span>Residence</span></div>
+  </section>
+
+  <section class="slide" data-section="CycleRatio">
+    <div class="kicker">Why d changes the balance</div><h2>MMA 随 <code>d</code> 增长；softmax 随 score tile 增长</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card cyan-edge">
+        <div class="equation">QK ≈ 2 Bᵣ B𝚌 d_qk
+PV ≈ 2 Bᵣ B𝚌 d_v
+softmax ≈ O(Bᵣ B𝚌)</div>
+        <div class="flow"><span class="node amber-node">d 128 → 512</span><span class="arrow">→</span><span class="node green-node">MMA work ≈ 4×</span><span class="arrow">|</span><span class="node cyan-node">score count unchanged</span></div>
+      </div>
+      <div class="card amber-edge"><div class="quote">更贵，但更容易把 Tensor Core 喂饱。</div><ul><li>softmax / barrier / address work 更易 amortize；</li><li>MQA KV reuse 才是更强的 FLOP/byte lever；</li><li>d 自己同时增加 bytes 与 FLOPs；</li><li>resource cliff 可能抵消收益。</li></ul></div>
+    </div>
+    <div class="footer"><span>compute-dense does not mean lower absolute latency</span><span>Balance</span></div>
+  </section>
+
+  <section class="slide" data-section="FA3Baseline">
+    <div class="kicker">Baseline 1 · FA3 d128 on Hopper</div><h2>两个 consumer WG 各自拥有不同 Q rows</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card green-edge">
+        <div class="codebox">producer WG: TMA Q/K/V
+
+consumer WG1:
+  Q rows   0:64 → QK → softmax → PV → O
+
+consumer WG2:
+  Q rows 64:128 → QK → softmax → PV → O</div>
+      </div>
+      <div class="card cyan-edge"><h3>Ping-pong 的独立性来自 row ownership</h3><div class="timeline" style="--steps:4">
+        <div class="label">WG1</div><div class="slot gemm">GEMM j</div><div class="slot soft">softmax j</div><div class="slot gemm">GEMM j+1</div><div class="slot soft">softmax j+1</div>
+        <div class="label">WG2</div><div class="slot soft">softmax k</div><div class="slot gemm">GEMM k+1</div><div class="slot soft">softmax k+1</div><div class="slot gemm">GEMM k+2</div>
+      </div><p class="small">每个 WG 自己拥有 score/P/O rows；不需要读取另一个 WG 的 P。</p></div>
+    </div>
+    <div class="footer"><span>Layer A: TMA vs compute · Layer B: WGMMA vs softmax</span><span>FA3</span></div>
+  </section>
+
+  <section class="slide" data-section="FA4Baseline">
+    <div class="kicker">Baseline 2 · FA4 d128 on Blackwell</div><h2>owner graph 大体保留；accumulator residence 与 roles 变深</h2>
+    <div class="content grid-3">
+      <div class="card cyan-edge"><span class="tag">MOVE</span><h3>RMEM → TMEM</h3><p>tcgen05 accumulator 不再立即占满普通 registers。</p></div>
+      <div class="card green-edge"><span class="tag">ASYNC</span><h3>Fully async MMA</h3><p>发射、accumulate、softmax/correction consumption 分离。</p></div>
+      <div class="card violet-edge"><span class="tag">COOPERATE</span><h3>selected 2-CTA</h3><p>部分路径扩大 dataflow；不是所有 tile 都等于一 CTA。</p></div>
+      <div class="card amber-edge" style="grid-column:1/-1"><div class="quote">FA4 d128 主要解决“矩阵吞吐涨得比 exp / SMEM 快”；它没有自动解决 512-wide partial-O replication。</div></div>
+    </div>
+    <div class="footer"><span>tcgen05 is a primitive change; schedule still owns handoffs and lifetimes</span><span>FA4</span></div>
+  </section>
+
+  <section class="slide" data-section="OwnershipPivot">
+    <div class="kicker">Large-d_v pivot</div><h2>从“切 PV reduction”转向“切 output columns”</h2>
+    <div class="content grid-2">
+      <div class="card red-edge"><span class="tag">EXPENSIVE AT 512</span><h3>完整宽度 partial O</h3><div class="codebox">WG0: partial_O0[:, 0:512]
+WG1: partial_O1[:, 0:512]
+
+O = partial_O0 + partial_O1</div><p>复制 512-wide FP32 accumulator，最后还有 numeric reduction。</p></div>
+      <div class="card green-edge"><span class="tag">LARGE-D DIRECTION</span><h3>互不重叠的 output slices</h3><div class="codebox">WG0: O[:,   0:256] = P @ V0
+WG1: O[:, 256:512] = P @ V1
+
+O = concat(WG0, WG1)</div><p>不相加；代价是两个 owner 都需要完整 P。</p></div>
+    </div>
+    <div class="footer"><span>reduction split → combine obligation · output split → distribution obligation</span><span>Ownership</span></div>
+  </section>
+
+  <section class="slide" data-section="LargeDSchedule">
+    <div class="kicker">SM90 large-d direction</div><h2>一个 P producer；两个 256-column PV consumers</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card cyan-edge"><div class="flow"><span class="node cyan-node">QK WGMMA</span><span class="arrow">→</span><span class="node amber-node">online softmax</span><span class="arrow">→</span><span class="node violet-node">P in SMEM</span></div>
+        <div class="flow"><span class="node green-node">PV WG0<br>O[0:256]</span><span class="arrow">+</span><span class="node green-node">PV WG1<br>O[256:512]</span></div>
+        <div class="equation">one probability tile → two disjoint output owners</div></div>
+      <div class="card amber-edge"><h3>相对 FA3 d128 的变化</h3><ul><li>WG 不再只是独立 Q-row owner；</li><li>P 成为 shared producer/consumer payload；</li><li>增加 SMEM round trip + barrier；</li><li>减少 complete-width partial-O replication；</li><li>一个 WG 可能同时参与 QK/softmax 与半边 PV。</li></ul></div>
+    </div>
+    <div class="footer"><span>public design direction; exact final leaf schedule remains artifact-specific</span><span>Large-d</span></div>
+  </section>
+
+  <section class="slide" data-section="Overlap">
+    <div class="kicker">Can softmax still be hidden?</div><h2>可以跨 stage 找独立工作；不能照搬 d128 ping-pong 图</h2>
+    <div class="content">
+      <div class="timeline" style="--steps:6">
+        <div class="label">TMA producer</div><div class="slot copy">load KV j</div><div class="slot copy">load KV j+1</div><div class="slot copy">load KV j+2</div><div class="slot copy">load KV j+3</div><div class="slot copy">load KV j+4</div><div class="slot copy">...</div>
+        <div class="label">QK / P</div><div class="slot gemm">QK j</div><div class="slot soft">softmax j</div><div class="slot gemm">QK j+1</div><div class="slot soft">softmax j+1</div><div class="slot gemm">QK j+2</div><div class="slot soft">...</div>
+        <div class="label">P handoff</div><div class="slot wait">wait</div><div class="slot handoff">publish Pj</div><div class="slot wait">wait</div><div class="slot handoff">publish Pj+1</div><div class="slot wait">wait</div><div class="slot handoff">...</div>
+        <div class="label">PV columns</div><div class="slot wait">wait P</div><div class="slot gemm">PV j</div><div class="slot gemm">PV j / QK?</div><div class="slot gemm">PV j+1</div><div class="slot gemm">PV j+1</div><div class="slot gemm">...</div>
+      </div>
+      <div class="grid-2" style="height:auto;margin-top:18px"><div class="card green-edge"><h3>有利条件</h3><p>MMA work 随 d 增长；softmax score count 不变；TMA、QK、PV 有多个 async paths。</p></div>
+        <div class="card red-edge"><h3>证明边界</h3><p>dependency、P barrier、live ranges 仍可暴露 stall；“完全盖住”需要最终 SASS + Nsight timeline。</p></div></div>
+    </div>
+    <div class="footer"><span>source proves opportunity; profile proves realized overlap</span><span>Pipeline</span></div>
+  </section>
+
+  <section class="slide" data-section="Prefill">
+    <div class="kicker">Engine path 1 · sparse prefill</div><h2>直接 selected-KV TMA path，避免 decode-style paged loading</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card cyan-edge"><div class="flow"><span class="node violet-node">top-k indices</span><span class="arrow">→</span><span class="node cyan-node">TMA selected KV</span><span class="arrow">→</span><span class="node green-node">QK + online softmax + PV</span></div>
+        <div class="codebox">flash_mla_sparse_fwd(
+  q [s_q,h_q,d_qk],
+  kv [s_kv,h_kv,d_qk],
+  indices [s_q,h_kv,topk]
+) → O, max_logits, LSE</div></div>
+      <div class="card amber-edge"><h3>SGLang merged path</h3><ul><li>prefill 不再借用 <code>flash_mla_with_kvcache</code>；</li><li>直接 TMA load，loading logic 更简单；</li><li>PR stated kernel speedup ≈ 1.35×；</li><li>这是 PR-reported，不是 local measurement。</li></ul></div>
+    </div>
+    <div class="footer"><span>prefill has many Q rows/tokens and a different scheduling envelope</span><span>Engine</span></div>
+  </section>
+
+  <section class="slide" data-section="Decode">
+    <div class="kicker">Engine path 2 · decode</div><h2>output-column split 不是 SplitKV</h2>
+    <div class="content grid-2">
+      <div class="card green-edge"><span class="tag">INSIDE ONE WORK UNIT</span><h3>Output-column ownership</h3><div class="codebox">WG0 → O[:,0:256]
+WG1 → O[:,256:512]
+
+combine = concat / disjoint store</div></div>
+      <div class="card violet-edge"><span class="tag">ACROSS SEQUENCE SPLITS</span><h3>SplitKV</h3><div class="codebox">metadata, num_splits = get_mla_metadata(...)
+
+split CTAs → partial O/LSE
+combine kernel → final O/LSE</div></div>
+      <p class="lead center" style="grid-column:1/-1">一个切 output axis；一个切 softmax reduction axis。只有后者需要数学上的 partial-state combine。</p>
+    </div>
+    <div class="footer"><span>num_splits and combine artifact belong in the numerical contract</span><span>Decode</span></div>
+  </section>
+
+  <section class="slide" data-section="Tradeoffs">
+    <div class="kicker">Hardware-friendly, but not free</div><h2>Large-d inference = compute-dense + resource-constrained</h2>
+    <div class="content grid-2x2">
+      <div class="card green-edge"><h3>更容易利用 Tensor Core</h3><p>MMA / softmax 比例上升；固定 pipeline cost 被 amortize。</p></div>
+      <div class="card cyan-edge"><h3>MQA KV reuse</h3><p>一次 KV load 服务多个 Q heads；这是更强的 arithmetic-intensity lever。</p></div>
+      <div class="card red-edge"><h3>更宽的 live state</h3><p>operand、O accumulator、SMEM/TMEM、register pressure 都增长。</p></div>
+      <div class="card amber-edge"><h3>Decode 仍可能 memory-bound</h3><p>KV-cache traffic、paged gathers、occupancy 与 spills 可成为瓶颈。</p></div>
+    </div>
+    <div class="footer"><span>better utilization and higher absolute cost can both be true</span><span>Performance</span></div>
+  </section>
+
+  <section class="slide" data-section="Comparison">
+    <div class="kicker">One-table checkpoint</div><h2>三条 schedule 不要混记</h2>
+    <div class="content card">
+      <table class="dense"><thead><tr><th>path</th><th>primary owner split</th><th>score/P residence</th><th>softmax overlap source</th><th>extra combine / handoff</th></tr></thead><tbody>
+        <tr><td><strong>FA3 d128</strong></td><td>two disjoint Q-row slices</td><td>consumer RMEM fragments</td><td>inter-WG ping-pong + current/next async WGMMA</td><td>no cross-WG P exchange</td></tr>
+        <tr><td><strong>FA4 d128</strong></td><td>row-oriented logical output; deeper roles</td><td>TMEM + specialized consumers</td><td>fully async MMA + correction/softmax pipeline</td><td>TMEM/SMEM handoffs; selected 2-CTA</td></tr>
+        <tr><td><strong>SM90 d<sub>v</sub>=512 direction</strong></td><td>shared QK/P producer; two output-column slices</td><td>P published through SMEM</td><td>TMA/QK/PV work across stages</td><td>P broadcast; O concat; optional SplitKV later</td></tr>
+      </tbody></table>
+      <div class="equation">d128: independent row owners
+d512: shared probability producer + disjoint column owners</div>
+    </div>
+    <div class="footer"><span>ownership change explains the pipeline change</span><span>Compare</span></div>
+  </section>
+
+  <section class="slide" data-section="Validation">
+    <div class="kicker">Production qualification</div><h2>“支持 d=512”只是审计的起点</h2>
+    <div class="content grid-3">
+      <div class="card cyan-edge"><h3>Resolve dispatch</h3><ul><li>model layer + d_qk/d_v；</li><li>prefill/decode；</li><li>backend revision；</li><li>GPU + dtype + KV layout。</li></ul></div>
+      <div class="card green-edge"><h3>Measure resources</h3><ul><li>tile / WG / CTA map；</li><li>registers + spills；</li><li>SMEM/TMEM；</li><li>occupancy + SplitKV。</li></ul></div>
+      <div class="card amber-edge"><h3>Prove timeline</h3><ul><li>SASS WGMMA/tcgen05；</li><li>TMA waits；</li><li>MUFU/softmax overlap；</li><li>O/LSE exact-repeat hashes。</li></ul></div>
+      <p class="lead center" style="grid-column:1/-1">Inference-forward success ≠ deterministic large-d training backward.</p>
+    </div>
+    <div class="footer"><span>paper contract ≠ source structure ≠ selected binary ≠ measured runtime</span><span>Audit</span></div>
+  </section>
+
+  <section class="slide" data-section="Sources">
+    <div class="kicker">Evidence envelope</div><h2>继续追 leaf kernel，而不是停在 engine 名字</h2>
+    <div class="content grid-2">
+      <div class="card cyan-edge top"><h3>Primary implementation landmarks</h3><ul>
+        <li><a href="https://github.com/Dao-AILab/flash-attention/pull/2422">FlashAttention PR 2422 · SM90 hdim512 discussion</a></li>
+        <li><a href="https://github.com/vllm-project/vllm/pull/38835">vLLM PR 38835 · merged FA4 SM90 paged-KV integration</a></li>
+        <li><a href="https://github.com/deepseek-ai/FlashMLA/tree/15f13e5030374295491c5ce31b02d7e63a7772c6">FlashMLA @ 15f13e5 · support matrix and decode API</a></li>
+        <li><a href="https://github.com/sgl-project/sglang/pull/25418">SGLang PR 25418 · sparse prefill integration</a></li>
+      </ul></div>
+      <div class="card amber-edge top"><h3>Repository reading path</h3><ul>
+        <li><a href="fa3.html">FA3 Hopper visual map</a></li><li><a href="fa4.html">FA4 Blackwell visual map</a></li>
+        <li><a href="../notes/large-head-dimension-inference.md">Markdown source of truth</a></li>
+        <li><a href="../notes.html#doc-large-head-dimension-inference">Long-form HTML section</a></li>
+      </ul><p class="small amber">CPU-only source pass；GPU validation pending。</p></div>
+    </div>
+    <div class="footer"><span>Date: 2026-08-05</span><span>Sources</span></div>
+  </section>
+
+  <section class="slide" data-section="Summary">
+    <div class="kicker">One-screen checkpoint</div>
+    <div class="content center"><div>
+      <div class="flow"><span class="node cyan-node">d grows</span><span class="arrow">→</span><span class="node green-node">MMA / softmax ratio grows</span><span class="arrow">→</span><span class="node amber-node">complete-width partial O hurts</span></div>
+      <div class="flow"><span class="node violet-node">compute P once</span><span class="arrow">→</span><span class="node green-node">split 512 output columns</span><span class="arrow">→</span><span class="node cyan-node">pipeline across KV stages</span></div>
+      <p class="lead"><span class="cyan">FA3 d128：</span>两个独立 Q-row owners ping-pong。</p>
+      <p class="lead"><span class="violet">Large d<sub>v</sub>：</span>一个 P producer，两个 output-column consumers。</p>
+      <div class="equation">更贵但更容易喂饱 Tensor Core；更 compute-dense 也更 resource-constrained。</div>
+    </div></div>
+    <div class="footer"><span>source of truth: ../notes/large-head-dimension-inference.md</span><span>Summary</span></div>
+  </section>
+</main>
+
+<div class="hud" aria-label="slide controls"><button id="prev" type="button" aria-label="previous slide">←</button><span class="counter" id="counter">1 / 1</span><button id="next" type="button" aria-label="next slide">→</button></div>
+<div class="progress" aria-hidden="true"><span id="progress"></span></div>
+<script>
+  (()=>{const slides=[...document.querySelectorAll(".slide")],counter=document.getElementById("counter"),progress=document.getElementById("progress");let current=0;
+    const hashIndex=()=>{const m=location.hash.match(/^#(\d+)$/);return m?Math.min(slides.length-1,Math.max(0,Number(m[1])-1)):0};
+    const overflows=slide=>{const content=slide.querySelector(".content");if(!content)return false;return [content,...content.querySelectorAll(".card,.codebox,.timeline,table")].some(n=>n.scrollHeight>n.clientHeight+2||n.scrollWidth>n.clientWidth+2)};
+    const fit=slide=>{slide.classList.remove("tight","ultra-tight");requestAnimationFrame(()=>{if(!overflows(slide))return;slide.classList.add("tight");requestAnimationFrame(()=>{if(overflows(slide))slide.classList.add("ultra-tight")})})};
+    const show=(index,updateHash=true)=>{current=Math.min(slides.length-1,Math.max(0,index));slides.forEach((s,i)=>s.classList.toggle("active",i===current));counter.textContent=`${current+1} / ${slides.length}`;
+      progress.style.width=`${((current+1)/slides.length)*100}%`;document.title=`${slides[current].dataset.section} · Large-D Inference`;if(updateHash)history.replaceState(null,"",`#${current+1}`);fit(slides[current])};
+    document.getElementById("next").addEventListener("click",()=>show(current+1));document.getElementById("prev").addEventListener("click",()=>show(current-1));
+    document.addEventListener("keydown",e=>{if(["ArrowRight","PageDown"," "].includes(e.key)){e.preventDefault();show(current+1)}else if(["ArrowLeft","PageUp","Backspace"].includes(e.key)){e.preventDefault();show(current-1)}else if(e.key==="Home"){e.preventDefault();show(0)}else if(e.key==="End"){e.preventDefault();show(slides.length-1)}});
+    let touchX=null;document.addEventListener("touchstart",e=>touchX=e.changedTouches[0].clientX,{passive:true});document.addEventListener("touchend",e=>{if(touchX===null)return;const d=e.changedTouches[0].clientX-touchX;if(Math.abs(d)>55)d<0?show(current+1):show(current-1);touchX=null},{passive:true});
+    window.addEventListener("hashchange",()=>show(hashIndex(),false));let frame=null;window.addEventListener("resize",()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>fit(slides[current]))});show(hashIndex(),false)})();
+</script>
+</body>
+</html>

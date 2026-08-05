@@ -12,8 +12,8 @@ This note stops at FlashAttention-1 (FA1). It is the mathematical and
 mechanical foundation for the broader
 [FlashAttention source audit](current-implementation-and-determinism.md); it does not expand FA2,
 FA3, FA4, CuTe, paged attention, or inference-engine scheduling.
-The separate axis-training-dev-tools
-[large-head-dimension attention investigation](https://github.com/rStar-RL/axis-training-dev-tools/blob/master/contexts/megatron/ongoing/yi/determinism_foundations/operators/large_head_dim_attention.md) uses this
+The separate
+[large-head-dimension inference comparison](large-head-dimension-inference.md) uses this
 FA1 layout as a counterfactual for DeepSeek-V4 and Gemma 4 `d=512` paths
 without attributing FA1's work partition to those later implementations.
 
@@ -1145,7 +1145,7 @@ removes replicated complete-width partial O, but both groups need the complete
 P rows, so the implementation must redistribute, reload, or publish P through
 a shared producer/consumer boundary. The detailed V4/Gemma/FA4 source signals
 and the distinction from cross-CTA SplitKV live in
-[the large-head-dimension investigation](https://github.com/rStar-RL/axis-training-dev-tools/blob/master/contexts/megatron/ongoing/yi/determinism_foundations/operators/large_head_dim_attention.md).
+[the large-head-dimension inference comparison](large-head-dimension-inference.md).
 
 ##### Why distributed K/V can fit in registers
 

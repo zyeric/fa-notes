@@ -45,6 +45,8 @@ https://zyeric.github.io/fa-notes/
   and the measurements needed before claiming a Rubin kernel result.
 - [Current implementation and determinism audit](docs/notes/current-implementation-and-determinism.md) -
   the scoped answer to which forward/backward paths can repeat bitwise.
+- [Large-d inference visual comparison](docs/slides/d512-inference.html) - why
+  `d_v=512` changes score/output ownership and the FA3/FA4 pipeline boundary.
 
 ## Reading Surfaces
 
@@ -60,6 +62,7 @@ The standalone HTML decks under `docs/slides/` are visual reading surfaces:
 | FA2 / Ampere | [slides](docs/slides/fa2-forward.html) | [slides](docs/slides/fa2-backward.html) | [forward](docs/notes/fa2-forward.md), [backward](docs/notes/fa2-backward.md) |
 | FA3 / Hopper | [combined slides](docs/slides/fa3.html) | same deck | [deep dive](docs/notes/fa3.md) |
 | FA4 / Blackwell | [combined slides](docs/slides/fa4.html) | same deck | [deep dive](docs/notes/fa4.md) |
+| Large-d inference | [schedule comparison](docs/slides/d512-inference.html) | out of scope | [source-backed map](docs/notes/large-head-dimension-inference.md) |
 
 Rubin is tracked separately as an architecture projection, not labeled FA5.
 
@@ -82,11 +85,12 @@ PROVENANCE.md                # extraction and source-history record
 ## Scope
 
 The first pass covers ordinary training attention and the historical evolution
-from FA1 through FA4, plus a clearly labeled Rubin projection. It deliberately
-does not merge in FlashMLA, paged decode,
-inference-engine scheduling, batch invariance, linear attention, or the
-DeepSeek/Gemma large-head-dimension dispatch investigation. Those paths may
-reuse this foundation, but require their own resolved implementation records.
+from FA1 through FA4, plus a clearly labeled Rubin projection. A narrow
+large-head-dimension inference-forward extension compares public DeepSeek,
+FlashMLA, vLLM, SGLang, and FA4 evidence without turning it into a universal
+backend verdict. Full paged/decode qualification, inference-engine scheduling,
+large-d training backward, batch invariance, and linear attention remain
+separate work.
 
 Many physical and performance conclusions are source-backed but still
 CPU-only. The documents label where SASS inspection, profiling, or repeated GPU
