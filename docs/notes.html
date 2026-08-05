@@ -2245,7 +2245,52 @@ B * H = 32 independent head planes</code></pre>
 <p>This is warp specialization. The 512 threads do not all execute every stage. Register budgets are reassigned by role; softmax threads receive many more registers because each thread can hold an entire 128-element score row plus temporary state.</p>
 <p>The paper&#x27;s higher-level wording groups the control work more coarsely. The pinned source is the authority for the exact current warp IDs.</p>
 <h3 id="doc-fa4-8-forward-ping-pong-dataflow">8. Forward: Ping-Pong Dataflow<a class="anchor" href="#doc-fa4-8-forward-ping-pong-dataflow">#</a></h3>
-<p>The two score/output stages alternate:</p>
+<h4 id="doc-fa4-8-1-the-missing-fa3-to-fa4-causal-chain">8.1 The Missing FA3-To-FA4 Causal Chain<a class="anchor" href="#doc-fa4-8-1-the-missing-fa3-to-fa4-causal-chain">#</a></h4>
+<p>Do not compress the argument to:</p>
+<pre><span class="code-label">text</span><code>softmax becomes a bottleneck -&gt; use TMEM</code></pre>
+<p>TMEM does not execute <code>max</code>, <code>exp</code>, or <code>sum</code>, and by itself does not increase softmax throughput. The connection runs through the amount of independent MMA work that can remain in flight while softmax is using the CUDA-core / MUFU paths.</p>
+<p>FA3&#x27;s Hopper forward has two consumer warpgroups owning disjoint 64-row output macrotiles. Each group alternates between a Tensor Core bundle and softmax:</p>
+<pre><span class="code-label">text</span><code>time ------------------------------&gt;
+
+consumer WG0:  PV_j + QK^T_{j+1}    softmax(S_{j+1})   PV + next QK^T
+consumer WG1:  softmax(S_j)          PV_j + QK^T_{j+1} softmax(next S)</code></pre>
+<p>The <code>PV + next QK^T</code> bundle from one group is intended to occupy the Tensor Core while the other group uses the non-MMA paths for softmax. The groups do not hand partial output rows to each other; ping-pong changes their issue timing while each retains its own register-resident <code>S</code>, <code>P</code>, running <code>O</code>, and statistics. See the <a href="#doc-fa3-6-the-two-overlap-layers">FA3 overlap-layer audit</a> and the <a href="https://arxiv.org/abs/2407.08608">FA3 paper</a>, Sections 3.1--3.2.</p>
+<p>The FA3 paper&#x27;s d128 throughput argument estimates that exponential work takes about half as many cycles as the corresponding matmul work on H100. This makes the other consumer group&#x27;s Tensor Core bundle a plausible cover window for one softmax section. It is an intended resource-overlap model, not proof of an exact SASS timeline.</p>
+<p>On B200 the same BF16/FP16 Tensor Core work takes roughly half as long, while MUFU exponential throughput remains unchanged. The FA4 paper&#x27;s simplified <code>M=N=d=128</code> model consequently assigns about 1024 cycles both to the two MMAs and to the exponentials. The cover window has tightened:</p>
+<pre><span class="code-label">text</span><code>H100 teaching model:
+  one group&#x27;s softmax       [========]
+  other group&#x27;s MMA bundle  [================]
+
+B200 direction of change:
+  one group&#x27;s softmax       [========]
+  other group&#x27;s MMA bundle  [========]</code></pre>
+<p>If the second line finishes first, the Tensor Core needs another dependency-ready <code>QK^T</code> or <code>PV</code> operation. If the next <code>P</code> is not ready and no free score destination exists, it idles even though the kernel still has softmax work. The FA4 paper also explicitly prevents the two softmax warpgroups from overlapping their exponential critical sections, so simply running both softmax groups at once does not double MUFU throughput.</p>
+<h4 id="doc-fa4-8-2-what-pipeline-depth-means-here">8.2 What Pipeline &quot;Depth&quot; Means Here<a class="anchor" href="#doc-fa4-8-2-what-pipeline-depth-means-here">#</a></h4>
+<p>There are several unrelated stage counts in this kernel. The K/V circular SMEM pipeline depth counts TMA buffers. The relevant GEMM-softmax depth instead asks:</p>
+<blockquote>While one softmax critical section is running, how many future score tiles, probability tiles, and dependency-ready MMA bundles can legally remain in flight before a producer runs out of storage or hits a true dependency?</blockquote>
+<p>FA3 already has an intra-warpgroup two-stage schedule: it can retain a current <code>P</code> for <code>PV</code> while an asynchronous WGMMA produces the next <code>S</code>. Extending that lookahead requires another full score fragment in registers. The FA3 paper&#x27;s three-stage experiment therefore trades potential overlap for more register pressure. This is separate from, and composes with, the two-warpgroups ping-pong schedule above.</p>
+<p>It is imprecise to summarize FA4 as merely having a larger numeric stage count. The more durable change is that its pipeline is <strong>more decoupled and more bufferable</strong>:</p>
+<ul><li>not-yet-consumed score tiles and persistent outputs reside in TMEM rather than consuming the softmax workers&#x27; general registers;</li><li>one control role can issue MMA work for both output streams instead of each softmax warpgroup also owning its MMA accumulator registers;</li><li><code>P</code> crosses from a softmax warpgroup to the Tensor Core through TMEM;</li><li>output rescaling crosses to a separate correction warpgroup instead of extending the softmax warpgroup&#x27;s register dependency chain.</li></ul>
+<p>TMEM provides the legal residence and handoff protocol for this schedule. It does not create an unlimited reservoir of work: if steady-state softmax throughput remains lower than the available MMA throughput, every finite buffer eventually fills and the Tensor Core still waits.</p>
+<h4 id="doc-fa4-8-3-fa4-rebuilds-ping-pong-around-tmem">8.3 FA4 Rebuilds Ping-Pong Around TMEM<a class="anchor" href="#doc-fa4-8-3-fa4-rebuilds-ping-pong-around-tmem">#</a></h4>
+<p>FA4 maps the two independent streams to 128-row high and low Q/output tiles. The paper-level role structure is:</p>
+<pre><span class="code-label">text</span><code>MMA/control       produces S_high/S_low and consumes P_high/P_low
+softmax WG0       consumes one S stream and produces its P
+softmax WG1       consumes the other S stream and produces its P
+correction WG     consumes rescale statistics and corrects O</code></pre>
+<p>For <code>d=128</code>, two persistent FP32 output tiles consume half of the 256-KiB TMEM. The remaining half can hold either two FP32 <code>S</code> tiles or four BF16/FP16 <code>P</code> tiles. FA4 chooses two <code>S</code> regions whose addresses are later reused by the smaller <code>P</code> values. That choice lets the prologue issue both independent score MMAs before either softmax result exists:</p>
+<pre><span class="code-label">text</span><code>prologue:
+  MMA -&gt; S_high in TMEM
+  MMA -&gt; S_low  in TMEM
+
+steady-state handoff for either stream:
+  S ready in TMEM
+    -&gt; softmax loads S into RMEM
+    -&gt; the S lifetime ends
+    -&gt; P overwrites the aliased TMEM region
+    -&gt; P @ V consumes P from TMEM</code></pre>
+<p>This is the same high-level ping-pong objective as FA3--softmax for one output stream overlaps dependency-ready Tensor Core work for the other--but with a different implementation. FA3 alternates two register-owning, do-both consumer groups. FA4 has a separate MMA issuer and uses TMEM as the bounded handoff storage between MMA, two softmax groups, and correction.</p>
+<p>The current source-backed role timeline is schematically:</p>
 <pre><span class="code-label">text</span><code>time ----&gt;
 
 MMA/control:   S0=Q0K^T       S1=Q1K^T       P0V        P1V
@@ -2256,7 +2301,14 @@ load warp:      TMA K/V next      TMA K/V next</code></pre>
 <p>Key dependencies are expressed with mbarrier-backed pipelines:</p>
 <ul><li>TMA signals Q/K/V stage readiness to MMA;</li><li>MMA signals that <code>S</code> is complete in TMEM;</li><li>softmax/correction signal that <code>P</code> and the corrected output are ready;</li><li>MMA consumes <code>P</code> for <code>PV</code>;</li><li>MMA signals the new output accumulator to correction;</li><li>epilogue waits for the final corrected accumulator.</li></ul>
 <p>The overlap is safe only because every reused TMEM/SMEM region has an explicit producer-complete and consumer-release protocol.</p>
-<h4 id="doc-fa4-8-1-why-one-thread-per-row-becomes-natural">8.1 Why one thread per row becomes natural<a class="anchor" href="#doc-fa4-8-1-why-one-thread-per-row-becomes-natural">#</a></h4>
+<p>The resulting causal chain is:</p>
+<pre><span class="code-label">text</span><code>B200 makes the FA3-style MMA cover window shorter
+  -&gt; more of softmax can become exposed
+  -&gt; fully-async MMA plus TMEM decouple and buffer the ping-pong handoffs
+  -&gt; partial exp emulation raises effective exp throughput
+  -&gt; conditional rescaling and a correction role reduce/move remaining work</code></pre>
+<p>The fully-async/TMEM step improves overlap opportunity. Partial exponential emulation changes effective exponential throughput; conditional rescaling reduces correction work, and the correction role moves the remaining work off the softmax warpgroup&#x27;s critical path. Neither category should be silently credited with the other&#x27;s effect.</p>
+<h4 id="doc-fa4-8-4-why-one-thread-per-row-becomes-natural">8.4 Why one thread per row becomes natural<a class="anchor" href="#doc-fa4-8-4-why-one-thread-per-row-becomes-natural">#</a></h4>
 <p>A Blackwell accumulator tile is naturally 128 rows high. Four softmax warps contain 128 lanes, so a warpgroup can assign:</p>
 <pre><span class="code-label">text</span><code>lane/thread r -&gt; score row r, 128 FP32 elements</code></pre>
 <p>Each row&#x27;s <code>max</code>, exponentials, and sum are private to one thread. FA3&#x27;s inter-thread shuffle for pieces of the same row is avoided. The tradeoff is high per-thread register demand.</p>
