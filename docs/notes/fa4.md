@@ -528,6 +528,16 @@ Register budgets are reassigned by role; softmax threads receive many more
 registers because each thread can hold an entire 128-element score row plus
 temporary state.
 
+These warp ranges are CTA-local software identities used to select branches in
+one kernel control-flow graph; they are not separate per-warp SASS binaries.
+The exact mapping from those warp IDs to Blackwell's physical warp schedulers
+is not a documented CUDA/PTX guarantee. A four-way round-robin mapping is a
+useful performance hypothesis, but the schedule's correctness comes from its
+barrier and TMEM protocols rather than that assumed mapping. See the shared
+[GPU execution-model note](https://zyeric.github.io/gpu-hardware-notes/notes.html#one-kernel-instruction-stream-many-warp-contexts)
+for the evidence boundary between documented static scheduler sets and an
+architecture-specific warp-ID mapping.
+
 The paper's higher-level wording groups the control work more coarsely. The
 pinned source is the authority for the exact current warp IDs.
 
