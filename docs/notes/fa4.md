@@ -1158,7 +1158,109 @@ writes, while its general work scheduling uses longest-processing-time-first
 to reduce makespan. These are not contradictory: they optimize two different
 queues.
 
-### 16.1 Cost
+### 16.1 The Semaphore Is Global, Small, And Not A Dynamic Ticket Allocator
+
+Ordinary SMEM is CTA-private, so a counter that orders writers on different
+SMs must use a device-global address. The counter array is HBM-addressed but
+small enough that its hot working set is normally mediated by the coherent
+L2/atomic path. For the teaching shape with `tile_m=128` and 2-CTA cluster
+size 2:
+
+```text
+B=1, H=32, Nq=8192
+counter bytes = 1 * 32 * 64 Q tiles * 2 * 4 B = 16 KiB
+FP32 dQ accumulator                               = 128 MiB
+```
+
+The synchronization cost is therefore more about dependency latency, polling,
+release fences, and backpressure than about counter capacity.
+
+Writer `r` already knows its prescribed logical rank. It does not perform a
+fetch-add race to acquire an arbitrary ticket. One elected lane polls an
+acquire load until the counter equals `r`; after the bulk `dQ` reduction has
+become globally visible, a release-scoped int32 global increment exposes
+`r+1`. The current helper protocol corresponds to:
+
+```text
+wait_eq:
+  while ld_acquire(global_counter) != r:
+    poll
+
+arrive_inc:
+  red.release.gpu.global.add.s32(global_counter, 1)
+```
+
+Two atomic meanings remain distinct:
+
+- the `dQ` data path does not call the legacy lane-wise
+  `atomicAdd(float*, float)`, but its bulk reduce-add still has safe global
+  reduction semantics;
+- the semaphore release is itself an ordered integer global reduction, not a
+  floating-point gradient contribution.
+
+The deterministic path keeps the efficient bulk reduction and orders its
+invocations. Removing scalar `atomicAdd` syntax is not the determinism proof.
+
+### 16.2 Four-Q/Four-K Causal Toy Schedule
+
+Use equal tile counts so the diagonal and the writer wavefront are visible.
+Let `Qi` attend `K0..Ki`:
+
+| Q destination | Legal K/V contributors |
+| --- | --- |
+| `Q0` | `K0` |
+| `Q1` | `K0,K1` |
+| `Q2` | `K0,K1,K2` |
+| `Q3` | `K0,K1,K2,K3` |
+
+A K/V-owner CTA has the transposed view:
+
+| CTA | Ascending Q traversal from its diagonal | Relative work |
+| --- | --- | ---: |
+| `CTA(K3)` | `Q3` | 1 |
+| `CTA(K2)` | `Q2 -> Q3` | 2 |
+| `CTA(K1)` | `Q1 -> Q2 -> Q3` | 3 |
+| `CTA(K0)` | `Q0 -> Q1 -> Q2 -> Q3` | 4 |
+
+A naive fixed order `K0 -> K1 -> K2 -> K3` for every `dQ` destination makes
+the shortest `CTA(K3)` compute `dQ[Q3]` immediately and then wait for the
+longest `CTA(K0)` to reach `Q3`. That is correct but creates head-of-line
+blocking.
+
+The FA4 causal idea launches K/V owners in descending order and assigns each
+destination a matching descending-K ticket chain:
+
+```text
+dQ[Q0]: K0
+dQ[Q1]: K1 -> K0
+dQ[Q2]: K2 -> K1 -> K0
+dQ[Q3]: K3 -> K2 -> K1 -> K0
+```
+
+The resulting conceptual wavefront is:
+
+```text
+wave 0:  K3/Q3   K2/Q2   K1/Q1   K0/Q0
+wave 1:           K2/Q3   K1/Q2   K0/Q1
+wave 2:                    K1/Q3   K0/Q2
+wave 3:                             K0/Q3
+```
+
+Different Q destinations have different counters, so entries across one wave
+are not one global serial queue. For each column, however, the ticket chain is
+fixed. Every CTA's first write is rank 0 for a different diagonal Q tile, and
+later writes arrive in the same diagonal wavefront. This is the useful SPT
+intuition behind descending K launch, ascending Q traversal, and descending-Q
+reduction priority.
+
+This toy omits partial diagonal tiles, 2-CTA pairing, TMEM stages, multiple
+heads, and exact issue timing. It explains the dependency alignment, not a
+cycle-accurate source trace. The later
+[DASH paper](https://arxiv.org/abs/2601.21824) formalizes the same broader
+lesson for deterministic attention: a valid writer order can still be slow
+when it is misaligned with partial-ready time.
+
+### 16.3 Cost
 
 Deterministic mode pays for:
 

@@ -440,9 +440,31 @@ else:
   bulk_reduce_add(all stages)
   wait global visibility
   release(semaphore = r + 1)</div>
-        <ul><li>writer r+1 不能 overtaking；release 包含 ordering fence。</li><li>GQA/MQA shared dK/dV 另有 semaphores。</li><li>固定的是同一 destination 的 contributor 顺序。</li></ul></div>
+        <ul><li>counter 是 global int32，通常热在 coherent L2；不是 CTA-private SMEM。</li><li>writer 已知 rank；一条 elected lane acquire-poll，release 是 ordered int32 global increment。</li><li><code>dQ</code> 仍用 bulk reduction semantics，不是 lane-wise scalar <code>atomicAdd</code>。</li></ul></div>
     </div>
     <div class="footer"><span>atomic safety ≠ deterministic arithmetic order</span><span></span></div>
+  </section>
+
+  <section class="slide tight" data-section="CausalTicketToy">
+    <div class="kicker">Deterministic causal · equal 4×4 toy</div><h2>descending K launch + diagonal Q traversal → writer wavefront</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card"><table class="dense"><tr><th>KV owner</th><th>ascending Q traversal</th><th>work</th></tr>
+        <tr><td><code>K3</code></td><td><code>Q3</code></td><td>1</td></tr><tr><td><code>K2</code></td><td><code>Q2→Q3</code></td><td>2</td></tr>
+        <tr><td><code>K1</code></td><td><code>Q1→Q2→Q3</code></td><td>3</td></tr><tr><td><code>K0</code></td><td><code>Q0→Q1→Q2→Q3</code></td><td>4</td></tr></table>
+        <div class="quote">naive <code>K0→K3</code> ticket：短的 K3/Q3 算完却等最长 K0 到 Q3。</div></div>
+      <div class="card green-edge"><div class="codebox">ticket chains
+Q0: K0
+Q1: K1 → K0
+Q2: K2 → K1 → K0
+Q3: K3 → K2 → K1 → K0
+
+wave 0: K3/Q3 K2/Q2 K1/Q1 K0/Q0
+wave 1:       K2/Q3 K1/Q2 K0/Q1
+wave 2:             K1/Q3 K0/Q2
+wave 3:                   K0/Q3</div>
+        <p>每个 Q destination 有独立 counter；同一 wave 不是一条 global serial queue。首写各自是 rank 0，之后 ready-time 与 ticket 对齐。</p></div>
+    </div>
+    <div class="footer"><span>SPT writer order fixes queue bubbles · DASH later formalizes schedule/ready-time alignment</span><span></span></div>
   </section>
 
   <section class="slide tight" data-section="SchedulingCost">
@@ -456,7 +478,7 @@ else:
       <div class="card red-edge"><h3>ordered path cost</h3><ul><li>semaphore polling / waiting</li><li>device visibility fence</li><li>更少的 global-reduction overlap</li><li>causal imbalance 的 head-of-line blocking</li></ul>
         <p class="lead green">paper: up to 0.75× speed</p>
         <div class="equation">throughput −25%<br>same-work runtime ≈ +33%</div>
-        <p>比较对象是 nondeterministic 1-CTA，不是最快 2-CTA；也不是所有 shape 的固定比例。</p></div>
+        <p>比较对象是 nondeterministic 1-CTA，不是最快 2-CTA；也不是所有 shape 的固定比例。DASH 在 H800 的 FA3-derived baseline 另报告最坏 −37.9% throughput。</p></div>
     </div>
     <div class="footer"><span>SPT-style write order 用来减少 ordered queue 的空等</span><span></span></div>
   </section>

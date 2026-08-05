@@ -31,6 +31,10 @@ Pinned primary evidence:
   [Dao-AILab/flash-attention commit
   `3669b25206d5938e3cc74a5f7860e31c38af8204`](https://github.com/Dao-AILab/flash-attention/tree/3669b25206d5938e3cc74a5f7860e31c38af8204),
   committed on 2024-08-05;
+- follow-on scheduling evidence, not part of the pinned FA3 artifact:
+  [DASH: Deterministic Attention Scheduling for High-throughput Reproducible
+  LLM Training](https://arxiv.org/abs/2601.21824), evaluated on H800 with
+  CUDA 12.6 and Triton 3.4;
 - NVIDIA architecture and ISA references:
   [Hopper Tuning Guide](https://docs.nvidia.com/cuda/hopper-tuning-guide/index.html),
   [Ampere Tuning Guide](https://docs.nvidia.com/cuda/ampere-tuning-guide/index.html),
@@ -1033,6 +1037,37 @@ Deterministic mode can be slower because:
 
 It need not eliminate all overlap: loading, WGMMA, and publication of
 independent tiles can still proceed where dependencies allow.
+
+### 8.8 Follow-On DASH Evidence: The Order Can Be Correct And Poorly Scheduled
+
+The semaphore proves a fixed association order, but it does not prove that
+the chosen order aligns with when partials become ready. A CTA can finish a
+partial `dQ` early, wait behind a slower prescribed predecessor, keep the
+shared publication slot full, and eventually backpressure the consumer
+warpgroups. Causal masking magnifies this because K/V-owner CTAs have unequal
+Q-loop lengths.
+
+The later DASH paper formalizes this as a DAG scheduling problem. For its
+FA3-derived deterministic baseline on H800, it reports up to a 37.9%
+throughput reduction relative to the nondeterministic path. Its descending-Q
+and shift schedules improve deterministic backward by up to 1.28x. These are
+paper-reported measurements under DASH's own implementation and benchmark
+envelope, not measurements of commit `3669b25` and not a universal FA3
+penalty.
+
+The durable lesson is narrower and useful for FA4 as well:
+
+```text
+fixed writer order
+  -> proves repeatability
+
+fixed writer order aligned with partial-ready time
+  -> avoids unnecessary semaphore bubbles
+```
+
+The counter traffic itself is small. The expensive failure mode is often a
+long dependency chain, stalled publication slot, and lost overlap rather than
+raw semaphore bytes.
 
 ## 9. FA2 Versus FA3
 

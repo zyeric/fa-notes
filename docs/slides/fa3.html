@@ -775,6 +775,18 @@ KV CTA 9  ─┘ → same FP32 dQ words</div>
       <footer class="footer"><span>helper writer does not reduce contributors · dK/dV remain single-owner; dQ is the multi-owner boundary</span><span>dQ order</span></footer>
     </section>
 
+    <section class="slide" data-section="DASH follow-on">
+      <div class="kicker">Follow-on evidence · DASH is not the pinned FA3 artifact</div>
+      <div class="content grid-2">
+        <article class="card red-edge"><h3>Correct order can still schedule poorly</h3><div class="codebox">partial dQ ready early
+→ prescribed predecessor is late
+→ writer waits with publication slot full
+→ consumer eventually sees backpressure</div><p>Causal KV owners have unequal Q-loop lengths，so ready-time / ticket mismatch creates bubbles。</p></article>
+        <article class="card green-edge"><h3>H800 paper-reported signal</h3><ul><li>FA3-derived deterministic baseline：up to <strong>−37.9%</strong> throughput vs fast；</li><li>descending-Q / shift schedules：up to <strong>1.28×</strong> over that baseline；</li><li>CUDA 12.6 + Triton 3.4，not commit <code>3669b25</code>。</li></ul><p class="small"><a href="https://arxiv.org/abs/2601.21824">DASH: Deterministic Attention Scheduling</a></p></article>
+      </div>
+      <footer class="footer"><span>semaphore bytes are small · the expensive failure is a longer dependency critical path</span><span>DASH</span></footer>
+    </section>
+
     <section class="slide" data-section="FA2 vs FA3">
       <div class="kicker">FA2 → FA3 · what actually changed?</div>
       <div class="content">

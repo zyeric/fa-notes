@@ -15,7 +15,8 @@ TICK = chr(96)
 
 DOCS = [
     ("README.md", "Reading Guide", "Reader paths, evidence contract, and scope."),
-    ("evolution.md", "FA1 To FA4", "The cross-generation top-down mental model."),
+    ("tile-spec.md", "High-Level Tile Spec", "Canonical tiles, owner/reduction contracts, and representative FA1--FA4 lowerings."),
+    ("evolution.md", "FA1 To FA4 Tile Atlas", "One tile grid, forward/backward loops, ownership, and the cross-generation mental model."),
     ("fa1-checkpoint.md", "FA1 Checkpoint", "Compact ownership, memory, and determinism re-entry."),
     ("fa1-foundations.md", "FA1 Foundations", "Online softmax through physical forward/backward execution."),
     ("fa2-forward.md", "FA2 Forward", "Q-block ownership and improved warp work partition."),

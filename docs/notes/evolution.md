@@ -1,6 +1,6 @@
-# FlashAttention 1 To 4: The Top-Down Evolution
+# FlashAttention 1 To 4: A Tile And Computation Mental Model
 
-Date: 2026-08-02
+Date: 2026-08-05
 
 Status: synthesis of the pinned FA1–FA4 notes; source-backed where it describes
 the audited implementations, with GPU performance validation still pending
@@ -26,7 +26,198 @@ The generations differ in how this dataflow is mapped onto the available GPU:
 - how large a Tensor Core collective the hardware exposes;
 - how partial gradients are combined when ownership is inherently many-to-one.
 
-## 2. One Table To Remember
+This note deliberately separates three things that are often collapsed in a
+verbal explanation:
+
+1. **mathematical tile:** a rectangle such as $Q_i$, $K_j$, or $S_{ij}$;
+2. **logical owner:** the work item responsible for a complete output tile;
+3. **physical schedule:** CTA/cluster shape, warp roles, memory residence, and
+   pipeline.
+
+FA1 to FA4 changes all three at different times. A larger tile does not by
+itself mean a different owner graph, and a persistent CTA is not a larger
+mathematical tile.
+
+## 2. Draw This Tile Grid First
+
+Before naming a FlashAttention generation, draw the attention plane:
+
+```text
+                         K/V sequence: j ->
+                    K0/V0      K1/V1      K2/V2
+                  +----------+----------+----------+
+Q sequence:  Q0   |   S00    |   S01    |   S02    |  -> O0
+             Q1   |   S10    |   S11    |   S12    |  -> O1
+             Q2   |   S20    |   S21    |   S22    |  -> O2
+                  +----------+----------+----------+
+                         one cell = Sij = Qi Kj^T
+```
+
+Use the same symbols for every generation:
+
+| Tile | Logical shape | Meaning |
+| --- | --- | --- |
+| $Q_i$ | $B_M\times D$ | one block of query rows |
+| $K_j,V_j$ | $B_N\times D$ | one block of key/value rows |
+| $S_{ij},P_{ij}$ | $B_M\times B_N$ | one transient score/probability cell |
+| $O_i$ | $B_M\times D$ | output rows corresponding to $Q_i$ |
+
+There are three axes to track:
+
+- $D$ is the reduction axis of $Q_iK_j^\top$;
+- $j$ / the K/V sequence is the reduction axis of the complete forward
+  output $O_i$;
+- $i$ / the Q sequence is the reduction axis of complete backward $dK_j$ and
+  $dV_j$.
+
+That last distinction predicts the natural forward and backward loop
+orientations before any CUDA detail appears.
+
+### 2.1 Forward: fix a row tile, scan cells horizontally
+
+For one fixed $Q_i$, the complete forward result needs every valid $j$:
+
+```text
+fix i / own O_i
+  initialize row state (m_i, l_i, U_i)
+
+  for each valid K/V tile j:
+      S_ij = Q_i K_j^T
+      update row max m_i
+      P_tilde_ij = exp(S_ij - m_i_new)
+      rescale old l_i and U_i
+      l_i += rowsum(P_tilde_ij)
+      U_i += P_tilde_ij V_j
+
+  O_i   = U_i / l_i
+  LSE_i = m_i + log(l_i)
+```
+
+The state $(m_i,l_i,U_i)$ summarizes every cell already visited in that row.
+The full $S$ or $P$ plane never needs to exist in HBM. This is the common
+algorithm underneath FA1, FA2, FA3, and FA4 forward.
+
+The strongest default ownership rule is therefore:
+
+> Split workers along $i$ when possible, and let one owner keep the complete
+> $j$ reduction for $O_i$.
+
+### 2.2 Backward: fix a column tile, scan cells vertically
+
+Let $G_i=dO_i$ and $D_i=\operatorname{rowsum}(G_i\odot O_i)$. Backward
+revisits one attention cell and performs five tiled matrix products:
+
+```text
+S_ij  = Q_i K_j^T                 # recompute score
+dP_ij = G_i V_j^T
+P_ij  = exp(S_ij - LSE_i)
+dS_ij = P_ij * (dP_ij - D_i)
+
+dV_j += P_ij^T G_i
+dK_j += dS_ij^T Q_i
+dQ_i_from_j = dS_ij K_j
+```
+
+The natural high-parallelism work item fixes $j$ and scans $i$:
+
+```text
+fix j / own dK_j and dV_j
+  for each interacting Q tile i:
+      recompute P_ij and dS_ij
+      accumulate complete local dK_j and dV_j
+      publish one partial dQ_i_from_j
+```
+
+This orientation makes `dK_j` and `dV_j` single-owner outputs, but every
+`dQ_i` receives one contribution from every interacting $j$ owner. Swapping
+the loop would make `dQ` complete and `dK/dV` partial. One orientation cannot
+make all three gradients single-owner.
+
+The backward memory rule is:
+
+> **Fix $j$, keep $dK_j/dV_j$; `dQ` is the unavoidable cross-$j$ combine.**
+
+This contributor graph remains recognizable from FA1 through FA4. Atomic
+add, bulk reduce-add, a partial workspace, and an ordered semaphore are
+different physical protocols for the same many-to-one edge.
+
+## 3. The Four Forward Tile Schedules
+
+### 3.1 One comparison frame
+
+The table uses representative pinned paths, not universal constants. Dispatch
+can change with head dimension, dtype, dropout, mask, sequence length,
+architecture, and source revision.
+
+| Generation / pinned path | Representative score tile | Logical output owner | High-level loop and live state | Physical idea to remember |
+| --- | --- | --- | --- | --- |
+| FA1 v1.0.9 CUDA, long-sequence d128 | $16\times128$ | CTA split $r$ owns several interleaved 16-row $Q_i$ tiles | $j$ outer; visit all $i=r,r+R,\ldots$ inside; each $O_i$/LSE state is handed through HBM between $j$ steps | keep one K/V tile, revisit many small Q tiles; four warps split score columns / the PV reduction |
+| FA2 v2.0.0 SM80, d128 no dropout | $128\times64$ | one CTA owns one 128-row $Q_i\rightarrow O_i$ block | fix $i$; scan valid $j$ in reverse; keep running $m,l,U$ in registers until epilogue | split-Q: four warps own disjoint Q-row/output slices |
+| FA3 pinned early SM90, causal d128 | $128\times128$ | one logical $Q_i\rightarrow O_i$ work item; a persistent CTA may execute several such items over its lifetime | same fix-$i$/scan-$j$ online update as FA2 | TMA stages K/V while two consumer warpgroups use WGMMA and softmax; each owns 64 output rows |
+| FA4 pinned SM100 d128 family | $128\times128$ mathematical subtiles, commonly two Q stages in the work item | each final row still has one logical owner; eligible paths may use a 2-CTA cooperative group | two independent 128-row streams scan the K/V tiles and keep online state | tcgen05 writes S/P/O through TMEM; separate MMA, softmax, and correction roles deepen the handoff pipeline |
+
+Two cautions make the table safe to teach:
+
+- FA2's often-drawn $128\times128$ example is the representative d64 path;
+  the audited d128/no-dropout A100-class path uses $128\times64$.
+- In FA4, “two 128-row Q stages” and “2-CTA” are independent concepts. A
+  mathematical 128-row subtile, one logical work item, one CTA, and one CTA
+  cluster are not interchangeable nouns.
+
+### 3.2 The loop-nest memory trick
+
+```text
+FA1 audited source:
+  for K/V tile j:                    # keep K_j,V_j on chip
+      for several small Q tiles i:   # load/update/store state_i
+
+FA2:
+  fix one larger Q tile i            # keep Q_i and state_i on chip
+      for K/V tile j:                # stream K_j,V_j
+
+FA3:
+  same logical loop as FA2
+  + asynchronous movement/MMA/softmax factory
+
+FA4:
+  same broad owner graph
+  + two buffered Q streams, TMEM handoffs, fully-async MMA
+  + optional 2-CTA cooperation for eligible physical tiles
+```
+
+The shortest correct mnemonic is:
+
+```text
+FA1: tile the attention plane
+FA2: turn the loop so output state stays with its owner
+FA3: pipeline the owner
+FA4: decouple and deepen the owner pipeline
+```
+
+FA1's paper pseudocode and its audited v1.0.9 CUDA schedule are not identical.
+The comparison above intentionally describes the source schedule; the paper's
+abstract K/V-outer loop is the origin of the tiled online-softmax algorithm,
+not evidence that every later kernel uses the same CTA mapping.
+
+### 3.3 A five-minute teaching route
+
+1. Draw the $(i,j)$ attention grid and say “one cell is transient
+   $S_{ij}/P_{ij}$.”
+2. Move horizontally across one row: that is forward, and $(m,l,U)$ is the
+   row's compressed history.
+3. Move vertically down one column: that is the natural backward K/V owner;
+   it finishes `dK/dV` but emits partial `dQ`.
+4. Explain FA1 to FA2 as the important ownership/loop-nest change.
+5. Keep the same owner graph and explain FA3/FA4 as progressively more
+   asynchronous physical factories, not new attention equations.
+6. End with the audit question: “which output is complete here, and which is
+   only a partial?”
+
+If the audience remembers only one drawing, it should be the grid. Forward is
+row ownership; backward's high-parallelism path is column ownership; FA2 fixes
+the forward mapping; FA3 and FA4 mainly redesign how each owner runs.
+
+## 4. One Table To Remember
 
 | Generation | Primary problem | Most important response | Human-memory version |
 | --- | --- | --- | --- |
@@ -38,7 +229,7 @@ The generations differ in how this dataflow is mapped onto the available GPU:
 This is not four unrelated kernels. It is one mathematical dataflow repeatedly
 remapped as the bottleneck and hardware contract change.
 
-## 3. FA1: Change The IO Complexity
+## 5. FA1: Change The IO Complexity
 
 Ordinary attention commonly materializes an $N \times N$ score/probability
 matrix in HBM. FA1 instead moves Q/K/V tiles through on-chip memory and keeps,
@@ -50,12 +241,16 @@ longer makes a full HBM round trip. The price is a more complicated tiled
 online-softmax update and an implementation whose performance depends on tile
 size, memory lifetime reuse, shared-memory layout, and warp cooperation.
 
-The audited historical forward schedule also exposes work-partition costs:
-warps own score-column slices and produce partial output accumulators that must
-be combined. FA1 therefore gives the vocabulary needed to recognize why FA2's
-partition is cleaner.
+In the audited v1.0.9 forward, a CTA keeps one K/V tile on chip while walking
+several small Q tiles. It can reuse K/V within that CTA, but the running state
+for all of those Q tiles cannot stay resident simultaneously, so partial O and
+normalization state are handed through global buffers across K/V steps.
 
-## 4. FA2: Change Ownership Before Adding New Hardware Tricks
+Its warps own score-column slices and produce partial output accumulators that
+must be combined inside the CTA. FA1 therefore gives the vocabulary needed to
+recognize why FA2's partition is cleaner.
+
+## 6. FA2: Change Ownership Before Adding New Hardware Tricks
 
 FA2's most reusable lesson is that a mathematically valid tile decomposition is
 not automatically a good worker decomposition.
@@ -78,7 +273,7 @@ owners improve parallelism and make `dQ` a many-writer destination. The
 deterministic path must preserve partials and combine them in a fixed order, or
 otherwise serialize the writers.
 
-## 5. FA3: Exploit Hopper's Asynchronous Execution Contract
+## 7. FA3: Exploit Hopper's Asynchronous Execution Contract
 
 FA3 broadly keeps FA2's logical owner graph. The major change is how one tile
 is executed on Hopper.
@@ -109,7 +304,7 @@ operation and removes explicit per-warp operand-fragment staging, while the
 kernel still owns tile choice, layouts, pipeline stages, barriers, epilogue,
 and reduction semantics.
 
-## 6. FA4: Respond To Asymmetric Blackwell Scaling
+## 8. FA4: Respond To Asymmetric Blackwell Scaling
 
 Blackwell makes matrix multiplication faster without scaling every supporting
 resource by the same factor. Shared-memory bandwidth, exponential throughput,
@@ -138,7 +333,7 @@ None of these statements means that each B element is physically read exactly
 once, or that HBM traffic necessarily falls. The memory level and cooperation
 scope must be named.
 
-## 7. What Changes In Forward
+## 9. What Changes In Forward
 
 The durable forward proof shape is:
 
@@ -156,7 +351,7 @@ compute pipeline. Fixed-artifact forward repeatability is therefore plausible
 when RNG state is replayed, but it does not imply bitwise equality across tile
 plans, compiler artifacts, architectures, or implementations.
 
-## 8. What Changes In Backward
+## 10. What Changes In Backward
 
 The gradient dependency graph is stable:
 
@@ -183,7 +378,7 @@ FA4 2-CTA cooperation can reduce traffic and the number of global `dQ`
 updates, but fewer writers are not the same as one writer. Determinism still
 requires a fixed combine order.
 
-## 9. The Hardware-Primitive Ladder
+## 11. The Hardware-Primitive Ladder
 
 ```text
 Ampere warp-scoped MMA
@@ -198,7 +393,7 @@ same proportional speedup.” Larger collectives introduce co-scheduling,
 barriers, tail behavior, distributed shared-memory traffic, and load-balance
 costs.
 
-## 10. Reusable Kernel-Design Guidance
+## 12. Reusable Kernel-Design Guidance
 
 Across the four generations:
 
@@ -217,7 +412,7 @@ Across the four generations:
 7. Pin source, shape, dtype, architecture, compiler artifact, and runtime state
    before making a bitwise claim.
 
-## 11. Continue Reading
+## 13. Continue Reading
 
 - Rebuild the full physical model in [FA1 foundations](fa1-foundations.md).
 - Study the ownership improvement in [FA2 forward](fa2-forward.md) and

@@ -21,22 +21,22 @@ blockquote{margin:14px 0;padding:9px 15px;border-left:4px solid var(--teal);back
 </style></head><body>
 <div class="layout"><aside><div class="brand">FlashAttention<br>Reading Notes</div>
 <div class="meta">Generated 2026-08-03<br>Markdown is the source of truth</div>
-<nav class="nav"><a href="#top">Overview</a><a href="#doc-readme">Reading Guide</a><a href="#doc-evolution">FA1 To FA4</a><a href="#doc-fa1-checkpoint">FA1 Checkpoint</a><a href="#doc-fa1-foundations">FA1 Foundations</a><a href="#doc-fa2-forward">FA2 Forward</a><a href="#doc-fa2-backward">FA2 Backward</a><a href="#doc-fa3">FA3 / Hopper</a><a href="#doc-fa4">FA4 / Blackwell</a><a href="#doc-current-implementation-and-determinism">Current Determinism Audit</a><a href="#doc-rubin-attention-projection">Rubin Projection</a></nav></aside>
+<nav class="nav"><a href="#top">Overview</a><a href="#doc-readme">Reading Guide</a><a href="#doc-tile-spec">High-Level Tile Spec</a><a href="#doc-evolution">FA1 To FA4 Tile Atlas</a><a href="#doc-fa1-checkpoint">FA1 Checkpoint</a><a href="#doc-fa1-foundations">FA1 Foundations</a><a href="#doc-fa2-forward">FA2 Forward</a><a href="#doc-fa2-backward">FA2 Backward</a><a href="#doc-fa3">FA3 / Hopper</a><a href="#doc-fa4">FA4 / Blackwell</a><a href="#doc-current-implementation-and-determinism">Current Determinism Audit</a><a href="#doc-rubin-attention-projection">Rubin Projection</a></nav></aside>
 <main><section class="hero" id="top"><h1>FlashAttention Reading Notes</h1>
 <p class="subtitle">A progressive FA1-to-FA4 reading surface from online softmax and CTA ownership to Hopper/Blackwell pipelines and deterministic backward protocols.</p>
 <div class="actions"><a class="button" href="slides/fa1-forward.html">Start with FA1 forward</a><a class="button secondary" href="index.html">Landing page</a><a class="button secondary" href="https://github.com/zyeric/fa-notes">GitHub</a></div>
-<div class="source-grid"><div class="source-card"><strong>Reading Guide</strong><span>Reader paths, evidence contract, and scope.</span></div><div class="source-card"><strong>FA1 To FA4</strong><span>The cross-generation top-down mental model.</span></div><div class="source-card"><strong>FA1 Checkpoint</strong><span>Compact ownership, memory, and determinism re-entry.</span></div><div class="source-card"><strong>FA1 Foundations</strong><span>Online softmax through physical forward/backward execution.</span></div><div class="source-card"><strong>FA2 Forward</strong><span>Q-block ownership and improved warp work partition.</span></div><div class="source-card"><strong>FA2 Backward</strong><span>Backward ownership, partial dQ, and deterministic combine.</span></div><div class="source-card"><strong>FA3 / Hopper</strong><span>TMA, WGMMA, warp specialization, and two-level overlap.</span></div><div class="source-card"><strong>FA4 / Blackwell</strong><span>TMEM, tcgen05, 2-CTA cooperation, and softmax changes.</span></div><div class="source-card"><strong>Current Determinism Audit</strong><span>Resolved ownership and ordered-reduction mechanisms.</span></div><div class="source-card"><strong>Rubin Projection</strong><span>Attention opportunities, bottleneck migration, exactness boundaries, and validation questions.</span></div></div></section>
+<div class="source-grid"><div class="source-card"><strong>Reading Guide</strong><span>Reader paths, evidence contract, and scope.</span></div><div class="source-card"><strong>High-Level Tile Spec</strong><span>Canonical tiles, owner/reduction contracts, and representative FA1--FA4 lowerings.</span></div><div class="source-card"><strong>FA1 To FA4 Tile Atlas</strong><span>One tile grid, forward/backward loops, ownership, and the cross-generation mental model.</span></div><div class="source-card"><strong>FA1 Checkpoint</strong><span>Compact ownership, memory, and determinism re-entry.</span></div><div class="source-card"><strong>FA1 Foundations</strong><span>Online softmax through physical forward/backward execution.</span></div><div class="source-card"><strong>FA2 Forward</strong><span>Q-block ownership and improved warp work partition.</span></div><div class="source-card"><strong>FA2 Backward</strong><span>Backward ownership, partial dQ, and deterministic combine.</span></div><div class="source-card"><strong>FA3 / Hopper</strong><span>TMA, WGMMA, warp specialization, and two-level overlap.</span></div><div class="source-card"><strong>FA4 / Blackwell</strong><span>TMEM, tcgen05, 2-CTA cooperation, and softmax changes.</span></div><div class="source-card"><strong>Current Determinism Audit</strong><span>Resolved ownership and ordered-reduction mechanisms.</span></div><div class="source-card"><strong>Rubin Projection</strong><span>Attention opportunities, bottleneck migration, exactness boundaries, and validation questions.</span></div></div></section>
 <section class="doc" id="doc-readme"><div class="doc-kicker">README.md</div><h2 id="doc-readme-reading-guide">Reading Guide<a class="anchor" href="#doc-readme-reading-guide">#</a></h2>
 <p>These notes explain FlashAttention by following values and ownership from the attention equation down to GPU instructions and back up to observable determinism. Markdown is the source of truth; the HTML decks are alternate reading surfaces, not independent specifications.</p>
 <h3 id="doc-readme-recommended-paths">Recommended Paths<a class="anchor" href="#doc-readme-recommended-paths">#</a></h3>
 <h4 id="doc-readme-first-encounter">First encounter<a class="anchor" href="#doc-readme-first-encounter">#</a></h4>
-<ol><li><a href="slides/fa1-forward.html">FA1 forward visual map</a></li><li><a href="slides/fa1-backward.html">FA1 backward visual map</a></li><li><a href="#doc-fa1-checkpoint">FA1 one-page checkpoint</a></li><li><a href="#doc-evolution">FA1 to FA4 evolution</a></li></ol>
-<p>This path introduces CUDA vocabulary before relying on it, follows the common <code>B=1, H=32, N=8192, d=128</code> example, and only then compares generations.</p>
+<ol><li><a href="#doc-tile-spec">FA1 to FA4 high-level tile spec</a></li><li><a href="#doc-evolution">FA1 to FA4 tile and computation mental model</a></li><li><a href="slides/fa1-forward.html">FA1 forward visual map</a></li><li><a href="slides/fa1-backward.html">FA1 backward visual map</a></li><li><a href="#doc-fa1-checkpoint">FA1 one-page checkpoint</a></li></ol>
+<p>The spec gives every generation the same $(i,j)$ vocabulary and separates the mathematical tile, logical owner, and physical lowering. The evolution note adds the causal story; the visual maps then introduce CUDA vocabulary and ground that model in the common <code>B=1, H=32, N=8192, d=128</code> example.</p>
 <h4 id="doc-readme-full-source-backed-path">Full source-backed path<a class="anchor" href="#doc-readme-full-source-backed-path">#</a></h4>
 <ol><li><a href="#doc-fa1-foundations">FA1 foundations</a></li><li><a href="#doc-fa2-forward">FA2 forward delta</a></li><li><a href="#doc-fa2-backward">FA2 backward delta</a></li><li><a href="#doc-fa3">FA3 Hopper deep dive</a></li><li><a href="#doc-fa4">FA4 Blackwell deep dive</a></li><li><a href="#doc-current-implementation-and-determinism">Current implementation and determinism audit</a></li><li><a href="#doc-rubin-attention-projection">Rubin Attention opportunity and challenge map</a></li></ol>
 <p>The later-generation documents assume the earlier ownership and memory model. They intentionally explain deltas instead of repeating all of FA1.</p>
 <h4 id="doc-readme-determinism-only-re-entry">Determinism-only re-entry<a class="anchor" href="#doc-readme-determinism-only-re-entry">#</a></h4>
-<ol><li>Read the forward/backward ownership boxes in <a href="#doc-fa1-checkpoint">FA1 checkpoint</a>.</li><li>Read <a href="#doc-current-implementation-and-determinism">current implementation and determinism</a>.</li><li>Use the FA2/FA3/FA4 notes only to resolve the selected backend and its combine mechanism.</li></ol>
+<ol><li>Read the forward/backward ownership boxes in <a href="#doc-fa1-checkpoint">FA1 checkpoint</a>.</li><li>Read <a href="#doc-current-implementation-and-determinism">current implementation and determinism</a>.</li><li>Use the FA2/FA3/FA4 notes only to resolve the selected backend and its combine mechanism.</li><li>Use the FA3 follow-on DASH subsection and the FA4 equal-<code>4x4</code> causal toy only after separating fixed arithmetic order from efficient writer scheduling.</li></ol>
 <h3 id="doc-readme-the-questions-every-generation-must-answer">The Questions Every Generation Must Answer<a class="anchor" href="#doc-readme-the-questions-every-generation-must-answer">#</a></h3>
 <p>For one output or gradient tile:</p>
 <ol><li>Who owns it?</li><li>Which operands are tiled, and which dimension is a reduction dimension at this exact stage?</li><li>Where do inputs, online-softmax state, intermediates, and accumulators live?</li><li>Which values have multiple contributors, and in what order are they combined?</li><li>Which movement and compute instructions are used, and where are the synchronization boundaries?</li><li>What bottleneck motivated the schedule, and what counterfactual became worse?</li><li>Which parts are fixed by the algorithm, compile artifact, host dispatch, runtime scheduling, and hardware generation?</li><li>What source or experiment supports the claim?</li></ol>
@@ -47,8 +47,138 @@ blockquote{margin:14px 0;padding:9px 15px;border-left:4px solid var(--teal);back
 <h3 id="doc-readme-scope-boundary">Scope Boundary<a class="anchor" href="#doc-readme-scope-boundary">#</a></h3>
 <p>This repository currently owns ordinary FA1–FA4 training-attention foundations. Generic CTA/warp/SM, memory hierarchy, clocks, pipelines, and Tensor Core vocabulary live in <a href="https://github.com/zyeric/gpu-hardware-notes">gpu-hardware-notes</a>.</p>
 <p>Model-specific large-head-dimension, FlashMLA, inference, batch-invariance, and linear-attention investigations remain separate until they have enough coherent material to extend this reading graph without weakening its scope.</p>
-<p>The Rubin note is an explicit architecture projection rather than a fifth FlashAttention generation. It keeps exact dense Attention separate from activation-sparse/model-co-designed alternatives and records what still needs a public implementation or GPU measurement.</p></section><section class="doc" id="doc-evolution"><div class="doc-kicker">evolution.md</div><h2 id="doc-evolution-flashattention-1-to-4-the-top-down-evolution">FlashAttention 1 To 4: The Top-Down Evolution<a class="anchor" href="#doc-evolution-flashattention-1-to-4-the-top-down-evolution">#</a></h2>
-<p>Date: 2026-08-02</p>
+<p>The Rubin note is an explicit architecture projection rather than a fifth FlashAttention generation. It keeps exact dense Attention separate from activation-sparse/model-co-designed alternatives and records what still needs a public implementation or GPU measurement.</p></section><section class="doc" id="doc-tile-spec"><div class="doc-kicker">tile-spec.md</div><h2 id="doc-tile-spec-flashattention-1-to-4-high-level-tile-spec">FlashAttention 1 To 4: High-Level Tile Spec<a class="anchor" href="#doc-tile-spec-flashattention-1-to-4-high-level-tile-spec">#</a></h2>
+<p>Date: 2026-08-05</p>
+<p>Status: compact teaching specification derived from the pinned FA1--FA4 notes; logical contracts are stable within the stated scope, while physical tile constants describe representative audited paths rather than universal dispatch</p>
+<h3 id="doc-tile-spec-1-what-this-spec-is">1. What This Spec Is<a class="anchor" href="#doc-tile-spec-1-what-this-spec-is">#</a></h3>
+<p>This is a <strong>descriptive semantic spec</strong> for remembering and explaining tiled FlashAttention. It is not a CUDA ABI, a launch configuration, or a promise that every dtype, shape, mask, and source revision selects the same numeric tile size.</p>
+<p>Read it in three layers:</p>
+<pre><span class="code-label">text</span><code>L0 -- mathematical tile
+      What rectangle is being computed?
+
+L1 -- ownership and reduction
+      Who owns the complete output, and which axis is scanned?
+
+L2 -- physical lowering
+      Which representative CTA/cluster, tile size, memory, and MMA pipeline
+      realize L0 and L1 in one pinned implementation?</code></pre>
+<p>The layers must remain separate. In particular:</p>
+<pre><span class="code-label">text</span><code>mathematical subtile != logical work item != launched CTA != CTA cluster</code></pre>
+<h3 id="doc-tile-spec-2-canonical-tile-vocabulary">2. Canonical Tile Vocabulary<a class="anchor" href="#doc-tile-spec-2-canonical-tile-vocabulary">#</a></h3>
+<p>For one batch/head plane:</p>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Shape</th><th>Role</th></tr></thead><tbody><tr><td><code>Q_i</code></td><td>$B_M\times D$</td><td>query-row tile <code>i</code></td></tr><tr><td><code>K_j</code>, <code>V_j</code></td><td>$B_N\times D$</td><td>key/value-row tile <code>j</code></td></tr><tr><td><code>S_ij</code>, <code>P_ij</code></td><td>$B_M\times B_N$</td><td>transient attention cell</td></tr><tr><td><code>O_i</code></td><td>$B_M\times D$</td><td>final output corresponding to <code>Q_i</code></td></tr><tr><td><code>m_i</code>, <code>l_i</code></td><td>$B_M$</td><td>online-softmax row maximum and sum</td></tr><tr><td><code>U_i</code></td><td>$B_M\times D$</td><td>unnormalized running output numerator</td></tr></tbody></table></div>
+<p>The attention plane is:</p>
+<pre><span class="code-label">text</span><code>                         K/V tile j -&gt;
+                  +---------+---------+---------+
+Q tile i      Q0  |   S00   |   S01   |   S02   | -&gt; O0
+              Q1  |   S10   |   S11   |   S12   | -&gt; O1
+              Q2  |   S20   |   S21   |   S22   | -&gt; O2
+                  +---------+---------+---------+</code></pre>
+<p>The three important reduction axes are:</p>
+<div class="table-wrap"><table><thead><tr><th>Result</th><th>Reduction axis</th></tr></thead><tbody><tr><td>one <code>S_ij = Q_i K_j^T</code> cell</td><td>head dimension <code>D</code></td></tr><tr><td>complete forward <code>O_i</code></td><td>all interacting K/V tiles <code>j</code></td></tr><tr><td>complete backward <code>dK_j</code>, <code>dV_j</code></td><td>all interacting Q tiles <code>i</code></td></tr></tbody></table></div>
+<h3 id="doc-tile-spec-3-l1-semantic-spec">3. L1 Semantic Spec<a class="anchor" href="#doc-tile-spec-3-l1-semantic-spec">#</a></h3>
+<h4 id="doc-tile-spec-3-1-forward">3.1 Forward<a class="anchor" href="#doc-tile-spec-3-1-forward">#</a></h4>
+<pre><span class="code-label">yaml</span><code>work_item:       one logical Q_i -&gt; O_i owner
+fixed_axis:      i
+scanned_axis:    all valid j
+transient_cell:  S_ij, P_ij
+persistent:      m_i, l_i, U_i
+final_output:    O_i = U_i / l_i, plus LSE_i
+global_combine:  none for ordinary non-SplitKV forward</code></pre>
+<p>Per K/V cell:</p>
+<pre><span class="code-label">text</span><code>S_ij = Q_i K_j^T
+m_new = max(m_old, rowmax(S_ij))
+P_tilde_ij = exp(S_ij - m_new)
+l_new = exp(m_old - m_new) l_old + rowsum(P_tilde_ij)
+U_new = exp(m_old - m_new) U_old + P_tilde_ij V_j</code></pre>
+<p>Memory sentence:</p>
+<blockquote><strong>Fix <code>i</code>, scan <code>j</code>, keep <code>(m,l,U)</code> with the logical <code>O_i</code> owner.</strong></blockquote>
+<p>FA1&#x27;s audited historical schedule implements this logical ownership with one CTA split responsible for several small Q tiles and a global state handoff; FA2 makes the logical-to-physical mapping much more direct. FA3 and FA4 retain the broad owner graph and change its physical pipeline.</p>
+<h4 id="doc-tile-spec-3-2-backward">3.2 Backward<a class="anchor" href="#doc-tile-spec-3-2-backward">#</a></h4>
+<pre><span class="code-label">yaml</span><code>work_item:       one logical K_j/V_j owner
+fixed_axis:      j
+scanned_axis:    all interacting i
+transient_cell:  S_ij, P_ij, dP_ij, dS_ij
+persistent:      dK_j, dV_j accumulators
+final_output:    complete dK_j, dV_j
+partial_output:  dQ_i_from_j
+global_combine:  sum dQ_i_from_j over all interacting j owners</code></pre>
+<p>Per attention cell:</p>
+<pre><span class="code-label">text</span><code>S_ij  = Q_i K_j^T
+P_ij  = exp(S_ij - LSE_i)
+dP_ij = dO_i V_j^T
+dS_ij = P_ij * (dP_ij - rowsum(dO_i * O_i))
+
+dV_j += P_ij^T dO_i
+dK_j += dS_ij^T Q_i
+dQ_i_from_j = dS_ij K_j</code></pre>
+<p>Memory sentence:</p>
+<blockquote><strong>Fix <code>j</code>, scan <code>i</code>, keep <code>dK_j/dV_j</code>; publish partial <code>dQ</code>.</strong></blockquote>
+<p>No loop orientation makes <code>dQ</code>, <code>dK</code>, and <code>dV</code> all single-owner. A Q-owner would finish <code>dQ</code> but publish partial <code>dK/dV</code>; the audited high-parallelism paths choose K/V ownership instead.</p>
+<h3 id="doc-tile-spec-4-l2-generation-lowering-matrix">4. L2 Generation Lowering Matrix<a class="anchor" href="#doc-tile-spec-4-l2-generation-lowering-matrix">#</a></h3>
+<p>The following forward rows are representative source-pinned paths. They are chosen to make the schedule difference concrete, not to define every dispatch.</p>
+<div class="table-wrap"><table><thead><tr><th>Generation</th><th>Representative <code>S</code> tile</th><th>Physical executor versus logical owner</th><th>Loop/state lowering</th><th>Primitive and warp idea</th></tr></thead><tbody><tr><td>FA1 v1.0.9, long-sequence d128</td><td><code>16 x 128</code></td><td>CTA split <code>r</code> owns several interleaved small <code>Q_i</code> tiles</td><td>K/V tile <code>j</code> outside; visit owned <code>i</code> inside; partial O/LSE state passes through HBM between <code>j</code> steps</td><td>four warps partition score columns and produce PV reduction partials</td></tr><tr><td>FA2 v2.0.0 SM80, d128 no dropout</td><td><code>128 x 64</code></td><td>one CTA directly owns one <code>Q_i -&gt; O_i</code> block</td><td>fix <code>i</code>; scan <code>j</code> in reverse; keep <code>(m,l,U)</code> in registers</td><td><code>cp.async</code>, warp MMA, split-Q warps with disjoint output rows</td></tr><tr><td>FA3 pinned SM90, causal d128</td><td><code>128 x 128</code></td><td>one logical owner per Q/O tile; one persistent CTA may execute several logical tiles sequentially</td><td>FA2-style fix-<code>i</code> loop with circular K/V stages</td><td>TMA producer plus two WGMMA consumer warpgroups, 64 output rows each</td></tr><tr><td>FA4 pinned SM100 d128 family</td><td><code>128 x 128</code> mathematical subtile</td><td>one logical owner per final row; work item may contain two Q stages and eligible paths may use a 2-CTA group</td><td>two Q streams retain independent online state while sharing the K/V progression</td><td>fully-async tcgen05, TMEM S/P/O handoff, separate softmax and correction roles</td></tr></tbody></table></div>
+<p>Backward keeps a more stable logical geometry:</p>
+<div class="table-wrap"><table><thead><tr><th>Generation</th><th>K/V-owner loop</th><th><code>dQ</code> publication/combine in the pinned path</th></tr></thead><tbody><tr><td>FA1 v1.0.9</td><td>one body fixes <code>j</code> and scans small Q tiles; serial-K mode may let one CTA invoke the bodies in order</td><td>sequence-K mode uses contending FP32 atomic adds; public deterministic mode disables sequence-K parallelism</td></tr><tr><td>FA2 v2.0.0</td><td>one CTA fixes <code>j</code>, scans Q tiles in descending order, and owns final <code>dK_j/dV_j</code></td><td>FP32 atomic accumulation; the pinned public API has no deterministic switch</td></tr><tr><td>FA3 pinned early SM90</td><td>one K/V work item scans Q tiles; consumers retain <code>dK_j/dV_j</code></td><td>TMA reduce-add by default; supported deterministic path orders publishers with a semaphore</td></tr><tr><td>FA4 pinned SM100</td><td>one K/V owner or cooperative owner group scans Q tiles; 2-CTA can reduce update count</td><td>bulk FP32 reduce-add by default; deterministic mode prescribes writer order with semaphores</td></tr></tbody></table></div>
+<h3 id="doc-tile-spec-5-four-filled-forward-specs">5. Four Filled Forward Specs<a class="anchor" href="#doc-tile-spec-5-four-filled-forward-specs">#</a></h3>
+<h4 id="doc-tile-spec-fa1-tile-the-plane">FA1 -- tile the plane<a class="anchor" href="#doc-tile-spec-fa1-tile-the-plane">#</a></h4>
+<pre><span class="code-label">yaml</span><code>logical_owner:   one CTA split owns several small, disjoint Q_i tiles
+loop_order:      j outside, owned i inside
+kept_live:       current K_j/V_j; current cell fragments
+handed_off:      partial O_i and normalization state between j steps
+warp_partition:  K/V columns and PV reduction slices
+reason:          avoid materializing the N x N attention matrix in HBM</code></pre>
+<h4 id="doc-tile-spec-fa2-make-output-ownership-direct">FA2 -- make output ownership direct<a class="anchor" href="#doc-tile-spec-fa2-make-output-ownership-direct">#</a></h4>
+<pre><span class="code-label">yaml</span><code>logical_owner:   one CTA owns one larger Q_i -&gt; O_i block
+loop_order:      fix i, scan all valid j
+kept_live:       Q_i, m_i, l_i, U_i through the whole K/V traversal
+streamed:        K_j/V_j
+warp_partition:  disjoint Q/output rows, not overlapping PV reduction slices
+reason:          expose more Q-sequence CTAs and reduce partial-state work</code></pre>
+<h4 id="doc-tile-spec-fa3-pipeline-the-owner">FA3 -- pipeline the owner<a class="anchor" href="#doc-tile-spec-fa3-pipeline-the-owner">#</a></h4>
+<pre><span class="code-label">yaml</span><code>logical_owner:   broadly the FA2 Q_i -&gt; O_i owner
+worker_lifetime: a persistent CTA may pull several logical tiles sequentially
+kept_live:       online state and WGMMA accumulators in consumer registers
+streamed:        K/V through TMA-managed circular SMEM stages
+roles:           producer movement || consumer WGMMA/softmax
+reason:          overlap movement and non-MMA work with faster Hopper MMA</code></pre>
+<h4 id="doc-tile-spec-fa4-decouple-and-deepen-the-owner-pipeline">FA4 -- decouple and deepen the owner pipeline<a class="anchor" href="#doc-tile-spec-fa4-decouple-and-deepen-the-owner-pipeline">#</a></h4>
+<pre><span class="code-label">yaml</span><code>logical_owner:   one final owner/cooperative owner group per output row
+work_item:       commonly two independent 128-row Q streams in the d128 family
+kept_live:       S, P, and running O in lifetime-aliased TMEM regions
+handoff:         MMA -&gt; TMEM S -&gt; softmax -&gt; TMEM P -&gt; MMA
+roles:           MMA/control, two softmax groups, output correction, TMA load
+cooperation:     optional 2-CTA physical lowering on eligible dispatches
+reason:          keep Blackwell MMA fed as SMEM and exponential work become exposed</code></pre>
+<h3 id="doc-tile-spec-6-the-memorization-card">6. The Memorization Card<a class="anchor" href="#doc-tile-spec-6-the-memorization-card">#</a></h3>
+<pre><span class="code-label">text</span><code>Grid:
+  one cell = (Q_i, K_j, V_j)
+
+Forward:
+  fix i, scan j, keep (m,l,U), finish O_i
+
+Backward:
+  fix j, scan i, keep dK_j/dV_j, publish partial dQ_i
+
+Generations:
+  FA1 = tile
+  FA2 = own
+  FA3 = pipeline
+  FA4 = decouple + deepen</code></pre>
+<p>When explaining any concrete kernel, fill these seven fields:</p>
+<pre><span class="code-label">yaml</span><code>scope:          source revision, architecture, dtype, shape, mode
+math_tile:      B_M x B_N x D
+logical_owner:  which final tile is complete here?
+scan_axis:      which contributor tiles are visited, and in what order?
+live_state:     what survives across scan iterations, and where?
+partials:       which values still need another owner or global combine?
+physical_map:   CTA/cluster, warp roles, movement/MMA primitives</code></pre>
+<p>If one of the fields is missing, “the tile size is 128” is not yet a useful kernel explanation.</p>
+<h3 id="doc-tile-spec-7-evidence-and-scope-boundary">7. Evidence And Scope Boundary<a class="anchor" href="#doc-tile-spec-7-evidence-and-scope-boundary">#</a></h3>
+<p>The representative rows above inherit the evidence envelopes of:</p>
+<ul><li><a href="#doc-fa1-foundations">FA1 foundations</a>, pinned to v1.0.9 for the audited CUDA forward/backward schedules;</li><li><a href="#doc-fa2-forward">FA2 forward</a> and <a href="#doc-fa2-backward">FA2 backward</a>, pinned to v2.0.0 SM80;</li><li><a href="#doc-fa3">FA3</a>, pinned to the early official SM90 source snapshot documented there;</li><li><a href="#doc-fa4">FA4</a>, pinned to the SM100 CuTeDSL snapshot and d128 teaching scope documented there.</li></ul>
+<p>This spec excludes SplitKV/decode, paged attention, FlashMLA, model-specific large-head-dimension paths, linear attention, and inference scheduling. Those paths can change the owner graph and need their own filled spec rather than an unqualified extension of this one.</p></section><section class="doc" id="doc-evolution"><div class="doc-kicker">evolution.md</div><h2 id="doc-evolution-flashattention-1-to-4-a-tile-and-computation-mental-model">FlashAttention 1 To 4: A Tile And Computation Mental Model<a class="anchor" href="#doc-evolution-flashattention-1-to-4-a-tile-and-computation-mental-model">#</a></h2>
+<p>Date: 2026-08-05</p>
 <p>Status: synthesis of the pinned FA1–FA4 notes; source-backed where it describes the audited implementations, with GPU performance validation still pending</p>
 <h3 id="doc-evolution-1-the-stable-contract">1. The Stable Contract<a class="anchor" href="#doc-evolution-1-the-stable-contract">#</a></h3>
 <p>Every generation still computes exact attention:</p>
@@ -56,20 +186,109 @@ blockquote{margin:14px 0;padding:9px 15px;border-left:4px solid var(--teal);back
 <p>The central algorithmic invariant is also stable: do not materialize the full score or probability matrix in HBM. Process score tiles, maintain an online softmax state, and combine each probability tile with the corresponding value tile while the useful state is on chip.</p>
 <p>The generations differ in how this dataflow is mapped onto the available GPU:</p>
 <ul><li>who owns one complete output or gradient tile;</li><li>which values remain live in registers, shared memory, or TMEM;</li><li>how global-to-shared movement overlaps matrix and non-matrix computation;</li><li>how large a Tensor Core collective the hardware exposes;</li><li>how partial gradients are combined when ownership is inherently many-to-one.</li></ul>
-<h3 id="doc-evolution-2-one-table-to-remember">2. One Table To Remember<a class="anchor" href="#doc-evolution-2-one-table-to-remember">#</a></h3>
+<p>This note deliberately separates three things that are often collapsed in a verbal explanation:</p>
+<ol><li><strong>mathematical tile:</strong> a rectangle such as $Q_i$, $K_j$, or $S_{ij}$;</li><li><strong>logical owner:</strong> the work item responsible for a complete output tile;</li><li><strong>physical schedule:</strong> CTA/cluster shape, warp roles, memory residence, and pipeline.</li></ol>
+<p>FA1 to FA4 changes all three at different times. A larger tile does not by itself mean a different owner graph, and a persistent CTA is not a larger mathematical tile.</p>
+<h3 id="doc-evolution-2-draw-this-tile-grid-first">2. Draw This Tile Grid First<a class="anchor" href="#doc-evolution-2-draw-this-tile-grid-first">#</a></h3>
+<p>Before naming a FlashAttention generation, draw the attention plane:</p>
+<pre><span class="code-label">text</span><code>                         K/V sequence: j -&gt;
+                    K0/V0      K1/V1      K2/V2
+                  +----------+----------+----------+
+Q sequence:  Q0   |   S00    |   S01    |   S02    |  -&gt; O0
+             Q1   |   S10    |   S11    |   S12    |  -&gt; O1
+             Q2   |   S20    |   S21    |   S22    |  -&gt; O2
+                  +----------+----------+----------+
+                         one cell = Sij = Qi Kj^T</code></pre>
+<p>Use the same symbols for every generation:</p>
+<div class="table-wrap"><table><thead><tr><th>Tile</th><th>Logical shape</th><th>Meaning</th></tr></thead><tbody><tr><td>$Q_i$</td><td>$B_M\times D$</td><td>one block of query rows</td></tr><tr><td>$K_j,V_j$</td><td>$B_N\times D$</td><td>one block of key/value rows</td></tr><tr><td>$S_{ij},P_{ij}$</td><td>$B_M\times B_N$</td><td>one transient score/probability cell</td></tr><tr><td>$O_i$</td><td>$B_M\times D$</td><td>output rows corresponding to $Q_i$</td></tr></tbody></table></div>
+<p>There are three axes to track:</p>
+<ul><li>$D$ is the reduction axis of $Q_iK_j^\top$;</li><li>$j$ / the K/V sequence is the reduction axis of the complete forward output $O_i$;</li><li>$i$ / the Q sequence is the reduction axis of complete backward $dK_j$ and $dV_j$.</li></ul>
+<p>That last distinction predicts the natural forward and backward loop orientations before any CUDA detail appears.</p>
+<h4 id="doc-evolution-2-1-forward-fix-a-row-tile-scan-cells-horizontally">2.1 Forward: fix a row tile, scan cells horizontally<a class="anchor" href="#doc-evolution-2-1-forward-fix-a-row-tile-scan-cells-horizontally">#</a></h4>
+<p>For one fixed $Q_i$, the complete forward result needs every valid $j$:</p>
+<pre><span class="code-label">text</span><code>fix i / own O_i
+  initialize row state (m_i, l_i, U_i)
+
+  for each valid K/V tile j:
+      S_ij = Q_i K_j^T
+      update row max m_i
+      P_tilde_ij = exp(S_ij - m_i_new)
+      rescale old l_i and U_i
+      l_i += rowsum(P_tilde_ij)
+      U_i += P_tilde_ij V_j
+
+  O_i   = U_i / l_i
+  LSE_i = m_i + log(l_i)</code></pre>
+<p>The state $(m_i,l_i,U_i)$ summarizes every cell already visited in that row. The full $S$ or $P$ plane never needs to exist in HBM. This is the common algorithm underneath FA1, FA2, FA3, and FA4 forward.</p>
+<p>The strongest default ownership rule is therefore:</p>
+<blockquote>Split workers along $i$ when possible, and let one owner keep the complete $j$ reduction for $O_i$.</blockquote>
+<h4 id="doc-evolution-2-2-backward-fix-a-column-tile-scan-cells-vertically">2.2 Backward: fix a column tile, scan cells vertically<a class="anchor" href="#doc-evolution-2-2-backward-fix-a-column-tile-scan-cells-vertically">#</a></h4>
+<p>Let $G_i=dO_i$ and $D_i=\operatorname{rowsum}(G_i\odot O_i)$. Backward revisits one attention cell and performs five tiled matrix products:</p>
+<pre><span class="code-label">text</span><code>S_ij  = Q_i K_j^T                 # recompute score
+dP_ij = G_i V_j^T
+P_ij  = exp(S_ij - LSE_i)
+dS_ij = P_ij * (dP_ij - D_i)
+
+dV_j += P_ij^T G_i
+dK_j += dS_ij^T Q_i
+dQ_i_from_j = dS_ij K_j</code></pre>
+<p>The natural high-parallelism work item fixes $j$ and scans $i$:</p>
+<pre><span class="code-label">text</span><code>fix j / own dK_j and dV_j
+  for each interacting Q tile i:
+      recompute P_ij and dS_ij
+      accumulate complete local dK_j and dV_j
+      publish one partial dQ_i_from_j</code></pre>
+<p>This orientation makes <code>dK_j</code> and <code>dV_j</code> single-owner outputs, but every <code>dQ_i</code> receives one contribution from every interacting $j$ owner. Swapping the loop would make <code>dQ</code> complete and <code>dK/dV</code> partial. One orientation cannot make all three gradients single-owner.</p>
+<p>The backward memory rule is:</p>
+<blockquote><strong>Fix $j$, keep $dK_j/dV_j$; <code>dQ</code> is the unavoidable cross-$j$ combine.</strong></blockquote>
+<p>This contributor graph remains recognizable from FA1 through FA4. Atomic add, bulk reduce-add, a partial workspace, and an ordered semaphore are different physical protocols for the same many-to-one edge.</p>
+<h3 id="doc-evolution-3-the-four-forward-tile-schedules">3. The Four Forward Tile Schedules<a class="anchor" href="#doc-evolution-3-the-four-forward-tile-schedules">#</a></h3>
+<h4 id="doc-evolution-3-1-one-comparison-frame">3.1 One comparison frame<a class="anchor" href="#doc-evolution-3-1-one-comparison-frame">#</a></h4>
+<p>The table uses representative pinned paths, not universal constants. Dispatch can change with head dimension, dtype, dropout, mask, sequence length, architecture, and source revision.</p>
+<div class="table-wrap"><table><thead><tr><th>Generation / pinned path</th><th>Representative score tile</th><th>Logical output owner</th><th>High-level loop and live state</th><th>Physical idea to remember</th></tr></thead><tbody><tr><td>FA1 v1.0.9 CUDA, long-sequence d128</td><td>$16\times128$</td><td>CTA split $r$ owns several interleaved 16-row $Q_i$ tiles</td><td>$j$ outer; visit all $i=r,r+R,\ldots$ inside; each $O_i$/LSE state is handed through HBM between $j$ steps</td><td>keep one K/V tile, revisit many small Q tiles; four warps split score columns / the PV reduction</td></tr><tr><td>FA2 v2.0.0 SM80, d128 no dropout</td><td>$128\times64$</td><td>one CTA owns one 128-row $Q_i\rightarrow O_i$ block</td><td>fix $i$; scan valid $j$ in reverse; keep running $m,l,U$ in registers until epilogue</td><td>split-Q: four warps own disjoint Q-row/output slices</td></tr><tr><td>FA3 pinned early SM90, causal d128</td><td>$128\times128$</td><td>one logical $Q_i\rightarrow O_i$ work item; a persistent CTA may execute several such items over its lifetime</td><td>same fix-$i$/scan-$j$ online update as FA2</td><td>TMA stages K/V while two consumer warpgroups use WGMMA and softmax; each owns 64 output rows</td></tr><tr><td>FA4 pinned SM100 d128 family</td><td>$128\times128$ mathematical subtiles, commonly two Q stages in the work item</td><td>each final row still has one logical owner; eligible paths may use a 2-CTA cooperative group</td><td>two independent 128-row streams scan the K/V tiles and keep online state</td><td>tcgen05 writes S/P/O through TMEM; separate MMA, softmax, and correction roles deepen the handoff pipeline</td></tr></tbody></table></div>
+<p>Two cautions make the table safe to teach:</p>
+<ul><li>FA2&#x27;s often-drawn $128\times128$ example is the representative d64 path; the audited d128/no-dropout A100-class path uses $128\times64$.</li><li>In FA4, “two 128-row Q stages” and “2-CTA” are independent concepts. A mathematical 128-row subtile, one logical work item, one CTA, and one CTA cluster are not interchangeable nouns.</li></ul>
+<h4 id="doc-evolution-3-2-the-loop-nest-memory-trick">3.2 The loop-nest memory trick<a class="anchor" href="#doc-evolution-3-2-the-loop-nest-memory-trick">#</a></h4>
+<pre><span class="code-label">text</span><code>FA1 audited source:
+  for K/V tile j:                    # keep K_j,V_j on chip
+      for several small Q tiles i:   # load/update/store state_i
+
+FA2:
+  fix one larger Q tile i            # keep Q_i and state_i on chip
+      for K/V tile j:                # stream K_j,V_j
+
+FA3:
+  same logical loop as FA2
+  + asynchronous movement/MMA/softmax factory
+
+FA4:
+  same broad owner graph
+  + two buffered Q streams, TMEM handoffs, fully-async MMA
+  + optional 2-CTA cooperation for eligible physical tiles</code></pre>
+<p>The shortest correct mnemonic is:</p>
+<pre><span class="code-label">text</span><code>FA1: tile the attention plane
+FA2: turn the loop so output state stays with its owner
+FA3: pipeline the owner
+FA4: decouple and deepen the owner pipeline</code></pre>
+<p>FA1&#x27;s paper pseudocode and its audited v1.0.9 CUDA schedule are not identical. The comparison above intentionally describes the source schedule; the paper&#x27;s abstract K/V-outer loop is the origin of the tiled online-softmax algorithm, not evidence that every later kernel uses the same CTA mapping.</p>
+<h4 id="doc-evolution-3-3-a-five-minute-teaching-route">3.3 A five-minute teaching route<a class="anchor" href="#doc-evolution-3-3-a-five-minute-teaching-route">#</a></h4>
+<ol><li>Draw the $(i,j)$ attention grid and say “one cell is transient $S_{ij}/P_{ij}$.”</li><li>Move horizontally across one row: that is forward, and $(m,l,U)$ is the row&#x27;s compressed history.</li><li>Move vertically down one column: that is the natural backward K/V owner; it finishes <code>dK/dV</code> but emits partial <code>dQ</code>.</li><li>Explain FA1 to FA2 as the important ownership/loop-nest change.</li><li>Keep the same owner graph and explain FA3/FA4 as progressively more asynchronous physical factories, not new attention equations.</li><li>End with the audit question: “which output is complete here, and which is only a partial?”</li></ol>
+<p>If the audience remembers only one drawing, it should be the grid. Forward is row ownership; backward&#x27;s high-parallelism path is column ownership; FA2 fixes the forward mapping; FA3 and FA4 mainly redesign how each owner runs.</p>
+<h3 id="doc-evolution-4-one-table-to-remember">4. One Table To Remember<a class="anchor" href="#doc-evolution-4-one-table-to-remember">#</a></h3>
 <div class="table-wrap"><table><thead><tr><th>Generation</th><th>Primary problem</th><th>Most important response</th><th>Human-memory version</th></tr></thead><tbody><tr><td>FA1</td><td>materialized attention performs too much HBM IO</td><td>IO-aware tiling plus online softmax</td><td><strong>avoid the quadratic HBM intermediate</strong></td></tr><tr><td>FA2</td><td>FA1 leaves parallelism and warp efficiency on the table</td><td>Q-block CTA ownership, better warp partition, less partial-state communication and non-MMA work</td><td><strong>make ownership natural</strong></td></tr><tr><td>FA3</td><td>Hopper Tensor Cores outpace the old synchronous movement/compute schedule</td><td>TMA, WGMMA, warp specialization, persistent scheduling, and two-level overlap</td><td><strong>build an asynchronous factory</strong></td></tr><tr><td>FA4</td><td>Blackwell matrix compute scales faster than SMEM and exponential throughput</td><td>TMEM, fully asynchronous tcgen05, 1-/2-CTA cooperation, deeper pipelines, and softmax algorithm changes</td><td><strong>feed and consume a faster factory</strong></td></tr></tbody></table></div>
 <p>This is not four unrelated kernels. It is one mathematical dataflow repeatedly remapped as the bottleneck and hardware contract change.</p>
-<h3 id="doc-evolution-3-fa1-change-the-io-complexity">3. FA1: Change The IO Complexity<a class="anchor" href="#doc-evolution-3-fa1-change-the-io-complexity">#</a></h3>
+<h3 id="doc-evolution-5-fa1-change-the-io-complexity">5. FA1: Change The IO Complexity<a class="anchor" href="#doc-evolution-5-fa1-change-the-io-complexity">#</a></h3>
 <p>Ordinary attention commonly materializes an $N \times N$ score/probability matrix in HBM. FA1 instead moves Q/K/V tiles through on-chip memory and keeps, for each query row, a running maximum, normalization sum, and output accumulator.</p>
 <p>The conceptual win is not “softmax is faster.” It is that the score matrix no longer makes a full HBM round trip. The price is a more complicated tiled online-softmax update and an implementation whose performance depends on tile size, memory lifetime reuse, shared-memory layout, and warp cooperation.</p>
-<p>The audited historical forward schedule also exposes work-partition costs: warps own score-column slices and produce partial output accumulators that must be combined. FA1 therefore gives the vocabulary needed to recognize why FA2&#x27;s partition is cleaner.</p>
-<h3 id="doc-evolution-4-fa2-change-ownership-before-adding-new-hardware-tricks">4. FA2: Change Ownership Before Adding New Hardware Tricks<a class="anchor" href="#doc-evolution-4-fa2-change-ownership-before-adding-new-hardware-tricks">#</a></h3>
+<p>In the audited v1.0.9 forward, a CTA keeps one K/V tile on chip while walking several small Q tiles. It can reuse K/V within that CTA, but the running state for all of those Q tiles cannot stay resident simultaneously, so partial O and normalization state are handed through global buffers across K/V steps.</p>
+<p>Its warps own score-column slices and produce partial output accumulators that must be combined inside the CTA. FA1 therefore gives the vocabulary needed to recognize why FA2&#x27;s partition is cleaner.</p>
+<h3 id="doc-evolution-6-fa2-change-ownership-before-adding-new-hardware-tricks">6. FA2: Change Ownership Before Adding New Hardware Tricks<a class="anchor" href="#doc-evolution-6-fa2-change-ownership-before-adding-new-hardware-tricks">#</a></h3>
 <p>FA2&#x27;s most reusable lesson is that a mathematically valid tile decomposition is not automatically a good worker decomposition.</p>
 <p>In forward, one CTA owns one Q-row block and traverses all required K/V blocks. Its warps split Q rows rather than producing several reductions over the same output rows. This keeps the running output state on chip, removes much of the partial-O communication, reduces non-matmul scaling/reduction work, and creates more CTAs when batch times head count alone is too small.</p>
 <p>FA2 therefore improves performance without changing the attention equation or requiring a new Tensor Core generation. Its top-down rule is:</p>
 <blockquote>Partition workers along an output dimension when possible; splitting a reduction dimension creates partial ownership and a combine protocol.</blockquote>
 <p>Backward cannot erase every partial in the same way. A K/V-tile owner can produce complete <code>dK</code> and <code>dV</code>, but it sees only part of each <code>dQ</code>. More K/V owners improve parallelism and make <code>dQ</code> a many-writer destination. The deterministic path must preserve partials and combine them in a fixed order, or otherwise serialize the writers.</p>
-<h3 id="doc-evolution-5-fa3-exploit-hopper-s-asynchronous-execution-contract">5. FA3: Exploit Hopper&#x27;s Asynchronous Execution Contract<a class="anchor" href="#doc-evolution-5-fa3-exploit-hopper-s-asynchronous-execution-contract">#</a></h3>
+<h3 id="doc-evolution-7-fa3-exploit-hopper-s-asynchronous-execution-contract">7. FA3: Exploit Hopper&#x27;s Asynchronous Execution Contract<a class="anchor" href="#doc-evolution-7-fa3-exploit-hopper-s-asynchronous-execution-contract">#</a></h3>
 <p>FA3 broadly keeps FA2&#x27;s logical owner graph. The major change is how one tile is executed on Hopper.</p>
 <p>Hopper provides:</p>
 <ul><li>TMA for descriptor-driven asynchronous tensor movement;</li><li>WGMMA for asynchronous warpgroup matrix multiplication from shared-memory descriptors;</li><li>warp specialization and register reallocation so producer and consumer warps can hold different responsibilities and register budgets;</li><li>barriers and pipeline stages that make producer/consumer ownership explicit.</li></ul>
@@ -78,14 +297,14 @@ blockquote{margin:14px 0;padding:9px 15px;border-left:4px solid var(--teal);back
 WGMMA Tensor Core work    || CUDA-core softmax / correction</code></pre>
 <p>Persistent scheduling lets a resident CTA request multiple logical tiles over its lifetime. It reduces repeated CTA setup and gives the kernel finer control over work order and tail balance; it does not imply that ordinary CTA launches have a global wave barrier.</p>
 <p>The important distinction is that WGMMA packages a larger cooperative matrix operation and removes explicit per-warp operand-fragment staging, while the kernel still owns tile choice, layouts, pipeline stages, barriers, epilogue, and reduction semantics.</p>
-<h3 id="doc-evolution-6-fa4-respond-to-asymmetric-blackwell-scaling">6. FA4: Respond To Asymmetric Blackwell Scaling<a class="anchor" href="#doc-evolution-6-fa4-respond-to-asymmetric-blackwell-scaling">#</a></h3>
+<h3 id="doc-evolution-8-fa4-respond-to-asymmetric-blackwell-scaling">8. FA4: Respond To Asymmetric Blackwell Scaling<a class="anchor" href="#doc-evolution-8-fa4-respond-to-asymmetric-blackwell-scaling">#</a></h3>
 <p>Blackwell makes matrix multiplication faster without scaling every supporting resource by the same factor. Shared-memory bandwidth, exponential throughput, and the CUDA-core work around MMA become more visible in the roofline.</p>
 <p>FA4 continues FA3&#x27;s pipeline-first direction but changes more than the MMA spelling:</p>
 <ul><li>tcgen05 exposes a fully asynchronous matrix collective;</li><li>TMEM holds large Tensor Core accumulators outside the general register file;</li><li>2-CTA MMA can distribute a logical operand tile across paired CTAs and reduce duplicated shared-memory staging/traffic for the audited shapes;</li><li>deeper lifetime aliasing and role specialization overlap tile generations;</li><li>partial exponential emulation and conditional rescaling reduce the exposed softmax cost when exact full-rate exponentiation would bottleneck the pipeline.</li></ul>
 <p>TMEM, WGMMA, and 2-CTA MMA save different things:</p>
 <ul><li>WGMMA removes explicit per-warp B fragments and their register replication;</li><li>TMEM reduces general-register pressure from accumulators/intermediates;</li><li>2-CTA tcgen05 can remove duplicated per-CTA B staging and reduce some global partial-gradient updates.</li></ul>
 <p>None of these statements means that each B element is physically read exactly once, or that HBM traffic necessarily falls. The memory level and cooperation scope must be named.</p>
-<h3 id="doc-evolution-7-what-changes-in-forward">7. What Changes In Forward<a class="anchor" href="#doc-evolution-7-what-changes-in-forward">#</a></h3>
+<h3 id="doc-evolution-9-what-changes-in-forward">9. What Changes In Forward<a class="anchor" href="#doc-evolution-9-what-changes-in-forward">#</a></h3>
 <p>The durable forward proof shape is:</p>
 <pre><span class="code-label">text</span><code>one logical Q-row output tile
   -&gt; one prescribed owner/cooperative owner group
@@ -93,7 +312,7 @@ WGMMA Tensor Core work    || CUDA-core softmax / correction</code></pre>
   -&gt; fixed local online-softmax combine
   -&gt; one final O/LSE write</code></pre>
 <p>FA2 improves that ownership over the audited FA1 schedule. FA3 and FA4 mostly retain the complete-output owner graph while changing the local movement and compute pipeline. Fixed-artifact forward repeatability is therefore plausible when RNG state is replayed, but it does not imply bitwise equality across tile plans, compiler artifacts, architectures, or implementations.</p>
-<h3 id="doc-evolution-8-what-changes-in-backward">8. What Changes In Backward<a class="anchor" href="#doc-evolution-8-what-changes-in-backward">#</a></h3>
+<h3 id="doc-evolution-10-what-changes-in-backward">10. What Changes In Backward<a class="anchor" href="#doc-evolution-10-what-changes-in-backward">#</a></h3>
 <p>The gradient dependency graph is stable:</p>
 <pre><span class="code-label">text</span><code>dV = P^T dO
 dP = dO V^T
@@ -103,16 +322,16 @@ dK = dS^T Q</code></pre>
 <p>A K/V-tile owner naturally produces complete <code>dK/dV</code> but partial <code>dQ</code>. Parallelism across K/V tiles therefore creates a global many-to-one combine. The concrete mechanism evolves:</p>
 <ul><li>legacy CUDA paths may use contending FP32 atomic adds by default;</li><li>a deterministic legacy path stores split partials and reduces them in a fixed split order;</li><li>newer Hopper/Blackwell paths may use bulk reduce-add for the fast path and semaphores to impose a prescribed writer order in supported deterministic modes.</li></ul>
 <p>FA4 2-CTA cooperation can reduce traffic and the number of global <code>dQ</code> updates, but fewer writers are not the same as one writer. Determinism still requires a fixed combine order.</p>
-<h3 id="doc-evolution-9-the-hardware-primitive-ladder">9. The Hardware-Primitive Ladder<a class="anchor" href="#doc-evolution-9-the-hardware-primitive-ladder">#</a></h3>
+<h3 id="doc-evolution-11-the-hardware-primitive-ladder">11. The Hardware-Primitive Ladder<a class="anchor" href="#doc-evolution-11-the-hardware-primitive-ladder">#</a></h3>
 <pre><span class="code-label">text</span><code>Ampere warp-scoped MMA
   -&gt; Hopper warpgroup WGMMA + register accumulators
   -&gt; Blackwell tcgen05 + TMEM accumulators
   -&gt; Blackwell two-CTA/two-SM cooperative tcgen05</code></pre>
 <p>The ladder expands the operation and reuse scope as Tensor Core throughput grows. It should not be interpreted as “more participating threads means the same proportional speedup.” Larger collectives introduce co-scheduling, barriers, tail behavior, distributed shared-memory traffic, and load-balance costs.</p>
-<h3 id="doc-evolution-10-reusable-kernel-design-guidance">10. Reusable Kernel-Design Guidance<a class="anchor" href="#doc-evolution-10-reusable-kernel-design-guidance">#</a></h3>
+<h3 id="doc-evolution-12-reusable-kernel-design-guidance">12. Reusable Kernel-Design Guidance<a class="anchor" href="#doc-evolution-12-reusable-kernel-design-guidance">#</a></h3>
 <p>Across the four generations:</p>
 <ol><li>Start with ownership. Decide whether a split creates disjoint outputs or numerical partials before discussing performance.</li><li>Keep mutable running state with one owner when possible; repeated global handoffs are both traffic and ordering boundaries.</li><li>Separate HBM bytes, SMEM operand traffic, register staging, and accumulator residence. “Read once” without a memory level is not actionable.</li><li>Use larger matrix collectives to amortize staging and issue work, but audit the new cooperation and tail costs.</li><li>Remove exposed non-MMA work as matrix throughput grows; a Tensor-Core-fast kernel can be limited by softmax, address calculation, barriers, or SMEM.</li><li>Treat a deterministic option as a protocol: name the partial buffer, semaphore/order, workspace, and supported dispatch.</li><li>Pin source, shape, dtype, architecture, compiler artifact, and runtime state before making a bitwise claim.</li></ol>
-<h3 id="doc-evolution-11-continue-reading">11. Continue Reading<a class="anchor" href="#doc-evolution-11-continue-reading">#</a></h3>
+<h3 id="doc-evolution-13-continue-reading">13. Continue Reading<a class="anchor" href="#doc-evolution-13-continue-reading">#</a></h3>
 <ul><li>Rebuild the full physical model in <a href="#doc-fa1-foundations">FA1 foundations</a>.</li><li>Study the ownership improvement in <a href="#doc-fa2-forward">FA2 forward</a> and <a href="#doc-fa2-backward">FA2 backward</a>.</li><li>Study Hopper&#x27;s pipeline in <a href="#doc-fa3">FA3</a>.</li><li>Study asymmetric Blackwell scaling in <a href="#doc-fa4">FA4</a>.</li><li>Apply the ownership model to the current code in <a href="#doc-current-implementation-and-determinism">current implementation and determinism</a>.</li></ul></section><section class="doc" id="doc-fa1-checkpoint"><div class="doc-kicker">fa1-checkpoint.md</div><h2 id="doc-fa1-checkpoint-flashattention-1-one-page-checkpoint">FlashAttention-1 One-Page Checkpoint<a class="anchor" href="#doc-fa1-checkpoint-flashattention-1-one-page-checkpoint">#</a></h2>
 <p>Date: 2026-07-26</p>
 <p>Status: compact re-entry guide derived from the completed FA1 paper and historical CUDA source study; GPU validation remains pending</p>
@@ -1393,7 +1612,7 @@ FA3:
 <pre><span class="code-label">text</span><code>B=1, H=32, N=8192, D=128
 B_M=64, B_N=128
 CTA=8 warps=256 threads</code></pre>
-<p>Dropout, causal, varlen, and MQA/GQA are added only where they change the protocol. Later FA2 releases and their deterministic workspace mode are outside this pinned-version verdict.</p>
+<p>Dropout, causal, varlen, and MQA/GQA are added only where they change the protocol. Later FA2 releases and their deterministic workspace mode are outside this pinned-version verdict. The later legacy-CUDA mechanism, including its <code>nsplits</code> FP32 workspace formula and a concrete 512 MiB example, is maintained in <a href="#doc-current-implementation-and-determinism-later-fa2-cuda-mechanism">current implementation and determinism</a> rather than being projected backward onto v2.0.0.</p>
 <h3 id="doc-fa2-backward-2-math-and-one-tile-dataflow">2. Math And One-Tile Dataflow<a class="anchor" href="#doc-fa2-backward-2-math-and-one-tile-dataflow">#</a></h3>
 <p>Let <code>G=dO</code> and:</p>
 <p>$$ D_i=\sum_d G_{id}O_{id}. $$</p>
@@ -1551,6 +1770,7 @@ cp.async + Q double buffering
 <h3 id="doc-fa2-backward-9-stop-line">9. Stop Line<a class="anchor" href="#doc-fa2-backward-9-stop-line">#</a></h3>
 <p>This note does not establish:</p>
 <ul><li>behavior of later FA2 releases or their deterministic workspace reduction;</li><li>Hopper/FA3 or Blackwell/FA4 backward;</li><li>a measured A100 speedup, occupancy, or atomic contention constant;</li><li>deterministic behavior of the PyTorch MQA/GQA post-sum;</li><li>batch invariance or inference-engine behavior.</li></ul>
+<p>For the deliberately separate later-version comparison, continue to <a href="#doc-current-implementation-and-determinism-historical-deterministic-protocol-comparison">Historical Deterministic Protocol Comparison</a>.</p>
 <p>The next useful validation is a GPU run that records the resolved traits, hashes <code>D</code>, <code>dq_accum</code>, final dQ/dK/dV across repeats, and profiles atomic/L2 traffic for several <code>B,H,N,D,causal</code> regimes.</p></section><section class="doc" id="doc-fa3"><div class="doc-kicker">fa3.md</div><h2 id="doc-fa3-flashattention-3-on-hopper-hardware-two-level-overlap-forward-and-backward">FlashAttention-3 On Hopper: Hardware, Two-Level Overlap, Forward, And Backward<a class="anchor" href="#doc-fa3-flashattention-3-on-hopper-hardware-two-level-overlap-forward-and-backward">#</a></h2>
 <p>Date: 2026-07-29</p>
 <p>Status: FA3 paper plus early official SM90 source study complete for the FP16/BF16 mechanism; CPU-only source reasoning, with SASS/profile and repeated GPU validation deferred</p>
@@ -1558,7 +1778,7 @@ cp.async + Q double buffering
 <p>For a graphical reading surface, open the standalone <a href="slides/fa3.html">FA3 Hopper deep-dive visual map</a>. Forward and backward live in one document because they share the same Hopper primitives, but their ownership and determinism proofs remain separate. This Markdown file is the source of truth.</p>
 <h3 id="doc-fa3-1-scope-and-evidence-envelope">1. Scope And Evidence Envelope<a class="anchor" href="#doc-fa3-1-scope-and-evidence-envelope">#</a></h3>
 <p>Pinned primary evidence:</p>
-<ul><li>paper: <a href="https://tridao.me/publications/flash3/flash3.pdf">FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-precision</a>, dated 2024-07-12;</li><li>early official source after the initial backward release: <a href="https://github.com/Dao-AILab/flash-attention/tree/3669b25206d5938e3cc74a5f7860e31c38af8204">Dao-AILab/flash-attention commit <code>3669b25206d5938e3cc74a5f7860e31c38af8204</code></a>, committed on 2024-08-05;</li><li>NVIDIA architecture and ISA references: <a href="https://docs.nvidia.com/cuda/hopper-tuning-guide/index.html">Hopper Tuning Guide</a>, <a href="https://docs.nvidia.com/cuda/ampere-tuning-guide/index.html">Ampere Tuning Guide</a>, and the <a href="https://docs.nvidia.com/cuda/parallel-thread-execution/#asynchronous-warpgroup-level-matrix-multiply-accumulate-instructions-wgmma">PTX WGMMA specification</a>.</li></ul>
+<ul><li>paper: <a href="https://tridao.me/publications/flash3/flash3.pdf">FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-precision</a>, dated 2024-07-12;</li><li>early official source after the initial backward release: <a href="https://github.com/Dao-AILab/flash-attention/tree/3669b25206d5938e3cc74a5f7860e31c38af8204">Dao-AILab/flash-attention commit <code>3669b25206d5938e3cc74a5f7860e31c38af8204</code></a>, committed on 2024-08-05;</li><li>follow-on scheduling evidence, not part of the pinned FA3 artifact: <a href="https://arxiv.org/abs/2601.21824">DASH: Deterministic Attention Scheduling for High-throughput Reproducible LLM Training</a>, evaluated on H800 with CUDA 12.6 and Triton 3.4;</li><li>NVIDIA architecture and ISA references: <a href="https://docs.nvidia.com/cuda/hopper-tuning-guide/index.html">Hopper Tuning Guide</a>, <a href="https://docs.nvidia.com/cuda/ampere-tuning-guide/index.html">Ampere Tuning Guide</a>, and the <a href="https://docs.nvidia.com/cuda/parallel-thread-execution/#asynchronous-warpgroup-level-matrix-multiply-accumulate-instructions-wgmma">PTX WGMMA specification</a>.</li></ul>
 <p>The paper establishes the intended algorithm and performance mechanisms. The pinned source establishes one realized dispatch and synchronization protocol. The current <code>main</code> branch has evolved substantially since this snapshot, so tile sizes, schedulers, supported modes, and deterministic protocols must be re-resolved before using this note as a current-runtime audit.</p>
 <p>This pass focuses on:</p>
 <ul><li>Hopper H100 / <code>sm_90a</code>;</li><li>FP16/BF16 forward and backward;</li><li>dense MHA, with causal behavior used for the representative forward tile;</li><li><code>B=1, H=32, N=8192, D=128</code>;</li><li>TMA, WGMMA, warp specialization, register reallocation, barriers, and the two levels of overlap;</li><li>output ownership and determinism consequences.</li></ul>
@@ -1969,6 +2189,16 @@ CTA j dQ-writer warp:
 <p>Deterministic mode can be slower because:</p>
 <ul><li>contributors to the same dQ destination are serialized in a prescribed order;</li><li>the dQ writer may wait for its turn;</li><li>if the dQ SMEM slot remains full, consumer progress eventually sees backpressure;</li><li>semaphore traffic and waiting add overhead.</li></ul>
 <p>It need not eliminate all overlap: loading, WGMMA, and publication of independent tiles can still proceed where dependencies allow.</p>
+<h4 id="doc-fa3-8-8-follow-on-dash-evidence-the-order-can-be-correct-and-poorly-scheduled">8.8 Follow-On DASH Evidence: The Order Can Be Correct And Poorly Scheduled<a class="anchor" href="#doc-fa3-8-8-follow-on-dash-evidence-the-order-can-be-correct-and-poorly-scheduled">#</a></h4>
+<p>The semaphore proves a fixed association order, but it does not prove that the chosen order aligns with when partials become ready. A CTA can finish a partial <code>dQ</code> early, wait behind a slower prescribed predecessor, keep the shared publication slot full, and eventually backpressure the consumer warpgroups. Causal masking magnifies this because K/V-owner CTAs have unequal Q-loop lengths.</p>
+<p>The later DASH paper formalizes this as a DAG scheduling problem. For its FA3-derived deterministic baseline on H800, it reports up to a 37.9% throughput reduction relative to the nondeterministic path. Its descending-Q and shift schedules improve deterministic backward by up to 1.28x. These are paper-reported measurements under DASH&#x27;s own implementation and benchmark envelope, not measurements of commit <code>3669b25</code> and not a universal FA3 penalty.</p>
+<p>The durable lesson is narrower and useful for FA4 as well:</p>
+<pre><span class="code-label">text</span><code>fixed writer order
+  -&gt; proves repeatability
+
+fixed writer order aligned with partial-ready time
+  -&gt; avoids unnecessary semaphore bubbles</code></pre>
+<p>The counter traffic itself is small. The expensive failure mode is often a long dependency chain, stalled publication slot, and lost overlap rather than raw semaphore bytes.</p>
 <h3 id="doc-fa3-9-fa2-versus-fa3">9. FA2 Versus FA3<a class="anchor" href="#doc-fa3-9-fa2-versus-fa3">#</a></h3>
 <h4 id="doc-fa3-9-1-forward">9.1 Forward<a class="anchor" href="#doc-fa3-9-1-forward">#</a></h4>
 <div class="table-wrap"><table><thead><tr><th>Axis</th><th>FA2 SM80</th><th>FA3 SM90</th></tr></thead><tbody><tr><td>logical owner</td><td>one Q block owns complete O block</td><td>mostly unchanged</td></tr><tr><td>global-to-shared</td><td>thread-issued <code>cp.async</code></td><td>TMA descriptor-driven copy</td></tr><tr><td>matrix instruction</td><td>warp-level MMA</td><td>async warpgroup WGMMA</td></tr><tr><td>role map</td><td>warps relatively symmetric</td><td>producer plus consumer warpgroups</td></tr><tr><td>register policy</td><td>kernel-wide fixed allocation</td><td>producer gives registers to consumers</td></tr><tr><td>K/V buffering</td><td>software-pipelined stages</td><td>TMA circular SMEM stages</td></tr><tr><td>softmax/GEMM schedule</td><td>more synchronous dependency chain</td><td>pingpong plus intra-WG pipeline</td></tr><tr><td>physical scheduling</td><td>ordinary CTA grid in pinned FA2</td><td>persistent CTA schedulers in pinned FA3</td></tr><tr><td>numeric ownership</td><td>disjoint O rows</td><td>still disjoint O rows</td></tr></tbody></table></div>
@@ -2471,7 +2701,41 @@ release/increment semaphore to r + 1</code></pre>
 <p>For causal/local work, equal writer order can cause bubbles because some KV owners have much shorter loops. FA4 combines:</p>
 <ul><li>descending KV-block launch order;</li><li>ascending Q traversal from the diagonal;</li><li>descending-Q reduction order;</li><li>head/batch swizzling for L2 locality.</li></ul>
 <p>The paper describes this as shortest-processing-time-first for the ordered dQ writes, while its general work scheduling uses longest-processing-time-first to reduce makespan. These are not contradictory: they optimize two different queues.</p>
-<h4 id="doc-fa4-16-1-cost">16.1 Cost<a class="anchor" href="#doc-fa4-16-1-cost">#</a></h4>
+<h4 id="doc-fa4-16-1-the-semaphore-is-global-small-and-not-a-dynamic-ticket-allocator">16.1 The Semaphore Is Global, Small, And Not A Dynamic Ticket Allocator<a class="anchor" href="#doc-fa4-16-1-the-semaphore-is-global-small-and-not-a-dynamic-ticket-allocator">#</a></h4>
+<p>Ordinary SMEM is CTA-private, so a counter that orders writers on different SMs must use a device-global address. The counter array is HBM-addressed but small enough that its hot working set is normally mediated by the coherent L2/atomic path. For the teaching shape with <code>tile_m=128</code> and 2-CTA cluster size 2:</p>
+<pre><span class="code-label">text</span><code>B=1, H=32, Nq=8192
+counter bytes = 1 * 32 * 64 Q tiles * 2 * 4 B = 16 KiB
+FP32 dQ accumulator                               = 128 MiB</code></pre>
+<p>The synchronization cost is therefore more about dependency latency, polling, release fences, and backpressure than about counter capacity.</p>
+<p>Writer <code>r</code> already knows its prescribed logical rank. It does not perform a fetch-add race to acquire an arbitrary ticket. One elected lane polls an acquire load until the counter equals <code>r</code>; after the bulk <code>dQ</code> reduction has become globally visible, a release-scoped int32 global increment exposes <code>r+1</code>. The current helper protocol corresponds to:</p>
+<pre><span class="code-label">text</span><code>wait_eq:
+  while ld_acquire(global_counter) != r:
+    poll
+
+arrive_inc:
+  red.release.gpu.global.add.s32(global_counter, 1)</code></pre>
+<p>Two atomic meanings remain distinct:</p>
+<ul><li>the <code>dQ</code> data path does not call the legacy lane-wise <code>atomicAdd(float*, float)</code>, but its bulk reduce-add still has safe global reduction semantics;</li><li>the semaphore release is itself an ordered integer global reduction, not a floating-point gradient contribution.</li></ul>
+<p>The deterministic path keeps the efficient bulk reduction and orders its invocations. Removing scalar <code>atomicAdd</code> syntax is not the determinism proof.</p>
+<h4 id="doc-fa4-16-2-four-q-four-k-causal-toy-schedule">16.2 Four-Q/Four-K Causal Toy Schedule<a class="anchor" href="#doc-fa4-16-2-four-q-four-k-causal-toy-schedule">#</a></h4>
+<p>Use equal tile counts so the diagonal and the writer wavefront are visible. Let <code>Qi</code> attend <code>K0..Ki</code>:</p>
+<div class="table-wrap"><table><thead><tr><th>Q destination</th><th>Legal K/V contributors</th></tr></thead><tbody><tr><td><code>Q0</code></td><td><code>K0</code></td></tr><tr><td><code>Q1</code></td><td><code>K0,K1</code></td></tr><tr><td><code>Q2</code></td><td><code>K0,K1,K2</code></td></tr><tr><td><code>Q3</code></td><td><code>K0,K1,K2,K3</code></td></tr></tbody></table></div>
+<p>A K/V-owner CTA has the transposed view:</p>
+<div class="table-wrap"><table><thead><tr><th>CTA</th><th>Ascending Q traversal from its diagonal</th><th>Relative work</th></tr></thead><tbody><tr><td><code>CTA(K3)</code></td><td><code>Q3</code></td><td>1</td></tr><tr><td><code>CTA(K2)</code></td><td><code>Q2 -&gt; Q3</code></td><td>2</td></tr><tr><td><code>CTA(K1)</code></td><td><code>Q1 -&gt; Q2 -&gt; Q3</code></td><td>3</td></tr><tr><td><code>CTA(K0)</code></td><td><code>Q0 -&gt; Q1 -&gt; Q2 -&gt; Q3</code></td><td>4</td></tr></tbody></table></div>
+<p>A naive fixed order <code>K0 -&gt; K1 -&gt; K2 -&gt; K3</code> for every <code>dQ</code> destination makes the shortest <code>CTA(K3)</code> compute <code>dQ[Q3]</code> immediately and then wait for the longest <code>CTA(K0)</code> to reach <code>Q3</code>. That is correct but creates head-of-line blocking.</p>
+<p>The FA4 causal idea launches K/V owners in descending order and assigns each destination a matching descending-K ticket chain:</p>
+<pre><span class="code-label">text</span><code>dQ[Q0]: K0
+dQ[Q1]: K1 -&gt; K0
+dQ[Q2]: K2 -&gt; K1 -&gt; K0
+dQ[Q3]: K3 -&gt; K2 -&gt; K1 -&gt; K0</code></pre>
+<p>The resulting conceptual wavefront is:</p>
+<pre><span class="code-label">text</span><code>wave 0:  K3/Q3   K2/Q2   K1/Q1   K0/Q0
+wave 1:           K2/Q3   K1/Q2   K0/Q1
+wave 2:                    K1/Q3   K0/Q2
+wave 3:                             K0/Q3</code></pre>
+<p>Different Q destinations have different counters, so entries across one wave are not one global serial queue. For each column, however, the ticket chain is fixed. Every CTA&#x27;s first write is rank 0 for a different diagonal Q tile, and later writes arrive in the same diagonal wavefront. This is the useful SPT intuition behind descending K launch, ascending Q traversal, and descending-Q reduction priority.</p>
+<p>This toy omits partial diagonal tiles, 2-CTA pairing, TMEM stages, multiple heads, and exact issue timing. It explains the dependency alignment, not a cycle-accurate source trace. The later <a href="https://arxiv.org/abs/2601.21824">DASH paper</a> formalizes the same broader lesson for deterministic attention: a valid writer order can still be slow when it is misaligned with partial-ready time.</p>
+<h4 id="doc-fa4-16-3-cost">16.3 Cost<a class="anchor" href="#doc-fa4-16-3-cost">#</a></h4>
 <p>Deterministic mode pays for:</p>
 <ul><li>semaphore polling/wait stalls;</li><li>device-wide visibility / release fences;</li><li>less freedom to overlap global reductions;</li><li>possible head-of-line blocking under imbalance.</li></ul>
 <p>The paper reports up to 75% of the nondeterministic 1-CTA backward speed for its deterministic kernel. Thus &quot;minimal overhead&quot; should not be interpreted as zero overhead or as one fixed percentage for all shapes. At a <code>0.75x</code> throughput ratio this is 25% lower throughput, or about 33% longer runtime for the same work. The comparison is against the nondeterministic 1-CTA path, not a proof of parity with the fastest nondeterministic 2-CTA path. It is substantially better than a naive ordered schedule, but still shape- and mask-dependent.</p>
@@ -2513,8 +2777,8 @@ backward:
 <ul><li>why B200 needs more than an FA3 instruction port;</li><li>tcgen05 versus physical Tensor Core;</li><li>why TMEM enables larger asynchronous schedules;</li><li>why forward uses two softmax groups plus a correction group;</li><li>polynomial exp and conditional rescaling;</li><li>the five backward GEMMs and their partition dimensions;</li><li>why 2-CTA saves SMEM but needs DSMEM for dQ;</li><li>why half as many global reductions is still nondeterministic;</li><li>how semaphore order fixes dQ and GQA dK/dV;</li><li>why current <code>flash-attn-4</code> is broader than the paper.</li></ul>
 <p>Open questions:</p>
 <ul><li>Which exact 1-/2-CTA specialization wins for representative target training shapes on B200 and B300?</li><li>Does the production Docker preserve the source-visible exp emulation and conditional-rescale policy after compilation?</li><li>What are the measured TMEM, SMEM, and issue-pipeline bottlenecks for causal versus noncausal d128?</li><li>How much does 2-CTA improve backward after accounting for DSMEM and cluster occupancy?</li><li>What is deterministic overhead for long causal MHA and GQA, and where do semaphore stalls occur?</li><li>Are current d192/d256/d512 and MLA paths behaviorally equivalent to the d128 teaching path, or do they introduce separate ownership/reduction protocols?</li><li>Can op-guard automatically capture dispatch, compiled artifact identity, semaphore mode, and the first mismatching gradient tile?</li></ul></section><section class="doc" id="doc-current-implementation-and-determinism"><div class="doc-kicker">current-implementation-and-determinism.md</div><h2 id="doc-current-implementation-and-determinism-flashattention-forward-and-backward">FlashAttention Forward And Backward<a class="anchor" href="#doc-current-implementation-and-determinism-flashattention-forward-and-backward">#</a></h2>
-<p>Date: 2026-07-23</p>
-<p>Status: first source pass complete; GPU validation pending</p>
+<p>Date: 2026-08-05</p>
+<p>Status: source pass and FA1--FA4 deterministic-protocol comparison complete; GPU validation pending</p>
 <h3 id="doc-current-implementation-and-determinism-scope-and-source">Scope And Source<a class="anchor" href="#doc-current-implementation-and-determinism-scope-and-source">#</a></h3>
 <p>Pinned source:</p>
 <ul><li>FlashAttention commit <code>b54df166ebb69b896892826014759d09b9c3c9c6</code> (2026-07-22): <code>https://github.com/Dao-AILab/flash-attention/tree/b54df166ebb69b896892826014759d09b9c3c9c6</code></li></ul>
@@ -2535,13 +2799,16 @@ backward:
 <p>Backward changes the ownership geometry:</p>
 <ul><li>a K/V column tile can own its <code>dK</code> and <code>dV</code> work while iterating Q tiles;</li><li>the same Q row contributes to <code>dQ</code> from many K/V column tiles;</li><li>with GQA, several Q heads also contribute to the same K/V-head gradients.</li></ul>
 <p>Parallelizing the column tiles therefore creates multiple writers to a gradient buffer. Floating-point atomic addition is mathematically commutative, but its realized order follows CTA arrival and is not associative. A deterministic backward must either give one worker complete ownership or impose a fixed combine order.</p>
-<h3 id="doc-current-implementation-and-determinism-fa2-cuda-mechanism">FA2 CUDA Mechanism<a class="anchor" href="#doc-current-implementation-and-determinism-fa2-cuda-mechanism">#</a></h3>
-<p>The standard CUDA backward in <code>csrc/flash_attn</code> makes the tradeoff explicit.</p>
+<h3 id="doc-current-implementation-and-determinism-later-fa2-cuda-mechanism">Later FA2 CUDA Mechanism<a class="anchor" href="#doc-current-implementation-and-determinism-later-fa2-cuda-mechanism">#</a></h3>
+<p>The standard CUDA backward in <code>csrc/flash_attn</code> makes the tradeoff explicit. This is the later legacy-CUDA deterministic protocol at the pinned current revision. It must not be projected backward onto the initial FA2 v2.0.0 release, whose public API had no <code>deterministic</code> argument.</p>
 <p>In the normal path:</p>
 <ul><li>sequence-K CTAs all point at the same FP32 <code>dq_accum</code>;</li><li>partial <code>dQ</code> fragments use <code>atomicAdd</code>;</li><li>the winning inter-CTA order is not fixed.</li></ul>
 <p>With <code>deterministic=True</code>:</p>
 <ul><li>the host allocates zeroed <code>[nsplits, batch, seqlen_q_rounded, heads, head_dim_rounded]</code> FP32 storage;</li><li><code>blockIdx.x</code> selects a different split buffer, so separate sequence-K CTAs no longer contend for the same destination;</li><li>a later conversion kernel loops <code>s = 0 .. nsplits-1</code> and sums the split buffers in that fixed order before converting to FP16/BF16.</li></ul>
 <p><code>nsplits</code> depends on SM count and <code>batch * heads</code>. This preserves repeated execution on one fixed setup but makes GPU topology and launch geometry part of the exact numerical contract.</p>
+<p>The padded workspace size is approximately:</p>
+<pre><span class="code-label">text</span><code>4 bytes * nsplits * B * Hq * Nq_rounded * d_rounded</code></pre>
+<p>For <code>B=1,H=32,N=8192,d=128</code>, one FP32 <code>dQ</code> image is 128 MiB. On an A100-class 108-SM launch, the legacy heuristic gives approximately <code>ceil(108 / 32) = 4</code> splits, or 512 MiB of deterministic <code>dQ</code> accumulation storage. The ordinary path already needs one 128 MiB FP32 accumulator, so the incremental split-copy cost is approximately 384 MiB for this example. This storage is transient per backward operator rather than retained once per Transformer layer, although a caching allocator may keep the pages reserved.</p>
 <p>For MQA/GQA, the legacy host path first produces expanded per-Q-head <code>dK/dV</code> and then calls an ATen reduction over the head group. That backend reduction is an additional contract to pin and probe; the split-buffer argument for <code>dQ</code> alone does not prove the entire call.</p>
 <h3 id="doc-current-implementation-and-determinism-current-cute-mechanism">Current CuTe Mechanism<a class="anchor" href="#doc-current-implementation-and-determinism-current-cute-mechanism">#</a></h3>
 <p>The newer CuTe backward uses a different implementation, but solves the same multi-writer problem.</p>
@@ -2549,6 +2816,30 @@ backward:
 <p>The support matrix is conditional. At the pinned revision:</p>
 <ul><li>deterministic CuTe backward is rejected on SM120;</li><li>deterministic block-sparse backward requires explicit <code>dq_write_order</code> metadata and related sparse traversal metadata;</li><li>some specialized head-dimension/2-CTA and sparse paths reject deterministic mode.</li></ul>
 <p>This is why the API flag must be checked after actual backend dispatch rather than treated as a repository-wide boolean.</p>
+<h4 id="doc-current-implementation-and-determinism-global-semaphore-residence-and-exact-operation-classes">Global semaphore residence and exact operation classes<a class="anchor" href="#doc-current-implementation-and-determinism-global-semaphore-residence-and-exact-operation-classes">#</a></h4>
+<p>Ordinary SMEM is CTA-private, so a semaphore that orders CTAs resident on different SMs cannot live there. The CuTe paths allocate device-global int32 counters, roughly one per contested <code>(batch, head, Q tile, stage/cluster)</code> destination. They are HBM-addressed allocations, but their small hot working set is normally served through the globally coherent L2/atomic path rather than forcing a fresh DRAM round trip for every poll.</p>
+<p>The writer rank is prescribed; a CTA does not race to obtain a dynamic ticket:</p>
+<pre><span class="code-label">text</span><code>counter for dQ tile i starts at logical rank 0
+
+writer r:
+  one elected lane polls an acquire load until counter == r
+  issue the FP32 bulk reduce-add for partial dQ_i^(r)
+  wait until every asynchronous stage is globally visible
+  release/increment the int32 global counter</code></pre>
+<p>Keep three meanings of &quot;atomic&quot; separate:</p>
+<ol><li>the old FA1/FA2 CUDA path can call scalar FP32 <code>atomicAdd</code> for individual <code>dQ</code> elements;</li><li>FA3/FA4 do not use that lane-wise call in their main path, but their TMA or <code>cp.reduce.async.bulk</code> publication still has safe global reduction semantics;</li><li>the semaphore release itself is an ordered int32 global increment, not a floating-point gradient contribution.</li></ol>
+<p>Deterministic mode usually keeps the same bulk-reduction primitive and adds an order around its invocations. Atomic safety prevents lost updates; the semaphore supplies the missing floating-point association order.</p>
+<h3 id="doc-current-implementation-and-determinism-historical-deterministic-protocol-comparison">Historical Deterministic Protocol Comparison<a class="anchor" href="#doc-current-implementation-and-determinism-historical-deterministic-protocol-comparison">#</a></h3>
+<p>The four mechanisms are easiest to remember by asking what is exchanged for the fixed <code>dQ</code> combine order:</p>
+<div class="table-wrap"><table><thead><tr><th>Generation / pinned boundary</th><th>Fast path</th><th>Deterministic mechanism</th><th>Main price</th></tr></thead><tbody><tr><td>FA1 v1.0.9</td><td>one CTA per K/V tile can atomically add partial <code>dQ</code></td><td><code>num_splits=1</code>: one CTA per batch/head visits all K/V tiles in fixed order</td><td>loses sequence-K CTA parallelism</td></tr><tr><td>initial FA2 v2.0.0</td><td>one sequence-K CTA per K/V tile, scalar FP32 atomic publication</td><td>no public deterministic option</td><td>no selectable fixed-order path</td></tr><tr><td>later FA2 legacy CUDA</td><td>one shared FP32 <code>dq_accum</code></td><td><code>nsplits</code> private FP32 <code>dQ</code> images plus a fixed split-index reduction</td><td>extra global capacity and read/write traffic</td></tr><tr><td>early FA3 SM90</td><td>racing TMA bulk reduce-add</td><td>semaphore-prescribed TMA publication</td><td>waits, release traffic, and pipeline backpressure</td></tr><tr><td>FA4 SM100 family</td><td>racing async bulk FP32 reduce-add; 2-CTA can halve updates</td><td>acquire wait, visibility completion, release increment, and load-aware writer scheduling</td><td>waits, fences, and head-of-line risk</td></tr></tbody></table></div>
+<p>FA1 still uses one global FP32 temporary because a single CTA cannot retain sequence-sized <code>dQ</code> on chip. Global residence is not shared ownership: the serial path is deterministic because that batch/head has one writer and a fixed K/V traversal. FA2 retains more producers by giving them disjoint global destinations. FA3 and FA4 retain one destination and most producer compute parallelism, but serialize only the contested publication edge.</p>
+<h4 id="doc-current-implementation-and-determinism-shared-kernel-family-versus-distinct-execution-path">Shared kernel family versus distinct execution path<a class="anchor" href="#doc-current-implementation-and-determinism-shared-kernel-family-versus-distinct-execution-path">#</a></h4>
+<p>&quot;Same code path&quot; depends on the level being described:</p>
+<div class="table-wrap"><table><thead><tr><th>Generation</th><th>Shared with fast path</th><th>What deterministic changes</th></tr></thead><tbody><tr><td>FA1</td><td>common one-K/V-tile computation body</td><td>serial-K versus sequence-K grid and surrounding preprocess/finalize protocol</td></tr><tr><td>later FA2</td><td>sequence-K main-kernel family and five-GEMM body</td><td>grid width, split-buffer base address, initialization, and fixed-order conversion</td></tr><tr><td>FA3</td><td>one templated Hopper mainloop</td><td>compile-time deterministic specialization inserts semaphore waits/releases around the writer</td></tr><tr><td>FA4</td><td>one CuTeDSL backward family</td><td>JIT specialization, semaphore buffers, scheduler/head swizzle, and supported 1-/2-CTA dispatch</td></tr></tbody></table></div>
+<p>Thus deterministic is neither a completely independent reimplementation nor a cost-free API flag around an otherwise identical launch.</p>
+<h4 id="doc-current-implementation-and-determinism-published-performance-evidence-is-not-a-cross-generation-benchmark">Published performance evidence is not a cross-generation benchmark<a class="anchor" href="#doc-current-implementation-and-determinism-published-performance-evidence-is-not-a-cross-generation-benchmark">#</a></h4>
+<p>There is no official apples-to-apples FA1--FA4 sweep with one shape and one hardware target:</p>
+<ul><li>FA1 v1.0.9 has no maintained deterministic-versus-fast percentage in this audit. Its loss depends strongly on whether <code>B * H</code> is already enough to fill the GPU after sequence-K parallelism is disabled.</li><li>FA2 deterministic was added after the original FA2 paper. The public API calls it &quot;slightly slower&quot; and more memory-intensive, but the paper does not provide a systematic split-workspace ablation.</li><li>the follow-on <a href="https://arxiv.org/abs/2601.21824">DASH deterministic-attention study</a> reports up to a 37.9% throughput reduction for its FA3 deterministic baseline on H800, and up to a 1.28x recovery from improved scheduling. This is later third-party evidence, not a result from the original FA3 paper or the exact early source pinned here.</li><li>the FA4 paper reports deterministic causal backward reaching up to 75% of the nondeterministic <strong>1-CTA</strong> speed on B200 at head dimension 128. That is a best reported ratio, equivalent to 25% lower throughput or about 33% longer same-work runtime; it is not a comparison with the fastest nondeterministic 2-CTA path and not a constant across shapes.</li></ul>
 <h3 id="doc-current-implementation-and-determinism-compiler-dispatch-and-state-boundaries">Compiler, Dispatch, And State Boundaries<a class="anchor" href="#doc-current-implementation-and-determinism-compiler-dispatch-and-state-boundaries">#</a></h3>
 <p>Exact replay requires pinning at least:</p>
 <ul><li>FlashAttention commit and selected FA2/FA3/FA4/CuTe/backend path;</li><li>GPU architecture and SM count;</li><li>shape, dtype, head dimension, MHA/MQA/GQA ratio, varlen metadata, causal or local mask, and specialized tile configuration;</li><li>compiler/toolchain, generated artifact, CUDA driver/runtime, and PyTorch;</li><li>stream discipline and every workspace/semaphore buffer;</li><li>dropout RNG seed, offset, and consumption order.</li></ul>

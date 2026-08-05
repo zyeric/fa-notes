@@ -1,8 +1,9 @@
 # FlashAttention Forward And Backward
 
-Date: 2026-07-23
+Date: 2026-08-05
 
-Status: first source pass complete; GPU validation pending
+Status: source pass and FA1--FA4 deterministic-protocol comparison complete;
+GPU validation pending
 
 ## Scope And Source
 
@@ -91,9 +92,12 @@ commutative, but its realized order follows CTA arrival and is not
 associative. A deterministic backward must either give one worker complete
 ownership or impose a fixed combine order.
 
-## FA2 CUDA Mechanism
+## Later FA2 CUDA Mechanism
 
 The standard CUDA backward in `csrc/flash_attn` makes the tradeoff explicit.
+This is the later legacy-CUDA deterministic protocol at the pinned current
+revision. It must not be projected backward onto the initial FA2 v2.0.0
+release, whose public API had no `deterministic` argument.
 
 In the normal path:
 
@@ -113,6 +117,20 @@ With `deterministic=True`:
 `nsplits` depends on SM count and `batch * heads`. This preserves repeated
 execution on one fixed setup but makes GPU topology and launch geometry part
 of the exact numerical contract.
+
+The padded workspace size is approximately:
+
+```text
+4 bytes * nsplits * B * Hq * Nq_rounded * d_rounded
+```
+
+For `B=1,H=32,N=8192,d=128`, one FP32 `dQ` image is 128 MiB. On an
+A100-class 108-SM launch, the legacy heuristic gives approximately
+`ceil(108 / 32) = 4` splits, or 512 MiB of deterministic `dQ` accumulation
+storage. The ordinary path already needs one 128 MiB FP32 accumulator, so the
+incremental split-copy cost is approximately 384 MiB for this example. This
+storage is transient per backward operator rather than retained once per
+Transformer layer, although a caching allocator may keep the pages reserved.
 
 For MQA/GQA, the legacy host path first produces expanded per-Q-head `dK/dV`
 and then calls an ATen reduction over the head group. That backend reduction
@@ -144,6 +162,98 @@ The support matrix is conditional. At the pinned revision:
 
 This is why the API flag must be checked after actual backend dispatch rather
 than treated as a repository-wide boolean.
+
+### Global semaphore residence and exact operation classes
+
+Ordinary SMEM is CTA-private, so a semaphore that orders CTAs resident on
+different SMs cannot live there. The CuTe paths allocate device-global int32
+counters, roughly one per contested `(batch, head, Q tile, stage/cluster)`
+destination. They are HBM-addressed allocations, but their small hot working
+set is normally served through the globally coherent L2/atomic path rather
+than forcing a fresh DRAM round trip for every poll.
+
+The writer rank is prescribed; a CTA does not race to obtain a dynamic ticket:
+
+```text
+counter for dQ tile i starts at logical rank 0
+
+writer r:
+  one elected lane polls an acquire load until counter == r
+  issue the FP32 bulk reduce-add for partial dQ_i^(r)
+  wait until every asynchronous stage is globally visible
+  release/increment the int32 global counter
+```
+
+Keep three meanings of "atomic" separate:
+
+1. the old FA1/FA2 CUDA path can call scalar FP32 `atomicAdd` for individual
+   `dQ` elements;
+2. FA3/FA4 do not use that lane-wise call in their main path, but their TMA or
+   `cp.reduce.async.bulk` publication still has safe global reduction
+   semantics;
+3. the semaphore release itself is an ordered int32 global increment, not a
+   floating-point gradient contribution.
+
+Deterministic mode usually keeps the same bulk-reduction primitive and adds
+an order around its invocations. Atomic safety prevents lost updates; the
+semaphore supplies the missing floating-point association order.
+
+## Historical Deterministic Protocol Comparison
+
+The four mechanisms are easiest to remember by asking what is exchanged for
+the fixed `dQ` combine order:
+
+| Generation / pinned boundary | Fast path | Deterministic mechanism | Main price |
+| --- | --- | --- | --- |
+| FA1 v1.0.9 | one CTA per K/V tile can atomically add partial `dQ` | `num_splits=1`: one CTA per batch/head visits all K/V tiles in fixed order | loses sequence-K CTA parallelism |
+| initial FA2 v2.0.0 | one sequence-K CTA per K/V tile, scalar FP32 atomic publication | no public deterministic option | no selectable fixed-order path |
+| later FA2 legacy CUDA | one shared FP32 `dq_accum` | `nsplits` private FP32 `dQ` images plus a fixed split-index reduction | extra global capacity and read/write traffic |
+| early FA3 SM90 | racing TMA bulk reduce-add | semaphore-prescribed TMA publication | waits, release traffic, and pipeline backpressure |
+| FA4 SM100 family | racing async bulk FP32 reduce-add; 2-CTA can halve updates | acquire wait, visibility completion, release increment, and load-aware writer scheduling | waits, fences, and head-of-line risk |
+
+FA1 still uses one global FP32 temporary because a single CTA cannot retain
+sequence-sized `dQ` on chip. Global residence is not shared ownership: the
+serial path is deterministic because that batch/head has one writer and a
+fixed K/V traversal. FA2 retains more producers by giving them disjoint
+global destinations. FA3 and FA4 retain one destination and most producer
+compute parallelism, but serialize only the contested publication edge.
+
+### Shared kernel family versus distinct execution path
+
+"Same code path" depends on the level being described:
+
+| Generation | Shared with fast path | What deterministic changes |
+| --- | --- | --- |
+| FA1 | common one-K/V-tile computation body | serial-K versus sequence-K grid and surrounding preprocess/finalize protocol |
+| later FA2 | sequence-K main-kernel family and five-GEMM body | grid width, split-buffer base address, initialization, and fixed-order conversion |
+| FA3 | one templated Hopper mainloop | compile-time deterministic specialization inserts semaphore waits/releases around the writer |
+| FA4 | one CuTeDSL backward family | JIT specialization, semaphore buffers, scheduler/head swizzle, and supported 1-/2-CTA dispatch |
+
+Thus deterministic is neither a completely independent reimplementation nor
+a cost-free API flag around an otherwise identical launch.
+
+### Published performance evidence is not a cross-generation benchmark
+
+There is no official apples-to-apples FA1--FA4 sweep with one shape and one
+hardware target:
+
+- FA1 v1.0.9 has no maintained deterministic-versus-fast percentage in this
+  audit. Its loss depends strongly on whether `B * H` is already enough to
+  fill the GPU after sequence-K parallelism is disabled.
+- FA2 deterministic was added after the original FA2 paper. The public API
+  calls it "slightly slower" and more memory-intensive, but the paper does not
+  provide a systematic split-workspace ablation.
+- the follow-on
+  [DASH deterministic-attention study](https://arxiv.org/abs/2601.21824)
+  reports up to a 37.9% throughput reduction for its FA3 deterministic
+  baseline on H800, and up to a 1.28x recovery from improved scheduling. This
+  is later third-party evidence, not a result from the original FA3 paper or
+  the exact early source pinned here.
+- the FA4 paper reports deterministic causal backward reaching up to 75% of
+  the nondeterministic **1-CTA** speed on B200 at head dimension 128. That is a
+  best reported ratio, equivalent to 25% lower throughput or about 33% longer
+  same-work runtime; it is not a comparison with the fastest nondeterministic
+  2-CTA path and not a constant across shapes.
 
 ## Compiler, Dispatch, And State Boundaries
 

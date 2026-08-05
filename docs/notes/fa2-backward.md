@@ -46,7 +46,11 @@ CTA=8 warps=256 threads
 
 Dropout, causal, varlen, and MQA/GQA are added only where they change the
 protocol. Later FA2 releases and their deterministic workspace mode are
-outside this pinned-version verdict.
+outside this pinned-version verdict. The later legacy-CUDA mechanism,
+including its `nsplits` FP32 workspace formula and a concrete 512 MiB example,
+is maintained in
+[current implementation and determinism](current-implementation-and-determinism.md#later-fa2-cuda-mechanism)
+rather than being projected backward onto v2.0.0.
 
 ## 2. Math And One-Tile Dataflow
 
@@ -445,6 +449,9 @@ This note does not establish:
 - a measured A100 speedup, occupancy, or atomic contention constant;
 - deterministic behavior of the PyTorch MQA/GQA post-sum;
 - batch invariance or inference-engine behavior.
+
+For the deliberately separate later-version comparison, continue to
+[Historical Deterministic Protocol Comparison](current-implementation-and-determinism.md#historical-deterministic-protocol-comparison).
 
 The next useful validation is a GPU run that records the resolved traits,
 hashes `D`, `dq_accum`, final dQ/dK/dV across repeats, and profiles atomic/L2

@@ -82,7 +82,7 @@
         <p class="subtitle">从 attention 数学、online softmax 和 tiling 出发，逐层走到 CTA/warp ownership、memory movement、Tensor Core primitive、pipeline、performance 与 deterministic backward。</p>
         <div class="actions">
           <a class="button" href="slides/fa1-forward.html">从 FA1 forward 开始</a>
-          <a class="button secondary" href="notes.html#doc-evolution">先看四代演化</a>
+          <a class="button secondary" href="notes.html#doc-tile-spec">High-level tile spec</a>
           <a class="button secondary" href="notes.html">Long-form HTML</a>
         </div>
       </div>
@@ -107,15 +107,15 @@
           <h3>从一个 FA1 forward CTA 开始</h3>
           <p>先补 A100、grid/CTA/warp、register/SMEM、MMA、online softmax，再讨论为什么 forward deterministic。</p>
         </a>
-        <a class="card" href="notes.html#doc-evolution">
+        <a class="card" href="notes.html#doc-tile-spec">
           <span class="tag">Top-down · 20 min</span>
-          <h3>只记住 FA1 → FA4 的主线</h3>
-          <p>每一代在解决什么瓶颈、owner graph 哪些变了、哪些只是 hardware pipeline 的升级。</p>
+          <h3>High-level tile spec</h3>
+          <p>用统一字段描述 mathematical tile、logical owner、scan axis、live state、partials 与 physical lowering，再比较 FA1 → FA4。</p>
         </a>
         <a class="card" href="notes.html#doc-current-implementation-and-determinism">
           <span class="tag">Audit · determinism</span>
           <h3>从 multi-writer reduction 入手</h3>
-          <p>default atomic/reduce-add、split workspace、fixed reduction、semaphore writer order 和 dispatch envelope。</p>
+          <p>FA1 serial owner、FA2 split workspace、FA3/FA4 semaphore writer order、DASH scheduling evidence 和 dispatch envelope。</p>
         </a>
         <a class="card" href="notes.html#doc-rubin-attention-projection">
           <span class="tag">Projection · Rubin</span>
@@ -178,15 +178,15 @@
     </section>
 
     <section>
-      <h2>The compact mental model</h2>
+      <h2>The compact tile mental model</h2>
       <div class="table">
         <table>
-          <thead><tr><th>Generation</th><th>Primary bottleneck</th><th>Schedule / primitive response</th><th>Do not misremember it as</th></tr></thead>
+          <thead><tr><th>Generation</th><th>High-level tile schedule</th><th>Schedule / primitive response</th><th>Do not misremember it as</th></tr></thead>
           <tbody>
-            <tr><td>FA1</td><td>N² intermediate HBM IO</td><td>tiling + online softmax</td><td>an approximate attention algorithm</td></tr>
-            <tr><td>FA2</td><td>weak work partition and excess non-MMA work</td><td>Q-block CTA ownership + split-Q warps</td><td>mainly a new hardware feature</td></tr>
-            <tr><td>FA3</td><td>Hopper compute waiting on movement / softmax</td><td>TMA + WGMMA + specialized asynchronous pipeline</td><td>a fundamentally new owner graph</td></tr>
-            <tr><td>FA4</td><td>MMA scales faster than SMEM and exp</td><td>TMEM + tcgen05 + 2-CTA + softmax co-design</td><td>“B is physically read exactly once”</td></tr>
+            <tr><td>FA1</td><td>K/V tile 外层，CTA 复用它并访问多个小 Q tile；跨 K/V step 交接 Q/O state</td><td>tiling + online softmax</td><td>an approximate attention algorithm</td></tr>
+            <tr><td>FA2</td><td>一个 CTA 固定一个更大的 Q/O tile，内部遍历全部有效 K/V tiles</td><td>Q-block CTA ownership + split-Q warps</td><td>mainly a new hardware feature</td></tr>
+            <tr><td>FA3</td><td>大体保留 FA2 owner graph，让 persistent worker 执行异步 tile pipeline</td><td>TMA + WGMMA + specialized asynchronous pipeline</td><td>a fundamentally new owner graph</td></tr>
+            <tr><td>FA4</td><td>大体保留 owner graph，用两条 Q stream、TMEM handoff 与可选 2-CTA cooperation 加深 pipeline</td><td>TMEM + tcgen05 + softmax co-design</td><td>one subtile = one CTA in every path</td></tr>
           </tbody>
         </table>
       </div>

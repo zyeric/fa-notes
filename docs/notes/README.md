@@ -9,13 +9,16 @@ reading surfaces, not independent specifications.
 
 ### First encounter
 
-1. [FA1 forward visual map](../slides/fa1-forward.html)
-2. [FA1 backward visual map](../slides/fa1-backward.html)
-3. [FA1 one-page checkpoint](fa1-checkpoint.md)
-4. [FA1 to FA4 evolution](evolution.md)
+1. [FA1 to FA4 high-level tile spec](tile-spec.md)
+2. [FA1 to FA4 tile and computation mental model](evolution.md)
+3. [FA1 forward visual map](../slides/fa1-forward.html)
+4. [FA1 backward visual map](../slides/fa1-backward.html)
+5. [FA1 one-page checkpoint](fa1-checkpoint.md)
 
-This path introduces CUDA vocabulary before relying on it, follows the common
-`B=1, H=32, N=8192, d=128` example, and only then compares generations.
+The spec gives every generation the same $(i,j)$ vocabulary and separates the
+mathematical tile, logical owner, and physical lowering. The evolution note
+adds the causal story; the visual maps then introduce CUDA vocabulary and
+ground that model in the common `B=1, H=32, N=8192, d=128` example.
 
 ### Full source-backed path
 
@@ -37,6 +40,9 @@ They intentionally explain deltas instead of repeating all of FA1.
 2. Read [current implementation and determinism](current-implementation-and-determinism.md).
 3. Use the FA2/FA3/FA4 notes only to resolve the selected backend and its
    combine mechanism.
+4. Use the FA3 follow-on DASH subsection and the FA4 equal-`4x4` causal toy
+   only after separating fixed arithmetic order from efficient writer
+   scheduling.
 
 ## The Questions Every Generation Must Answer
 
