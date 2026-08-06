@@ -71,7 +71,7 @@
         <div class="quote">数学不变；owner、residence、handoff 和 overlap 边界改变。</div>
       </div>
       <div class="card amber-edge top"><h3>证据边界</h3><ul>
-        <li>DeepSeek TileLang：可读 reference ownership；</li><li>FA PR 2422：SM90 large-d 设计讨论，仍 open；</li>
+        <li>FA main <code>d7e4dba3</code>：implemented <code>d_qk=64,d_v=512</code> LargeHeadDimV ownership；</li><li>FA PR 2422：<code>d_qk=d_v=512</code> CuTe discussion 仍 open；</li>
         <li>vLLM：FA4 + SM90 + paged KV + hdim512 integration 已 merge；</li><li>FlashMLA/SGLang：公开 sparse prefill / decode contract。</li>
       </ul><p class="small amber">没有 H100/B200 SASS、profile 或本地 GPU measurement。</p></div>
     </div>
@@ -174,29 +174,38 @@ consumer WG2:
   </section>
 
   <section class="slide" data-section="OwnershipPivot">
-    <div class="kicker">Large-d_v pivot</div><h2>从“切 PV reduction”转向“切 output columns”</h2>
+    <div class="kicker">Implemented SM90 LargeHeadDimV</div><h2>先钉 shape：<code>d_qk=64,d_v=512,B_M=B_N=64</code></h2>
     <div class="content grid-2">
-      <div class="card red-edge"><span class="tag">EXPENSIVE AT 512</span><h3>完整宽度 partial O</h3><div class="codebox">WG0: partial_O0[:, 0:512]
-WG1: partial_O1[:, 0:512]
+      <div class="card cyan-edge"><span class="tag">SCORE SIDE</span><div class="codebox">Q   [64, 64]
+K_j [64, 64]
 
-O = partial_O0 + partial_O1</div><p>复制 512-wide FP32 accumulator，最后还有 numeric reduction。</p></div>
-      <div class="card green-edge"><span class="tag">LARGE-D DIRECTION</span><h3>互不重叠的 output slices</h3><div class="codebox">WG0: O[:,   0:256] = P @ V0
-WG1: O[:, 256:512] = P @ V1
+S_j = Q @ K_jᵀ → [64,64]
+P_j = softmax(S_j)</div><p><code>P</code> 没有 512 这一维；一个 consumer WG 完成整个 score tile。</p></div>
+      <div class="card green-edge"><span class="tag">OUTPUT SIDE</span><div class="codebox">V_j [64,512]
 
-O = concat(WG0, WG1)</div><p>不相加；代价是两个 owner 都需要完整 P。</p></div>
+WG1: P_j @ V_j[:,  0:256]
+WG2: P_j @ V_j[:,256:512]
+
+O = concat columns; no sum</div><p>每个 WG 的 FP32 O slice 是 <code>64×256×4=64 KiB</code>。</p></div>
     </div>
-    <div class="footer"><span>reduction split → combine obligation · output split → distribution obligation</span><span>Ownership</span></div>
+    <div class="footer"><span>official main d7e4dba3 · this is not the unsettled d_qk=d_v=512 CuTe PR</span><span>Ownership</span></div>
   </section>
 
   <section class="slide" data-section="LargeDSchedule">
-    <div class="kicker">SM90 large-d direction</div><h2>一个 P producer；两个 256-column PV consumers</h2>
+    <div class="kicker">SM90 LargeHeadDimV worker map</div><h2>WG1 算 QK/softmax + 左半 PV；WG2 只算右半 PV</h2>
     <div class="content grid-2 wide-left">
-      <div class="card cyan-edge"><div class="flow"><span class="node cyan-node">QK WGMMA</span><span class="arrow">→</span><span class="node amber-node">online softmax</span><span class="arrow">→</span><span class="node violet-node">P in SMEM</span></div>
-        <div class="flow"><span class="node green-node">PV WG0<br>O[0:256]</span><span class="arrow">+</span><span class="node green-node">PV WG1<br>O[256:512]</span></div>
-        <div class="equation">one probability tile → two disjoint output owners</div></div>
-      <div class="card amber-edge"><h3>相对 FA3 d128 的变化</h3><ul><li>WG 不再只是独立 Q-row owner；</li><li>P 成为 shared producer/consumer payload；</li><li>增加 SMEM round trip + barrier；</li><li>减少 complete-width partial-O replication；</li><li>一个 WG 可能同时参与 QK/softmax 与半边 PV。</li></ul></div>
+      <div class="card cyan-edge"><div class="codebox">producer slots (WG0): elected warp TMA Q/K/V
+
+consumer WG1 (4 warps collectively):
+  QK → softmax → publish P
+  PV → O[:,0:256]
+
+consumer WG2 (4 warps collectively):
+  wait/read same P
+  PV → O[:,256:512]</div></div>
+      <div class="card amber-edge"><h3>不要继续硬切到 single warp</h3><ul><li>WGMMA 是 128-thread warpgroup collective；</li><li>4 warps 的 fragments 在 lanes 间 interleave；</li><li>不能稳定解释成每 warp 连续 16 rows；</li><li>清楚的 owner 是两个 256-column WG slices；</li><li>PFull/PEmpty barrier 与 scale SMEM handoff 是新增代价。</li></ul></div>
     </div>
-    <div class="footer"><span>public design direction; exact final leaf schedule remains artifact-specific</span><span>Large-d</span></div>
+    <div class="footer"><span>source-backed worker map at official revision d7e4dba3</span><span>Large-d</span></div>
   </section>
 
   <section class="slide" data-section="Overlap">
@@ -261,7 +270,7 @@ combine kernel → final O/LSE</div></div>
       <table class="dense"><thead><tr><th>path</th><th>primary owner split</th><th>score/P residence</th><th>softmax overlap source</th><th>extra combine / handoff</th></tr></thead><tbody>
         <tr><td><strong>FA3 d128</strong></td><td>two disjoint Q-row slices</td><td>consumer RMEM fragments</td><td>inter-WG ping-pong + current/next async WGMMA</td><td>no cross-WG P exchange</td></tr>
         <tr><td><strong>FA4 d128</strong></td><td>row-oriented logical output; deeper roles</td><td>TMEM + specialized consumers</td><td>fully async MMA + correction/softmax pipeline</td><td>TMEM/SMEM handoffs; selected 2-CTA</td></tr>
-        <tr><td><strong>SM90 d<sub>v</sub>=512 direction</strong></td><td>shared QK/P producer; two output-column slices</td><td>P published through SMEM</td><td>TMA/QK/PV work across stages</td><td>P broadcast; O concat; optional SplitKV later</td></tr>
+        <tr><td><strong>SM90 d<sub>qk</sub>=64,d<sub>v</sub>=512</strong></td><td>WG1 QK/P + O[:,0:256]; WG2 O[:,256:512]</td><td>P + scales published through SMEM</td><td>TMA / WG1 / WG2 handoff</td><td>O concat; optional SplitKV later</td></tr>
       </tbody></table>
       <div class="equation">d128: independent row owners
 d512: shared probability producer + disjoint column owners</div>
@@ -284,6 +293,7 @@ d512: shared probability producer + disjoint column owners</div>
     <div class="kicker">Evidence envelope</div><h2>继续追 leaf kernel，而不是停在 engine 名字</h2>
     <div class="content grid-2">
       <div class="card cyan-edge top"><h3>Primary implementation landmarks</h3><ul>
+        <li><a href="https://github.com/Dao-AILab/flash-attention/blob/d7e4dba3e568106b0f1b6323b07c1272f53679b3/hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp">FlashAttention main @ d7e4dba3 · implemented LargeHeadDimV</a></li>
         <li><a href="https://github.com/Dao-AILab/flash-attention/pull/2422">FlashAttention PR 2422 · SM90 hdim512 discussion</a></li>
         <li><a href="https://github.com/vllm-project/vllm/pull/38835">vLLM PR 38835 · merged FA4 SM90 paged-KV integration</a></li>
         <li><a href="https://github.com/deepseek-ai/FlashMLA/tree/15f13e5030374295491c5ce31b02d7e63a7772c6">FlashMLA @ 15f13e5 · support matrix and decode API</a></li>
@@ -295,7 +305,7 @@ d512: shared probability producer + disjoint column owners</div>
         <li><a href="../notes.html#doc-large-head-dimension-inference">Long-form HTML section</a></li>
       </ul><p class="small amber">CPU-only source pass；GPU validation pending。</p></div>
     </div>
-    <div class="footer"><span>Date: 2026-08-05</span><span>Sources</span></div>
+    <div class="footer"><span>Date: 2026-08-06</span><span>Sources</span></div>
   </section>
 
   <section class="slide" data-section="Summary">
@@ -304,7 +314,7 @@ d512: shared probability producer + disjoint column owners</div>
       <div class="flow"><span class="node cyan-node">d grows</span><span class="arrow">→</span><span class="node green-node">MMA / softmax ratio grows</span><span class="arrow">→</span><span class="node amber-node">complete-width partial O hurts</span></div>
       <div class="flow"><span class="node violet-node">compute P once</span><span class="arrow">→</span><span class="node green-node">split 512 output columns</span><span class="arrow">→</span><span class="node cyan-node">pipeline across KV stages</span></div>
       <p class="lead"><span class="cyan">FA3 d128：</span>两个独立 Q-row owners ping-pong。</p>
-      <p class="lead"><span class="violet">Large d<sub>v</sub>：</span>一个 P producer，两个 output-column consumers。</p>
+      <p class="lead"><span class="violet">Large d<sub>v</sub>：</span>WG1 produces P and the first O slice；WG2 reuses P for the second O slice。</p>
       <div class="equation">更贵但更容易喂饱 Tensor Core；更 compute-dense 也更 resource-constrained。</div>
     </div></div>
     <div class="footer"><span>source of truth: ../notes/large-head-dimension-inference.md</span><span>Summary</span></div>

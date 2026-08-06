@@ -42,8 +42,9 @@
     .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(11px,1.35vw,22px);height:100%;min-height:0}
     .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:clamp(9px,1vw,17px);height:100%;min-height:0}
     .stack-figure{display:grid;grid-template-rows:minmax(0,1.45fr) minmax(0,.72fr);gap:clamp(11px,1.35vh,18px);height:100%;min-height:0}
+    .stack-cards{display:grid;grid-template-rows:repeat(3,minmax(0,1fr));gap:clamp(10px,1.2vh,16px);height:100%;min-height:0}
     .wide-left{grid-template-columns:1.22fr .78fr}.wide-right{grid-template-columns:.78fr 1.22fr}.narrow-left{grid-template-columns:.68fr 1.32fr}
-    .card{display:flex;flex-direction:column;justify-content:center;min-width:0;min-height:0;padding:clamp(12px,1.35vw,22px);
+    .card{display:flex;flex-direction:column;justify-content:flex-start;min-width:0;min-height:0;padding:clamp(12px,1.35vw,22px);
       border:1px solid var(--line);border-radius:14px;background:rgba(255,254,250,.94);box-shadow:var(--shadow)}
     .top{justify-content:flex-start}.flat{box-shadow:none}.blue-edge{border-top:5px solid var(--blue)}.teal-edge{border-top:5px solid var(--teal)}
     .amber-edge{border-top:5px solid var(--amber)}.red-edge{border-top:5px solid var(--red)}.violet-edge{border-top:5px solid var(--violet)}
@@ -70,6 +71,9 @@
     .metric strong{font-size:clamp(20px,1.7vw,31px)}
     .roles{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:.55em 0}
     .role{padding:.62em;border:1px solid var(--line);border-radius:10px;background:#f6f8f9;text-align:center;font-size:clamp(11px,.78vw,15px)}
+    .partition-card{display:grid;grid-template-rows:auto minmax(0,1fr) auto auto;gap:8px}
+    .partition-card>img{display:block;width:100%;height:100%;min-height:0;object-fit:contain}
+    .partition-card p{margin-bottom:0}
     .arrow-line{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:7px;align-items:center;margin:.55em 0}
     .arrow-line .node{padding:.62em .5em;border:1px solid var(--line);border-radius:9px;background:#f7faf9;text-align:center;font-size:clamp(11px,.77vw,15px);font-weight:760}
     .arrow-line .arrow{font-size:clamp(17px,1.35vw,25px);color:var(--amber)}
@@ -85,9 +89,9 @@
       html,body{overflow:hidden}
       .slide{overflow-y:auto;grid-template-rows:auto auto auto auto;padding:20px 22px 56px}
       .slide.title-slide{grid-template-rows:auto minmax(520px,1fr) auto}
-      .content,.grid-2,.grid-3,.grid-4,.stack-figure{height:auto;min-height:0}
+      .content,.grid-2,.grid-3,.grid-4,.stack-figure,.stack-cards{height:auto;min-height:0}
       .grid-2,.grid-3,.grid-4,.wide-left,.wide-right,.narrow-left{grid-template-columns:1fr}
-      .stack-figure{grid-template-rows:auto auto}
+      .stack-figure,.stack-cards{grid-template-rows:auto}
       .figure{min-height:240px}.figure.band{min-height:0}.figure.band img{height:auto;max-height:none}
       .card{justify-content:flex-start}.footer{padding-top:4px}
     }
@@ -96,7 +100,7 @@
 <body>
 <main class="deck">
   <section class="slide title-slide active" data-section="Title">
-    <div class="chapter">Questions first · draft 01</div>
+    <div class="chapter">Questions first · draft 02</div>
     <div class="content center"><div>
       <h1>先把地图<br>装进脑子里</h1>
       <p class="lead">GPU 怎么执行 · FA 为什么演进 · backward 为什么难 · 下一步怎么看</p>
@@ -133,7 +137,7 @@
     <div class="chapter">GPU model · full chip</div><h2>先看整颗 GPU：很多 SM 共享 L2 与 HBM 路径</h2>
     <figure class="content figure hero-figure dark">
       <img src="../assets/high-level/hopper-full.png" alt="NVIDIA GH100 full GPU block diagram">
-      <figcaption>NVIDIA GH100 full-chip block diagram · Figure 3</figcaption>
+      <figcaption>NVIDIA GH100 full-chip block diagram · Figure 3 · original 1999×893 source</figcaption>
     </figure>
     <div class="footer"><span>Grid 可以远大于 SM 数；CTA 会分批被 admit 到可用 SM</span><span class="source"><a href="https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/" target="_blank">NVIDIA Hopper architecture in depth</a></span></div>
   </section>
@@ -143,10 +147,12 @@
     <div class="content grid-2 narrow-left">
       <figure class="figure dark"><img src="../assets/high-level/hopper-sm.png" alt="NVIDIA GH100 streaming multiprocessor block diagram"><figcaption>GH100 SM · NVIDIA Figure 4</figcaption></figure>
       <div class="card top">
-        <p class="answer"><strong>一张图先记六件事：</strong></p>
-        <ol><li>warp scheduler 与 dispatch unit 负责 <em>issue</em>；</li><li>CUDA / load-store / MUFU / Tensor Core pipeline 负责执行；</li>
-          <li>register 保存 thread-private state；</li><li>L1 / SMEM 是同一 on-chip pool 的可配置资源；</li><li>TMA 是数据移动引擎，不是 Tensor Core；</li><li>这是一张结构图，不是软件可见的精确 wiring contract。</li></ol>
-        <div class="callout"><strong>CTA-private SMEM</strong> 物理上来自 SM，但普通 CTA 不能把另一 CTA 的 allocation 当成自己的。</div>
+        <table class="medium"><tbody>
+          <tr><th>ISSUE</th><td><strong>scheduler / dispatch</strong><br>从 resident warps 中选 ready instruction，送往匹配的执行路径；它们不完成矩阵乘本身。</td></tr>
+          <tr><th>EXECUTE</th><td><strong>多类 pipeline 共存</strong><br>Tensor Core 做 MMA；CUDA/MUFU 做算术与 exp；load-store/TMA 搬数据。独立 pipeline 提供 overlap 空间。</td></tr>
+          <tr><th>STATE</th><td><strong>register + L1/SMEM</strong><br>register 保存 thread-private state；SMEM allocation 属于 CTA，普通 CTA 不能直接读另一 CTA 的 allocation。</td></tr>
+        </tbody></table>
+        <div class="callout"><strong>读图顺序：</strong>顶部是 warp state / issue；中间是执行管线；底部是 register、L1/SMEM 与 load-store 路径。</div>
       </div>
     </div>
     <div class="footer"><span>H100: 4 warp schedulers / 4 dispatch units / 4 fourth-gen Tensor Cores per SM</span><span class="source"><a href="https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/" target="_blank">NVIDIA source</a></span></div>
@@ -154,22 +160,26 @@
 
   <section class="slide" data-section="AttentionMath">
     <div class="chapter">Attention · mathematical contract</div><h2>优化的是 schedule；forward / backward 的函数先固定下来</h2>
-    <div class="content grid-2">
-      <div class="card blue-edge top"><span class="tag">FORWARD</span><div class="codebox">α = 1 / √d
+    <div class="content grid-2 wide-right">
+      <div class="card blue-edge"><span class="tag">FORWARD</span><div class="codebox">α = 1 / √d
 S = α Q Kᵀ          # [N,N]
 P = softmax_row(S)  # [N,N]
-O = P V             # [N,d]</div><p class="answer">FlashAttention 不把完整 <code>S/P</code> 写回 HBM；用 tiled online softmax 得到同一个 exact <code>O</code>。</p></div>
-      <div class="card red-edge top"><span class="tag">BACKWARD · G = dO</span><div class="codebox">dV = Pᵀ G
+O = P V             # [N,d]</div><p><strong>Forward：</strong>tile 内短暂生成 <code>S/P</code>；online softmax 只跨 K/V tiles 保留 <code>m,l,O</code>。</p><div class="callout">FlashAttention 改 IO schedule，不改变 exact attention。</div></div>
+      <div class="card red-edge"><span class="tag">BACKWARD · G = dO</span><div class="codebox"># reconstruct forward probability tile
+S′ = α Q Kᵀ
+P′ = exp(S′ - LSE[:,None])
+
+dV = P′ᵀ G
 dP = G Vᵀ
 D  = rowsum(G ⊙ O)
-dS = P ⊙ (dP - D)
+dS = P′ ⊙ (dP - D)
 dQ = α dS K
-dK = α dSᵀ Q</div><p class="answer">backward 从 <code>Q/K/LSE</code> 重建 <code>P</code>；五个 GEMM 共享同一 score tile，却有三个不同输出 owners。</p></div>
+dK = α dSᵀ Q</div><p><strong>Backward：</strong><code>S′/P′</code> 是重算值，不是保存的 N×N tensor；mask、scale 与 dropout RNG 必须按 forward contract replay。</p></div>
     </div>
     <div class="footer"><span><code>S/P/dP/dS</code> 都是 N×N 语义矩阵；实现只让 tile 短暂存在 on chip</span><span class="source"><a href="https://arxiv.org/html/2407.08608#S2.SS1" target="_blank">FA3 paper · §2.1</a></span></div>
   </section>
 
-  <section class="slide tight" data-section="Launch">
+  <section class="slide" data-section="Launch">
     <div class="chapter">CUDA launch · concrete FA2 example</div><h2><code>gridDim</code>/<code>blockDim</code> 是 3-D 整数 shape；不是 SM id，也不是一个浮点 scalar</h2>
     <div class="content grid-2 wide-left">
       <div class="card blue-edge top"><span class="tag">FA2 FORWARD · REPRESENTATIVE</span><div class="codebox">B=1, H=32, Nq=8192
@@ -208,31 +218,57 @@ flash_fwd&lt;&lt;&lt;grid, block,
   </section>
 
   <section class="slide" data-section="Occupancy">
-    <div class="chapter">CTA admission · one arithmetic example</div><h2>先数 resident warps，再问这些 warps 是否真的 ready</h2>
+    <div class="chapter">CTA admission · A100 + FA2 example</div><h2>一个 SM 理论最多 32 CTAs；真实 residency 取所有资源限制的最小值</h2>
     <div class="content grid-2">
-      <div class="card blue-edge top">
-        <div class="equation">occupancy = active warps / max warps per SM</div>
-        <div class="codebox">teaching SM: max 64 warps
-one FA2-like CTA: 128 threads = 4 warps
+      <div class="card blue-edge"><span class="tag">THEORETICAL ADMISSION</span><div class="codebox">A100 per SM:
+  max CTAs  = 32
+  max warps = 64
+  SMEM      = 164 KiB
 
-if resources admit 4 CTAs:
-  resident warps = 4 × 4 = 16
-  occupancy      = 16 / 64 = 25%
+FA2 d64 forward representative CTA:
+  128 threads = 4 warps
+  SMEM footprint = 48 KiB
 
-if SMEM admits only 1 CTA:
-  occupancy      = 4 / 64 = 6.25%</div>
-        <p class="small muted">这是解释公式的假想 arithmetic，不是某个 FA2 binary 的 measured occupancy。</p>
+CTA limits:
+  architecture: 32
+  warps:  floor(64 / 4)   = 16
+  SMEM:   floor(164 / 48) =  3
+  regs:   inspect compiled artifact</div>
+        <div class="equation">resident CTAs ≤ min(32, 16, 3, register limit)</div>
       </div>
-      <div class="card top amber-edge"><h3>为什么不是“25% 的硬件在工作”？</h3>
-        <div class="metric"><span>resident</span><strong>已被 SM admission</strong></div>
-        <div class="metric"><span>ready</span><strong>operand / barrier 已满足</strong></div>
-        <div class="metric"><span>issued</span><strong>scheduler 选中下一条指令</strong></div>
-        <div class="metric"><span>utilized</span><strong>目标 pipeline 正在做有效工作</strong></div>
-        <div class="callout"><strong>CTA 设计的交换：</strong>大 tile 通常提高 reuse，却增加 registers/SMEM、降低 resident CTA 数；低 occupancy 仍可能靠 async pipeline/ILP 跑得很好。</div>
-        <p class="answer">先用 resource limits 算 theoretical occupancy；再用 profiler 看 achieved warps、stall reasons 和 pipeline utilization。</p>
+      <div class="card amber-edge"><span class="tag">OCCUPANCY ≠ UTILIZATION</span><h3>若 registers 允许 3 CTAs</h3><div class="equation">occupancy = (3 CTAs × 4 warps) / 64 = 18.75%</div>
+        <p><strong>这只表示 resident-warp capacity。</strong>它不表示 18.75% 的 Tensor Core、MUFU 或 memory bandwidth 正在工作。</p>
+        <div class="roles"><div class="role">resident<br>已进入 SM</div><div class="role">ready<br>依赖已满足</div><div class="role">utilized<br>pipeline 有效工作</div></div>
+        <div class="callout">一个低-occupancy CTA 仍可能靠 WGMMA/TMA/ILP 把多个 pipeline 喂满；高 occupancy 也可能所有 warps 都卡在同一个 barrier 或 memory dependency。</div>
+        <p><strong>分析顺序：</strong>occupancy calculator 找 admission ceiling → profiler 看 achieved warps/stalls → pipeline counters 看实际利用率。</p>
       </div>
     </div>
-    <div class="footer"><span>higher occupancy 不一定更快；更少 spills / 更强 ILP 有时允许低 occupancy 高利用率</span><span class="source"><a href="https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#occupancy" target="_blank">NVIDIA Best Practices · Occupancy</a></span></div>
+    <div class="footer"><span>48 KiB 是 pinned FA2 d64 forward teaching path；register limit 仍需用对应 binary 确认</span><span class="source"><a href="https://docs.nvidia.com/cuda/ampere-tuning-guide/#occupancy" target="_blank">Ampere Tuning Guide</a> · <a href="../notes.html#doc-fa2-forward" target="_blank">FA2 resource audit</a></span></div>
+  </section>
+
+  <section class="slide" data-section="WarpSpecialization">
+    <div class="chapter">Warp specialization · software decomposition</div><h2>先把一个 CTA 内的 warps 分成长期角色，再用 barrier/pipeline 交接数据</h2>
+    <div class="content grid-2 wide-left">
+      <div class="card blue-edge"><div class="codebox">role = warpgroup_id(threadIdx.x)
+
+if role == TMA_PRODUCER:
+  load K/V into circular SMEM stage
+  signal stage_ready
+
+elif role == MMA_SOFTMAX_CONSUMER:
+  wait(stage_ready)
+  issue WGMMA; run softmax
+  signal stage_released
+
+else:
+  epilogue / tile scheduler</div><p>这是 conceptual skeleton；实际 FA3 source 用 warp/warpgroup ID、pipeline state 与 named/transaction barriers 实现。</p></div>
+      <div class="stack-cards">
+        <div class="card teal-edge"><span class="tag">ROLE BRANCH</span><p>整个 warp/warpgroup 走同一条 uniform branch；producer 不需要执行 consumer 的矩阵与 softmax loop。</p></div>
+        <div class="card amber-edge"><span class="tag">HANDOFF</span><p><code>mbarrier</code>/pipeline state 表达“buffer 已填好”和“consumer 已释放”；SMEM lifetime 因此可证明。</p></div>
+        <div class="card violet-edge"><span class="tag">RESOURCE BUDGET</span><p><code>setmaxnreg</code> 可把 producer 不需要的 register budget 让给 consumer；但整个 CTA 仍共同 residency。</p></div>
+      </div>
+    </div>
+    <div class="footer"><span>specialization = software instruction roles + explicit handoff；下一页再解释为什么 role 不等于 hardware ownership</span><span class="source"><a href="https://arxiv.org/html/2407.08608#S3.SS1" target="_blank">FA3 paper · warp specialization</a> · <a href="../notes.html#doc-fa3" target="_blank">FA3 source audit</a></span></div>
   </section>
 
   <section class="slide" data-section="SchedulerBinding">
@@ -259,13 +295,11 @@ if SMEM admits only 1 CTA:
     <div class="content grid-2 wide-right">
       <div class="card top">
         <p class="answer"><strong>PTX</strong> 是 virtual ISA；<strong>SASS</strong> 才是目标 GPU 执行的 machine instruction stream。</p>
-        <ul><li>fatbinary 可以装多个 PTX / cubin image；</li><li>runtime 为当前 GPU 选择兼容 image；</li><li>register allocation 和 static resource metadata 属于编译 artifact；</li><li>FA4 的 CuTeDSL 只是换了前端：最终仍 lower 到 PTX / SASS。</li></ul>
-        <div class="codebox">CuTeDSL specialization
- → MLIR / CUTLASS lowering
- → PTX tcgen05 / TMA / barrier
- → ptxas → SASS</div>
-        <div class="equation"><code>exp2f</code> → PTX <code>ex2.approx.f32</code> → SASS <code>MUFU.EX2</code></div>
-        <p class="small muted"><code>wgmma.mma_async</code> 在 Hopper binary 中表现为一组 <code>HGMMA...</code> machine instructions；下一页看 FA3 paper excerpt。</p>
+        <div class="metric"><span>CUDA C++ / CuTeDSL</span><strong>front end</strong></div>
+        <div class="metric"><span>PTX</span><strong>virtual ISA</strong></div>
+        <div class="metric"><span>ptxas → cubin</span><strong>target SASS</strong></div>
+        <div class="metric"><span>fatbinary + runtime</span><strong>select image</strong></div>
+        <p class="small muted">register allocation、spill 与 static resource metadata 都属于具体 target artifact。下一页再看一段 FA3 SASS。</p>
       </div>
       <figure class="figure"><img src="../assets/high-level/cuda-compilation.png" alt="CUDA compilation trajectory from NVIDIA nvcc documentation"><figcaption>NVIDIA NVCC · CUDA compilation trajectory</figcaption></figure>
     </div>
@@ -385,14 +419,11 @@ FA2 forward:
     <div class="footer"><span>forward 横向 row owner；backward 高并行 path 纵向 K/V owner</span><span class="source"><a href="https://arxiv.org/abs/2307.08691" target="_blank">FA2 paper</a> · <a href="../notes.html#doc-fa2-forward" target="_blank">source audit</a></span></div>
   </section>
 
-  <section class="slide tight" data-section="FA2Warps">
-    <div class="chapter">FA1 → FA2 · forward warp partition</div><h2>数学区别：切 reduction dimension 会产生 partial；切 output dimension 得到 disjoint rows</h2>
-    <div class="content stack-figure">
-      <div class="grid-2">
-        <figure class="figure"><div class="split-label"><strong>FA1 · FORWARD</strong><span class="tag">split B_N</span></div><img src="../assets/high-level/fa1-warp-partition.png" alt="FlashAttention forward warp partitioning from FA2 paper Figure 3a"><figcaption>每个 warp 只看一部分 K/V columns → overlapping partial O</figcaption></figure>
-        <figure class="figure"><div class="split-label"><strong>FA2 · FORWARD</strong><span class="tag">split B_M</span></div><img src="../assets/high-level/fa2-warp-partition.png" alt="FlashAttention-2 forward warp partitioning from paper Figure 3b"><figcaption>每个 warp 拥有不同 Q rows → disjoint O rows</figcaption></figure>
-      </div>
-      <div class="card top"><div class="grid-2"><div><div class="equation">O = P[B_M,B_N] · V[B_N,d]</div><p><strong>split B_N：</strong><code>O = Σ_w P[:,J_w]V[J_w,:]</code>，每个 warp 产生同一 O rows 的 partial，必须相加。</p></div><div><div class="equation">O[I_w,:] = P[I_w,:] · V</div><p><strong>split B_M：</strong>每个 warp 直接得到不同 O rows，只需拼接，不做 floating-point combine。</p></div></div></div>
+  <section class="slide" data-section="FA2Warps">
+    <div class="chapter">FA1 → FA2 · forward warp partition</div><h2>数学区别：切 reduction axis 要相加；切 output rows 只需拼接</h2>
+    <div class="content grid-2">
+      <article class="card partition-card red-edge"><div class="split-label"><strong>FA1 · FORWARD</strong><span class="tag">split B_N</span></div><img src="../assets/high-level/fa1-warp-partition.png" alt="FlashAttention forward warp partitioning from FA2 paper Figure 3a"><div class="equation">O = Σ_w P[:,J_w] V[J_w,:]</div><p>warps 切 PV 的 reduction axis，都会产生同一 O rows 的 partial；CTA 内必须做 floating-point sum。</p></article>
+      <article class="card partition-card teal-edge"><div class="split-label"><strong>FA2 · FORWARD</strong><span class="tag">split B_M</span></div><img src="../assets/high-level/fa2-warp-partition.png" alt="FlashAttention-2 forward warp partitioning from paper Figure 3b"><div class="equation">O[I_w,:] = P[I_w,:] V</div><p>warps 切 Q/output rows，每个 warp 得到 disjoint O rows；最终直接 store/拼接，不做 cross-warp numeric combine。</p></article>
     </div>
     <div class="footer"><span>本页是 forward warp partition；backward 高并行 CTA orientation 固定 K/V tile，并产生 partial dQ</span><span class="source"><a href="https://arxiv.org/html/2307.08691#S3.SS3" target="_blank">FA2 paper · Figure 3</a></span></div>
   </section>
@@ -440,20 +471,20 @@ FA2 forward:
   </section>
 
   <section class="slide" data-section="FA4Need">
-    <div class="chapter">FA3 → FA4 · why redesign</div><h2>Blackwell 把 matrix path 再加速；SMEM 与 EX2 没有同幅扩展</h2>
+    <div class="chapter">FA3 → FA4 · rebuild the ping-pong</div><h2>FA4 没有丢掉 ping-pong；它把“do-both consumer”拆成更细的 producer/consumer edges</h2>
     <div class="content stack-figure">
       <figure class="figure band"><img src="../assets/high-level/fa4-forward.png" alt="FlashAttention-4 paper forward pipeline Figure 1"><figcaption>FA4 paper · Figure 1 · 两条 Q stream、MMA/softmax/correction 的 Blackwell pipeline</figcaption></figure>
       <div class="grid-3">
-        <div class="card violet-edge"><span class="tag">RESIDENCE</span><p><strong>TMEM handoff</strong> 把 accumulator lifetime 从 register ownership 中拆开。</p></div>
-        <div class="card teal-edge"><span class="tag">PARALLEL ROLES</span><p>两条 Q stream、两个 softmax groups，加独立 correction role。</p></div>
-        <div class="card amber-edge"><span class="tag">BOTTLENECK SHIFT</span><p>partial exp emulation 与 conditional rescale 对准 EX2 / non-MMA 压力。</p></div>
+        <div class="card blue-edge"><span class="tag">FA3 PING-PONG</span><p>两个 consumer WGs 各自拥有 register-resident <code>S/P/O</code>，轮流执行 GEMM bundle 与 softmax。</p></div>
+        <div class="card violet-edge"><span class="tag">FA4 DECOUPLING</span><p>一个 MMA issuer 驱动 high/low Q streams；TMEM 在 MMA、两个 softmax WGs 与 PV 之间交接 <code>S/P/O</code>。</p></div>
+        <div class="card amber-edge"><span class="tag">MORE OVERLAP EDGES</span><p>output correction 单独成组；partial exp 与 conditional rescale 缩短非-MMA critical path，暴露更多可独立执行的 work。</p></div>
       </div>
     </div>
-    <div class="footer"><span>FA4: TMEM handoff + two softmax groups + correction role + partial exp emulation + conditional rescale</span><span class="source"><a href="https://arxiv.org/html/2603.05451#S3.SS1" target="_blank">FA4 paper · §3.1</a></span></div>
+    <div class="footer"><span>Blackwell 缩短了 FA3 的 MMA cover window；FA4 用 TMEM residency + finer roles 重新建立可 overlap 的工作池</span><span class="source"><a href="https://arxiv.org/html/2603.05451#S3.SS1" target="_blank">FA4 paper · §3.1</a> · <a href="../notes.html#doc-fa4" target="_blank">FA4 source audit · §8</a></span></div>
   </section>
 
   <section class="slide tight" data-section="TileSpec">
-    <div class="chapter">FA2 → FA4 · tile spec</div><h2>先讲 representative path；不要把“128”说成 universal constant</h2>
+    <div class="chapter">Forward schedule summary · representative d128</div><h2>同一张表分开 math tile、final-output owner 与 physical roles</h2>
     <div class="content card top">
       <table class="medium"><thead><tr><th>generation</th><th>score tile</th><th>logical owner</th><th>representative physical lowering</th><th>为什么</th></tr></thead><tbody>
         <tr><td><strong>FA2 SM80 d128</strong></td><td><code>128×64</code></td><td>one Q/O tile</td><td>4 split-Q warps；scan K/V</td><td>natural ownership + less partial communication</td></tr>
@@ -463,6 +494,20 @@ FA2 forward:
       <div class="roles"><div class="role">math tile<br><code>B_M×B_N×D</code></div><div class="role">logical owner<br>complete or partial?</div><div class="role">physical map<br>CTA / cluster / roles</div></div>
     </div>
     <div class="footer"><span>FA2 常画的 128×128 是 representative d64；这里的 audited d128 path 是 128×64</span><span class="source"><a href="../notes.html#doc-tile-spec" target="_blank">Canonical tile spec</a></span></div>
+  </section>
+
+  <section class="slide" data-section="BackwardGenerations">
+    <div class="chapter">Backward schedule summary · FA1 to FA4</div><h2>每一代具体改的是 owner、on-chip residence 与 partial-dQ publication</h2>
+    <div class="content card top">
+      <table class="medium"><tr><th>generation</th><th>local owner / schedule</th><th>on-chip state</th><th>partial dQ publication</th></tr>
+        <tr><td><strong>FA1</strong></td><td>K/V owner scans small Q tiles</td><td>8-way partial-dQ SMEM combine；152 KiB representative</td><td>serial handoff or scalar FP32 atomic</td></tr>
+        <tr><td><strong>FA2</strong></td><td>larger K/V owner; output-wise warp partition</td><td>larger Q/dO/P/dS staging；144 KiB representative</td><td>scalar FP32 atomic in initial path</td></tr>
+        <tr><td><strong>FA3</strong></td><td>five WGMMA graph + specialized writer</td><td>TMA circular stages + RMEM accumulators</td><td>TMA bulk reduce-add; optional ordered writer</td></tr>
+        <tr><td><strong>FA4</strong></td><td>cross-iteration five-MMA graph; eligible 2-CTA group</td><td>TMEM aliasing + DSMEM exchange</td><td>bulk reduce-add; 2-CTA fewer updates; optional order</td></tr>
+      </table>
+      <div class="callout"><strong>共同 invariant：</strong>一个 K/V owner 完成自己的 <code>dK/dV</code> tile；同一个 <code>dQ</code> tile 仍然需要多个 K/V owners 的 partial contributions。</div>
+    </div>
+    <div class="footer"><span>这页回答“每一代 backward 做了什么”；后面几页再展开 state、FA4 pipeline 与 2-CTA</span><span class="source"><a href="../notes.html#doc-current-implementation-and-determinism" target="_blank">Cross-generation audit</a></span></div>
   </section>
 
   <section class="slide" data-section="BackwardState">
@@ -510,19 +555,6 @@ dQ = dS K</div><p>五个矩阵乘；dK/dV 长寿命 accumulate；dQ 还要跨 ow
     <div class="footer"><span>2-CTA eligibility 是 shape / dispatch dependent，不是所有 backward path 的统一事实</span><span class="source"><a href="https://arxiv.org/html/2603.05451#S3.SS2" target="_blank">FA4 paper · §3.2</a></span></div>
   </section>
 
-  <section class="slide" data-section="BackwardGenerations">
-    <div class="chapter">Backward · FA1 to FA4</div><h2>方程稳定；owner、buffer 与 publish protocol 一直在变</h2>
-    <div class="content card top">
-      <table class="medium"><tr><th>generation</th><th>local work</th><th>on-chip strategy</th><th>partial dQ publication</th></tr>
-        <tr><td><strong>FA1</strong></td><td>K/V tile owner scans small Q tiles</td><td>8-warp partial dQ SMEM combine；152 KiB representative</td><td>serial state handoff or scalar FP32 atomic</td></tr>
-        <tr><td><strong>FA2</strong></td><td>larger K/V owner tile; output-wise warp partition</td><td>removes 64 KiB partial-dQ buffer but grows Q/dO/P/dS staging；144 KiB representative</td><td>scalar FP32 atomic in initial path</td></tr>
-        <tr><td><strong>FA3</strong></td><td>five WGMMA graph + specialized dQ writer</td><td>TMA circular stages + register accumulators</td><td>TMA bulk reduce-add; optional semaphore order</td></tr>
-        <tr><td><strong>FA4</strong></td><td>cross-iteration five-MMA graph</td><td>TMEM lifetime aliasing; 2-CTA reduces SMEM traffic</td><td>bulk reduce-add; 2-CTA halves update count; optional ordered writers</td></tr>
-      </table>
-    </div>
-    <div class="footer"><span>FA1/FA2 byte counts are pinned d128 specializations，不是 architecture-wide constant</span><span class="source"><a href="../notes.html#doc-current-implementation-and-determinism" target="_blank">Cross-generation audit</a></span></div>
-  </section>
-
   <section class="slide tight" data-section="DeterminismEvolution">
     <div class="chapter">Determinism · FA2 to FA4</div><h2>共同目标：固定 multi-writer combine order；交换物不一样</h2>
     <div class="content card top">
@@ -551,48 +583,92 @@ dQ = dS K</div><p>五个矩阵乘；dK/dV 长寿命 accumulate；dQ 还要跨 ow
   </section>
 
   <section class="slide" data-section="FA4Det">
-    <div class="chapter">Determinism · schedule cost</div><h2>同步本身只是一个成本；错误的 tile order 会把等待放大</h2>
+    <div class="chapter">Determinism · scheduler glossary</div><h2>先区分 causal、persistent、LPT、SPT 与 swizzle，再看 Figure 7</h2>
     <div class="content grid-2 wide-left">
       <figure class="figure"><img src="../assets/high-level/fa4-deterministic.png" alt="FlashAttention-4 deterministic backward scheduling ablation"><figcaption>FA4 paper · Figure 7 · causal deterministic scheduling ablations on B200</figcaption></figure>
       <div class="card top">
-        <p class="answer">FA4 把 <strong>semaphore protocol</strong> 和 <strong>load-aware scheduling</strong> 当成两个独立问题。</p>
-        <ul><li>fence / acquire-release 是 correctness cost；</li><li>writer 没 ready 会让后继排队；</li><li>causal / varlen 的 work length 不均会产生 head-of-line stalls；</li><li>swizzle、SPT/LPT 决定 idle bubble 有多大。</li></ul>
-        <div class="callout">paper 最佳 reported causal deterministic throughput 达到 nondeterministic <strong>1-CTA</strong> 的 up to 75%；不是与最快 2-CTA path 的比较。</div>
+        <table class="dense"><tr><th>label</th><th>这里具体是什么意思</th></tr>
+          <tr><td><strong>causal</strong></td><td>Q tile 只访问对角线之前的 K/V；不同 tiles 的 loop length 呈三角形。</td></tr>
+          <tr><td><strong>persistent CTA</strong></td><td>一个 resident CTA 连续领取多个 logical work items；不是 deterministic mechanism。</td></tr>
+          <tr><td><strong>LPT</strong></td><td><em>longest processing time first</em>：长 tile 先发，降低最终 straggler tail。</td></tr>
+          <tr><td><strong>SPT-style writer order</strong></td><td><em>shortest processing time first</em>：让较早 ready 的 dQ partial 更早进入固定 writer chain，减少 semaphore 堵塞。</td></tr>
+          <tr><td><strong>swizzle</strong></td><td>重排 batch/head/tile assignment，改善 locality 或错开冲突；不改变数学。</td></tr>
+        </table>
+        <div class="callout"><strong>LPT 与 SPT 不矛盾：</strong>前者优化 general work queue 的 makespan；后者优化同一 dQ destination 的 ordered-writer queue。</div>
       </div>
     </div>
-    <div class="footer"><span>determinism 是 arithmetic order contract；scheduler 是 performance contract</span><span class="source"><a href="https://arxiv.org/html/2603.05451#S3.SS2.SSS4" target="_blank">FA4 deterministic backward</a></span></div>
+    <div class="footer"><span>paper 最佳 causal deterministic result 是 nondeterministic 1-CTA 的 up to 75%；不是最快 2-CTA path</span><span class="source"><a href="https://arxiv.org/html/2603.05451#S3.SS2.SSS4" target="_blank">FA4 deterministic backward</a> · <a href="../notes.html#doc-fa4" target="_blank">FA4 scheduling audit</a></span></div>
   </section>
 
   <section class="slide" data-section="LargeD">
-    <div class="chapter">Large head dimension · resource ratio</div><h2>同一 score tile：MMA work 随 d 增长；softmax element count 不变</h2>
-    <div class="content grid-2">
-      <div class="card blue-edge">
-        <div class="equation">QK work ≈ 2 · B_M · B_N · d_qk</div><div class="equation">PV work ≈ 2 · B_M · B_N · d_v</div><div class="equation">softmax ≈ O(B_M · B_N)</div>
-        <p class="answer">d: 128 → 512 时，固定 score tile 的 matrix work 约 4×；softmax scores 数量不变。</p>
-      </div>
+    <div class="chapter">Large head dimension · why the old owner graph breaks</div><h2>原 FA3 d128 的 row-owner 为什么不能直接 widen 到 <code>d_v=512</code>？</h2>
+    <div class="content" style="display:grid;grid-template-rows:auto minmax(0,1fr);gap:14px">
+      <div class="callout small"><strong>先划清现状：</strong>Gemma 4 full attention 的 512-wide head 已有 vLLM SM90+FA4 merged integration；但 upstream FA PR 2422 仍 open。SGLang DeepSeek V4 主要走 FlashMLA sparse path（<code>d_qk=576,d_v=512</code>）。<strong>下面两页只解剖 official FA3 <code>d_qk=64,d_v=512</code> 实现，不冒充 Gemma 4 的 512/512 canonical schedule。</strong></div>
       <div class="grid-2">
-        <article class="card teal-edge"><span class="tag">OPPORTUNITY</span><h3>更 compute-dense</h3><ul><li>fixed overhead 更易摊薄</li><li>softmax 更容易藏在 MMA 后面</li><li>MQA/GQA 的 KV reuse 更有价值</li><li>output columns 有独立 parallelism</li></ul></article>
-        <article class="card red-edge"><span class="tag">CHALLENGE</span><h3>更 resource-tight</h3><ul><li>更宽 operands / accumulators</li><li>SMEM / TMEM / RMEM 压力</li><li>occupancy 与 spill cliff</li><li>decode 仍可能 KV-bandwidth-bound</li></ul></article>
+        <div class="card teal-edge"><span class="tag">BASELINE · REPRESENTATIVE FA3 D128</span><h3>两个 consumer WG 切 Q/O rows</h3><div class="codebox">B_M = 128, B_N = 128
+
+WG1 owns O[ 0:64, 0:128]
+WG2 owns O[64:128,0:128]
+
+per WG:
+64 × 128 FP32 / 128 threads
+= 64 accumulator values / thread</div><p><code>P</code> 跟着各自的 row owner；两个 WG 不需要交换一个共享的 probability tile。</p></div>
+        <div class="card red-edge"><span class="tag">NAIVE WIDENING · KEEP THE SAME ROW OWNERS</span><h3><code>O</code> 先撞 RMEM 硬上限，<code>V</code> 同时压 SMEM</h3><div class="codebox">per WG: O[64,512]
+64 × 512 FP32 / 128 threads
+= 256 accumulator values / thread
+
+Hopper max = 255 registers / thread</div><table class="medium"><tr><th>wide-V staging</th><th>logical bytes</th></tr><tr><td><code>V[64,512]</code> BF16</td><td><strong>64 KiB / stage</strong></td></tr><tr><td>two V stages</td><td><strong>128 KiB</strong> before Q/K/P/barriers</td></tr></table><p><strong>所以不是只把 <code>B_M</code> 调小就结束：</strong>必须同时改 accumulator ownership、tile/stage 与 <code>P</code> 的 residence。</p></div>
       </div>
     </div>
-    <div class="footer"><span>先分开 d_qk（QK reduction width）与 d_v（PV output width）</span><span class="source"><a href="../notes.html#doc-large-head-dimension-inference" target="_blank">Large-d source-backed note</a></span></div>
+    <div class="footer"><span>256 是 logical accumulator lower bound，不是一个 selected binary 的 <code>ptxas</code> report；SMEM 128 KiB 也不等于单独超过 H100 227 KiB/CTA</span><span class="source"><a href="https://docs.nvidia.com/cuda/hopper-tuning-guide/index.html#occupancy" target="_blank">NVIDIA Hopper limits</a> · <a href="https://github.com/vllm-project/vllm/pull/38835" target="_blank">vLLM 512 merge</a> · <a href="https://github.com/Dao-AILab/flash-attention/pull/2422" target="_blank">upstream discussion</a> · <a href="https://github.com/sgl-project/sglang/pull/25418" target="_blank">SGLang sparse MLA</a></span></div>
   </section>
 
   <section class="slide" data-section="LargeDOwnership">
-    <div class="chapter">Large head dimension · ownership</div><h2>d_v 很宽时，按 output columns 切通常比复制完整 partial O 更自然</h2>
-    <div class="content grid-2">
-      <div class="card red-edge"><span class="tag">REDUCTION-AXIS SPLIT</span><div class="codebox">owner 0: partial O[:, 0:512] from KV0
-owner 1: partial O[:, 0:512] from KV1
+    <div class="chapter">Large d_v · the implemented ownership change</div><h2>解决方法：<code>B_M=64</code> + 按 O columns 切 WG；<code>P</code> 变成 SMEM handoff</h2>
+    <div class="content" style="display:grid;grid-template-rows:auto minmax(0,1fr);gap:14px">
+      <div class="callout"><strong><code>B_M=64</code> 本身还不够：</strong>如果一个 WG 仍持有 <code>O[64,512]</code>，还是 256 FP32 accumulator/thread。当前 path 让两个 WG 看同一组 64 Q rows，但分别持有 256 个 output columns；因而它们必须共用同一个 <code>P[64,64]</code>。</div>
+      <div class="grid-3">
+        <article class="card blue-edge"><span class="tag">PHYSICAL WG0 SLOTS · LOAD</span><h3>一个 elected warp</h3><div class="codebox">TMA → Q[64,64]
+TMA → K_j[64,64]
+TMA → V_j[64,512]</div><p>不持有 O；负责让 SMEM stage ready。一个 BF16 V stage 的 logical payload 是 <strong>64 KiB</strong>。</p></article>
+        <article class="card teal-edge"><span class="tag">CONSUMER WG1 · 4 WARPS TOGETHER</span><h3>QK + softmax + PV 左半</h3><div class="codebox">Q @ K_jᵀ → S_j[64,64]
+softmax    → P_j[64,64]
+publish P_j to SMEM
 
-final O = partial_0 + partial_1</div><p>复制 complete-width FP32 state；还产生 numeric combine obligation。</p></div>
-      <div class="card teal-edge"><span class="tag">OUTPUT-AXIS SPLIT</span><div class="codebox">QK / softmax producer: publish P
+P_j @ V_j[:,0:256]
+ → O[:,0:256]</div><p><strong>owner：</strong><code>O[:,0:256]</code> = 64 KiB logical FP32 = 平均 128 accumulator/thread。</p></article>
+        <article class="card violet-edge"><span class="tag">CONSUMER WG2 · 4 WARPS TOGETHER</span><h3>只做 PV 右半</h3><div class="codebox">wait PFull
+read same P_j[64,64]
 
-PV owner 0: O[:,   0:256]
-PV owner 1: O[:, 256:512]
-
-final = disjoint stores / concat</div><p>避免相加 partial O；代价是完整 P tile 的 distribution、SMEM traffic 与同步。</p></div>
+P_j @ V_j[:,256:512]
+ → O[:,256:512]</div><p><strong>owner：</strong><code>O[:,256:512]</code>。不读 Q/K、不重算 S/P；两半最后 disjoint store / concat，<strong>不相加</strong>。</p></article>
+      </div>
     </div>
-    <div class="footer"><span>public SM90 d=512 direction；不是所有 production backend 的 universal schedule</span><span class="source"><a href="../slides/d512-inference.html" target="_blank">d=512 visual comparison</a> · <a href="../notes.html#doc-large-head-dimension-inference" target="_blank">evidence</a></span></div>
+    <div class="footer"><span>代价：<code>P[64,64]</code> 与 online-softmax scales 从 WG1 经 SMEM + <code>PFull/PEmpty</code> 交给 WG2；WGMMA 的稳定教学粒度是 128-thread WG，不是四个连续 16-row warp</span><span class="source"><a href="https://github.com/Dao-AILab/flash-attention/blob/d7e4dba3e568106b0f1b6323b07c1272f53679b3/hopper/flash_fwd_kernel_sm90.h#L420-L433" target="_blank">official WG dispatch</a> · <a href="https://github.com/Dao-AILab/flash-attention/blob/d7e4dba3e568106b0f1b6323b07c1272f53679b3/hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp#L1354-L1434" target="_blank">PV-only WG</a></span></div>
+  </section>
+
+  <section class="slide" data-section="Gemma512">
+    <div class="chapter">Large head dimension · back to the real 512/512 case</div><h2>Gemma 4 full attention 不是 <code>d_qk=64</code>：它是真正的 <code>d_qk=d_v=512</code></h2>
+    <div class="content" style="display:grid;grid-template-rows:auto minmax(0,1fr);gap:14px">
+      <div class="callout"><strong>前两页用 official <code>64/512</code> path 讲清“为什么必须改 owner graph”；</strong>这一页再回到 Gemma 4，只讲 downstream 代码已经证明的事，不把 open PR 画成已 settle 的 per-WG schedule。</div>
+      <div class="grid-3">
+        <article class="card blue-edge"><span class="tag">MODEL FACT · GEMMA 4 31B</span><h3>layer type 决定 head width</h3><div class="codebox">sliding attention
+  d_qk = d_v = 256
+
+full attention
+  d_qk = d_v = 512
+
+attention_k_eq_v = true</div><p><code>K=V</code> 表示复用 projection weights，<strong>不是</strong>把 QK reduction width 变成 64。</p></article>
+        <article class="card teal-edge"><span class="tag">DOWNSTREAM CODE FACT · VLLM IMPORT</span><h3>wide case 换了 specialization</h3><div class="codebox">B_M = 64, B_N = 64
+num_stages = 1
+
+PV WGMMA output N ≤ 256
+atom_layout_n = 2
+  when d_qk or d_v &gt; 256</div><p>vLLM fork 导入 upstream PR 2422 的两个 commits，并已合入 Gemma 4 / H200 的 SM90+FA4 serving path。</p></article>
+        <article class="card amber-edge"><span class="tag">OPEN DESIGN BOUNDARY</span><h3>两个 MMA WG 如何分 QK 仍未 settle</h3><ul><li>WIP 代码把 <code>atom_layout_n=2</code> 同时用于 QK 与 PV；</li><li>upstream review 追问 QK 是切 score-N 还是重复计算；</li><li>评审还指出作者写的 QK MMA dimensions 与 <code>K=512</code> 不一致。</li></ul><div class="callout small"><strong>所以：</strong>可以说“downstream 能跑”，不能把 64/512 的 WG1/WG2 图原样套到 Gemma 4。</div></article>
+      </div>
+    </div>
+    <div class="footer"><span>当前最稳定的结论：Gemma 4 形状已确定，downstream integration 已 merge，但 exact QK owner graph 需要等 upstream 定稿或对 selected binary 做 SASS/profile audit</span><span class="source"><a href="https://huggingface.co/google/gemma-4-31B-it/blob/a77ab7d40c989d1d32f78353653c0769c6291146/config.json" target="_blank">Gemma 4 config</a> · <a href="https://github.com/vllm-project/flash-attention/pull/130" target="_blank">vLLM FA import</a> · <a href="https://github.com/vllm-project/vllm/pull/38835" target="_blank">merged integration</a> · <a href="https://github.com/Dao-AILab/flash-attention/pull/2422" target="_blank">open upstream review</a></span></div>
   </section>
 
   <section class="slide" data-section="HardwareFriendly">
@@ -609,21 +685,21 @@ final = disjoint stores / concat</div><p>避免相加 partial O；代价是完�
   </section>
 
   <section class="slide" data-section="Rubin">
-    <div class="chapter">Rubin projection</div><h2>不要先叫 FA5；先重新测 matrix / EX2 / movement / sync 的平衡</h2>
-    <div class="content grid-2 wide-left">
+    <div class="chapter">Hopper → Blackwell → Rubin</div><h2>先看哪些资源比例发生变化，再讨论 Rubin 给 Attention 的机会</h2>
+    <div class="content grid-2 wide-right">
       <figure class="figure dark"><img src="../assets/high-level/rubin-architecture.webp" alt="NVIDIA Rubin GPU chip architecture"><figcaption>NVIDIA Rubin GPU chip architecture · Figure 2</figcaption></figure>
       <div class="card top">
-        <table class="dense"><tr><th>public mechanism</th><th>Attention question</th></tr>
-          <tr><td>22 TB/s HBM4</td><td>decode / KV cache 直接受益；training 不按带宽比例加速</td></tr>
-          <tr><td>faster EX2</td><td>FA4 partial software exp 是否还值得？</td></tr>
-          <tr><td>2× K processing / clock</td><td>large-d K-loop、tile、pipeline depth 怎么重搜？</td></tr>
-          <tr><td>inline TMA descriptor update</td><td>paged / segmented KV addressing overhead 能否下降？</td></tr>
-          <tr><td>dependent trigger / counted writes</td><td>split-stage / distributed tile readiness 更细；但仍不定义 FP reduction order</td></tr>
+        <table class="dense"><tr><th></th><th>H100 SXM5</th><th>B200</th><th>Rubin public max</th></tr>
+          <tr><td><strong>SMs</strong></td><td>132</td><td>148</td><td>224</td></tr>
+          <tr><td><strong>HBM</strong></td><td>80 GB HBM3</td><td>180 GB HBM3e</td><td>up to 288 GB HBM4</td></tr>
+          <tr><td><strong>peak BW</strong></td><td>3.35 TB/s</td><td>about 8 TB/s</td><td>22 TB/s</td></tr>
+          <tr><td><strong>Attention-facing change</strong></td><td>WGMMA + TMA；RMEM accum</td><td>tcgen05 + TMEM；1-/2-CTA</td><td>faster EX2；enhanced TMA；finer triggers</td></tr>
         </table>
-        <div class="callout small">尚无 pinned Rubin FlashAttention implementation、SASS、profile、完整 on-chip resource contract；这里是 architecture projection。</div>
+        <div class="arrow-line"><div class="node"><strong>Hopper / FA3</strong><br>overlap TMA·WGMMA·softmax</div><span class="arrow">→</span><div class="node"><strong>Blackwell / FA4</strong><br>matrix scales faster；TMEM decouples</div><span class="arrow">→</span><div class="node"><strong>Rubin</strong><br>HBM + EX2 also change；re-model</div></div>
+        <div class="callout small"><strong>Attention questions：</strong>22 TB/s 更直接帮助 decode/KV traffic；faster EX2 可能改变 FA4 software-exp 选择；enhanced TMA/triggers 可能改善 irregular/dependent movement。尚无 pinned Rubin FA artifact、SASS 或 profile。</div>
       </div>
     </div>
-    <div class="footer"><span>activation compression 是另一条语义 track；不能自动当作 exact dense attention</span><span class="source"><a href="https://developer.nvidia.com/blog/inside-nvidia-rubin-gpu-architecture-powering-the-era-of-agentic-ai/" target="_blank">NVIDIA Rubin</a> · <a href="../notes.html#doc-rubin-attention-projection" target="_blank">projection note</a></span></div>
+    <div class="footer"><span>产品数字是公开 SKU / maximum，不是同 dtype 的 apples-to-apples Attention throughput；Rubin 结论仍是 projection</span><span class="source"><a href="https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/" target="_blank">Hopper</a> · <a href="https://developer.nvidia.com/blog/scaling-autonomous-ai-agents-and-workloads-with-nvidia-dgx-spark/" target="_blank">B200</a> · <a href="https://developer.nvidia.com/blog/inside-nvidia-rubin-gpu-architecture-powering-the-era-of-agentic-ai/" target="_blank">Rubin</a></span></div>
   </section>
 
   <section class="slide" data-section="KernelDifficulty">
@@ -684,11 +760,11 @@ final = disjoint stores / concat</div><p>避免相加 partial O；代价是完�
       <p class="answer">Backward = five GEMMs + multi-writer dQ.<br>Determinism = fixed combine order; scheduling decides the price.</p>
       <p class="muted">Large d: more matrix work per score, but wider live state. Rubin: re-measure before renaming.</p>
     </div></div>
-    <div class="footer"><span>Draft 01 · 2026-08-06</span><span class="source"><a href="../notes.html#doc-high-level-questions" target="_blank">完整来源与 scope</a></span></div>
+    <div class="footer"><span>Draft 02 · 2026-08-06</span><span class="source"><a href="../notes.html#doc-high-level-questions" target="_blank">完整来源与 scope</a></span></div>
   </section>
 </main>
 
-<div class="hud" aria-label="Slide controls"><button id="prev" aria-label="Previous slide">←</button><span class="counter" id="counter">1 / 38</span><button id="next" aria-label="Next slide">→</button></div>
+<div class="hud" aria-label="Slide controls"><button id="prev" aria-label="Previous slide">←</button><span class="counter" id="counter">1 / 39</span><button id="next" aria-label="Next slide">→</button></div>
 <div class="progress" aria-hidden="true"><span id="progress"></span></div>
 <script>
   const slides = [...document.querySelectorAll('.slide')];

@@ -68,10 +68,12 @@ forward:
   O  = P V
 
 backward, given G = dO:
-  dV = P^T G
+  S' = alpha Q K^T
+  P' = exp(S' - LSE[:, None])   # replay mask/dropout contract as needed
+  dV = P'^T G
   dP = G V^T
   D  = rowsum(G * O)
-  dS = P * (dP - D)
+  dS = P' * (dP - D)
   dQ = alpha dS K
   dK = alpha dS^T Q
 ```
@@ -80,6 +82,10 @@ The implementation does not need to materialize the `N x N` matrices `S`,
 `P`, `dP`, or `dS` in HBM. FlashAttention tiles them, forward carries online
 softmax state, and backward reconstructs `P` from `Q`, `K`, and saved `LSE`.
 The schedule may change; this mathematical contract does not.
+
+The prime on `S'`/`P'` is only a teaching reminder that backward recomputes
+them tile by tile. Mathematically they are the same score and probability
+values as forward, subject to exact replay of mask, scale, and dropout RNG.
 
 ## 3. What The Kernel Launch Parameters Mean
 
@@ -129,12 +135,28 @@ once. The limit is the minimum imposed by:
 - architectural resident-CTA and cluster limits;
 - architecture-specific resources such as cooperative-cluster placement.
 
-A deliberately simple arithmetic example: suppose an SM can host at most 64
-warps, a CTA contains 128 threads = 4 warps, and registers/SMEM admit four such
-CTAs. Then 16 warps are resident and theoretical occupancy is `16 / 64 = 25%`.
-If an SMEM-heavy specialization admits only one CTA, the same warp count gives
-`4 / 64 = 6.25%`. These numbers describe capacity, not how often a pipeline is
-busy.
+Use an actual representative FA2/A100 configuration instead of an invented
+machine. A100's architectural ceilings include 32 resident CTAs, 64 resident
+warps, and a 164-KiB SMEM carveout per SM. The audited FA2 d64 forward teaching
+path uses 128 threads = 4 warps and 48 KiB of CTA shared memory:
+
+```text
+architectural CTA limit:          32 CTAs
+warp limit:                floor(64 / 4) = 16 CTAs
+SMEM limit:              floor(164 / 48) =  3 CTAs
+register limit:      requires compiled register count
+
+resident CTAs <= min(32, 16, 3, register limit)
+```
+
+If registers permit three CTAs, the warp occupancy is `3 * 4 / 64 = 18.75%`.
+The important first question is therefore "which resource admits the fewest
+CTAs?" This is still a theoretical source-backed example, not a measured
+utilization claim for an arbitrary FA2 binary.
+
+The A100 ceilings come from NVIDIA's
+[Ampere Tuning Guide](https://docs.nvidia.com/cuda/ampere-tuning-guide/#occupancy);
+the 48-KiB specialization is pinned in the [FA2 forward audit](fa2-forward.md).
 
 These are admission capacity limits, not utilization measurements. A warp can
 be resident but stalled; a one-heavy-CTA-per-SM kernel can still run efficiently
@@ -165,7 +187,42 @@ Use compiler resource output, the CUDA occupancy API or Nsight Compute
 occupancy calculator for the theoretical limit, then use profiler counters to
 check achieved active warps and actual stall/utilization behavior.
 
-## 4. What Warp Scheduler And Dispatch Mean
+## 4. Warp Specialization, Then Scheduler And Dispatch
+
+Warp specialization is a software decomposition inside one CTA. Whole warps
+or warpgroups take different uniform branches and execute different long-lived
+loops. A Hopper-style conceptual skeleton is:
+
+```text
+role = warp_or_warpgroup_id(threadIdx.x)
+
+if role == producer:
+    issue TMA loads into circular SMEM stages
+    signal stage-ready barriers
+elif role == consumer_0 or role == consumer_1:
+    wait for stage-ready
+    issue WGMMA and execute softmax work
+    release the consumed stage
+else:
+    perform epilogue / scheduler work
+```
+
+The implementation tools are ordinary control flow plus explicit protocols:
+
+- a role is derived from `threadIdx` / warp ID, with all lanes of a warp taking
+  the same branch;
+- pipeline state and `mbarrier`/named barriers express producer-ready and
+  consumer-release handoffs;
+- `setmaxnreg` can move register budget away from a light producer role toward
+  register-heavy consumer warpgroups;
+- SMEM remains CTA-scoped and the whole CTA remains the residency/lifetime
+  unit.
+
+Specialization therefore means "different warps issue different instruction
+classes and synchronize at explicit handoffs." It is not hardware ownership.
+See the FA3 paper's
+[warp-specialization section](https://arxiv.org/html/2407.08608#S3.SS1) and the
+pinned [FA3 source audit](fa3.md).
 
 A resident warp has a program counter, active mask, registers, and dependency
 state. At an issue opportunity, a warp scheduler selects a warp whose next
@@ -390,7 +447,20 @@ softmax groups plus a correction group, and changes the algorithm with partial
 software exponential and conditional rescaling. It is not a simple WGMMA to
 tcgen05 spelling change.
 
-## 11. Representative FA2--FA4 Tile Specs
+The schedule change is specifically a **rebuild of ping-pong**, not its
+removal:
+
+| FA3 Hopper | FA4 Blackwell |
+| --- | --- |
+| two consumer warpgroups each own register-resident `S/P/O` and alternate GEMM/softmax bundles | one MMA/control role drives two Q streams; two softmax groups consume separate `S` streams |
+| softmax and MMA responsibilities remain coupled inside each consumer group | TMEM hands `S -> P -> PV` across roles; a separate correction group owns output rescaling |
+| adding lookahead requires another large register score fragment | multiple TMEM score/output regions expose more dependency-ready MMA and correction work |
+
+FA4 splits the old do-both role into finer ownership and shorter handoffs. That
+creates more legal overlap opportunities, but every TMEM alias and handoff
+still needs a producer-complete/consumer-release protocol.
+
+## 11. Forward Schedule Summary: Representative FA2--FA4 Tile Specs
 
 Physical tile constants are specialization-specific. For the pinned ordinary
 d128 teaching paths:
@@ -405,7 +475,17 @@ Do not collapse mathematical subtile, logical work item, launched CTA, CTA
 cluster, or persistent CTA lifetime into one meaning of “tile.” The canonical
 seven-field description is maintained in [tile spec](tile-spec.md).
 
-## 12. Why Backward Needs More On-Chip State
+## 12. Backward Schedule Summary And Why It Needs More On-Chip State
+
+The backward equations stay fixed while the owner, residence, and publication
+protocol change:
+
+| Generation | Local owner/schedule | On-chip strategy | Partial `dQ` publication |
+| --- | --- | --- | --- |
+| FA1 | K/V owner scans small Q tiles | eight warp-private `dQ` slices plus fixed CTA-local combine | serial state handoff or scalar FP32 atomic |
+| FA2 | larger K/V owner scans Q tiles | output-wise warp partition; larger Q/dO/P/dS staging | scalar FP32 atomic in the initial path |
+| FA3 | five-WGMMA graph with specialized writer | TMA circular stages and register accumulators | TMA bulk reduce-add; optional semaphore order |
+| FA4 | cross-iteration five-MMA graph; eligible 2-CTA group | TMEM lifetime aliasing; DSMEM exchange reduces SMEM traffic | bulk reduce-add; fewer updates in 2-CTA; optional ordered writers |
 
 Forward has two GEMMs per attention cell: `QK^T` and `PV`. Backward recomputes
 the score/probability path and performs five GEMMs: `S`, `dP`, `dV`, `dK`, and
@@ -442,7 +522,46 @@ paper reports up to 37.9% throughput loss for its FA3-derived deterministic
 baseline and up to 1.28x recovery from improved scheduling. These are DASH
 paper measurements, not universal FA3 numbers.
 
+Keep the scheduling labels separate:
+
+- **causal:** Q tile `i` visits only K/V tiles on or before its diagonal, so
+  work lengths are triangular rather than uniform;
+- **persistent CTA:** one resident CTA repeatedly pulls logical work items;
+- **LPT (longest processing time first):** schedule longer causal/varlen work
+  items earlier to reduce the final straggler/makespan;
+- **SPT-style ordered writers (shortest processing time first):** align the
+  prescribed writer chain for each `dQ` destination with which partials become
+  ready early, reducing semaphore head-of-line blocking;
+- **swizzle:** permute batch/head/tile assignment order for locality or to
+  spread conflicting work; it does not change the Attention math.
+
+FA4 can use LPT for the general work queue and an SPT-style order for the
+ordered `dQ` writer queue without contradiction: they optimize different
+queues.
+
 ## 14. Rubin: Opportunities And Challenges For Attention
+
+Start with the generational baseline rather than Rubin in isolation. These are
+product/SKU figures from public NVIDIA material, so precision and availability
+qualifiers matter:
+
+| Product | SMs | HBM capacity / peak bandwidth | Attention-relevant execution change |
+| --- | ---: | --- | --- |
+| H100 SXM5 / Hopper | 132 | 80 GB HBM3 / 3.35 TB/s | fourth-gen Tensor Core, WGMMA, TMA; accumulator in RMEM |
+| B200 / Blackwell | 148 | 180 GB HBM3e / about 8 TB/s | fifth-gen Tensor Core, fully async tcgen05, TMEM, 1-/2-CTA MMA |
+| Rubin public maximum | 224 | up to 288 GB HBM4 / 22 TB/s | 896 Tensor Cores, enhanced TMA, faster EX2, finer dependent triggering |
+
+Sources: NVIDIA's [Hopper architecture post](https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/),
+[B200 developer comparison](https://developer.nvidia.com/blog/scaling-autonomous-ai-agents-and-workloads-with-nvidia-dgx-spark/),
+and [Rubin architecture post](https://developer.nvidia.com/blog/inside-nvidia-rubin-gpu-architecture-powering-the-era-of-agentic-ai/).
+
+The causal story is then:
+
+```text
+Hopper:    FA3 overlaps TMA / WGMMA / softmax
+Blackwell: matrix path scales faster than EX2/SMEM -> FA4 moves state to TMEM
+Rubin:     HBM and EX2 change materially too -> remeasure the resource roofline
+```
 
 Public Rubin material announces 22 TB/s HBM4, faster `EX2`, doubled Tensor Core
 K-dimension processing per clock, enhanced TMA descriptor handling,
@@ -492,22 +611,122 @@ opportunity to amortize scheduling and pointwise softmax work and to sustain
 Tensor Core pipelines more easily. MQA/GQA can add a stronger opportunity by
 reusing one K/V tile across several query heads.
 
-The same change creates sharper resource pressure:
+Do not compress the two widths into an unqualified `d=512`. There are three
+distinct public situations as of 2026-08-06:
 
-- Q/K/V movement and total FLOPs grow;
-- a wider output accumulator consumes more registers or TMEM;
-- larger operand stages consume SMEM and can reduce CTA residency;
-- spills and tile-boundary effects become performance cliffs;
-- publishing a probability tile to multiple PV consumers adds SMEM traffic
-  and synchronization;
-- decode may remain KV-cache-bandwidth-bound despite more compute per score.
+- Gemma 4 full/global attention resolves a 512-wide head. [vLLM PR
+  38835](https://github.com/vllm-project/vllm/pull/38835) has merged SM90+FA4
+  hdim512 dispatch and reports an H200 Gemma 4 test; its FlashAttention
+  dependency [imports](https://github.com/vllm-project/flash-attention/pull/130)
+  the still-open upstream PR 2422 into the vLLM fork.
+- Upstream [FlashAttention PR
+  2422](https://github.com/Dao-AILab/flash-attention/pull/2422) remains open, and its review still questions
+  the exact two-warpgroup QK ownership. This is not yet one canonical upstream
+  schedule.
+- [SGLang's DeepSeek V4
+  integration](https://github.com/sgl-project/sglang/pull/25418) is a sparse-MLA
+  path using [FlashMLA](https://github.com/deepseek-ai/FlashMLA), whose
+  published MQA contract is `d_qk=576,d_v=512`; it is not evidence for the same
+  dense 512/512 schedule.
 
-`d_qk` and `d_v` suggest different schedule responses. A larger `d_qk` creates
-more reduction steps for QK. A larger `d_v` creates independent output columns;
-splitting those columns gives disjoint outputs and avoids adding replicated
-complete-width partial `O` tensors. One public SM90 large-`d_v` design direction
-therefore computes QK/softmax once, publishes `P`, and gives separate PV
-consumers disjoint output-column ranges.
+The following two-slide teaching example is instead a concrete implemented
+SM90 path at official revision
+`d7e4dba3e568106b0f1b6323b07c1272f53679b3`: FA3 `LargeHeadDimV` with
+`d_qk=64,d_v=512`.
+
+First explain why the representative FA3 d128 ownership cannot merely be
+widened. With `B_M=128`, its two consumer warpgroups own disjoint 64-row O
+slices. At d128, each group's logical accumulator is `O[64,128]`:
+
+```text
+64 * 128 FP32 / 128 threads = 64 accumulator values per thread
+```
+
+Naively retaining that row ownership at `d_v=512` makes each group hold
+`O[64,512]`:
+
+```text
+64 * 512 FP32 / 128 threads = 256 accumulator values per thread
+```
+
+The [NVIDIA Hopper Tuning
+Guide](https://docs.nvidia.com/cuda/hopper-tuning-guide/index.html#occupancy)
+gives an architectural maximum of 255 registers per thread, so O alone is
+already over the limit before score fragments, softmax state, pointers, and
+loop state. Wide V staging also consumes SMEM quickly: at
+`B_N=64,d_v=512,BF16`, one V stage is 64 KiB, and two V stages are 128 KiB
+before Q/K/P/barriers. The register accumulator is the first hard wall in this
+naive widening; SMEM pressure simultaneously constrains tile size, stages, and
+where P can live.
+
+The implemented response is:
+
+```text
+d_qk=64, d_v=512, B_M=B_N=64
+Q[64,64], K_j[64,64] -> S_j/P_j[64,64]
+P_j[64,64] @ V_j[64,512] -> O[64,512]
+```
+
+Its CTA uses a producer group and two 128-thread consumer warpgroups:
+
+| Group | Work for every K/V tile `j` | Persistent output owner |
+| --- | --- | --- |
+| producer group | one elected warp issues TMA for Q/K/V | none |
+| consumer WG1 | complete QK `64x64`, row softmax, publish P, then PV with `V[:,0:256]` | `O[:,0:256]` |
+| consumer WG2 | wait for the same P; PV with `V[:,256:512]` | `O[:,256:512]` |
+
+The two output slices are disjoint and are concatenated/stored, not added.
+Each logical FP32 slice is `64*256*4 = 64 KiB`, distributed across one
+warpgroup, or 128 FP32 accumulator values per thread on average. The cost is
+publishing `P[64,64]` and the online-softmax scales through SMEM plus
+`PFull/PEmpty` synchronization, because two column owners now consume one
+shared probability tile.
+
+The four warps in a consumer warpgroup execute WGMMA collectively. Their
+fragments are interleaved across 128 threads; it is misleading to label them
+as four clean contiguous 16-row blocks. The robust ownership statement is
+WG1 owns the first 256 O columns and WG2 the second 256.
+
+`B_M=32` is still a possible separate specialization. An unsplit
+`O[32,512]` FP32 tile is also 64 KiB, but the current path deliberately uses
+`B_M=64`: it matches Hopper's 64-row WGMMA collective, reuses each K/V tile
+across twice as many Q rows, and avoids doubling the Q-tile count. A `B_M=32`
+path would need predication, packing, or another MMA layout; its extra CTAs can
+also improve parallelism, so profiling must decide the winner. There is no
+universal Tensor Core rule that `B_M>=32`.
+
+Ordinary `d_qk=d_v=512` is a different kernel. The correct status statement is
+"working downstream vLLM integration, upstream schedule not yet canonical,"
+not "there is no implementation." These slides must not transfer the exact
+`d_qk=64,d_v=512` ownership map to Gemma 4 without binary- and revision-level
+evidence.
+
+Add one explicit Gemma 4 page after the implemented `LargeHeadDimV` example.
+The pinned model configuration says:
+
+```text
+sliding_attention: head_dim = 256
+full_attention:    global_head_dim = 512
+attention_k_eq_v = true
+```
+
+For the full-attention layer this resolves `d_qk=d_v=512` for the attention
+kernel. `attention_k_eq_v` means K and V reuse the same projection weights; it
+does not make `d_qk=64`.
+
+The vLLM FlashAttention fork imports both commits from the open upstream PR
+2422. The imported CuTe code selects `B_M=B_N=64`, one stage for either width
+above 256, caps one PV WGMMA output-N tile at 256, and sets
+`atom_layout_n=2` for both QK and PV when either width exceeds 256. The merged
+vLLM integration demonstrates that this downstream path can serve Gemma 4 on
+H200, but the upstream review still questions the exact QK split. The slide
+must therefore distinguish:
+
+| Safe claim | Not yet safe |
+| --- | --- |
+| real Gemma 4 512/512 shape | copy the FA3 64/512 owner map |
+| downstream `64x64`, one-stage, two-MMA-WG WIP code | draw exact stable per-WG QK rectangles |
+| merged vLLM H200 correctness/performance test | claim upstream canonical schedule or pinned SASS behavior |
 
 The hardware-friendly summary is not “larger head dimension is good.” It is:
 
