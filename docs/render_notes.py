@@ -15,6 +15,7 @@ TICK = chr(96)
 
 DOCS = [
     ("README.md", "Reading Guide", "Reader paths, evidence contract, and scope."),
+    ("high-level-questions.md", "High-Level Questions", "GPU execution, compilation, occupancy, FA evolution, determinism, large-d, Rubin, and kernel-analysis tools."),
     ("tile-spec.md", "High-Level Tile Spec", "Canonical tiles, owner/reduction contracts, and representative FA1--FA4 lowerings."),
     ("evolution.md", "FA1 To FA4 Tile Atlas", "One tile grid, forward/backward loops, ownership, and the cross-generation mental model."),
     ("fa1-checkpoint.md", "FA1 Checkpoint", "Compact ownership, memory, and determinism re-entry."),

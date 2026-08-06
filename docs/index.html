@@ -81,7 +81,8 @@
         <h1>FlashAttention<br>from first principles</h1>
         <p class="subtitle">从 attention 数学、online softmax 和 tiling 出发，逐层走到 CTA/warp ownership、memory movement、Tensor Core primitive、pipeline、performance 与 deterministic backward。</p>
         <div class="actions">
-          <a class="button" href="slides/fa1-forward.html">从 FA1 forward 开始</a>
+          <a class="button" href="slides/high-level-questions.html">先看 High-Level Questions</a>
+          <a class="button secondary" href="slides/fa1-forward.html">从 FA1 forward 开始</a>
           <a class="button secondary" href="notes.html#doc-tile-spec">High-level tile spec</a>
           <a class="button secondary" href="notes.html">Long-form HTML</a>
         </div>
@@ -102,6 +103,11 @@
     <section>
       <h2>Choose a reading path</h2>
       <div class="grid">
+        <a class="card" href="slides/high-level-questions.html">
+          <span class="tag">First map · visual</span>
+          <h3>先回答 15 个 high-level 问题</h3>
+          <p>GPU/SM、launch、occupancy、scheduler、编译、cycle、FA 演进、backward、determinism、large-d、Rubin 与 kernel debug 方法。</p>
+        </a>
         <a class="card" href="slides/fa1-forward.html">
           <span class="tag">Beginner · visual</span>
           <h3>从一个 FA1 forward CTA 开始</h3>

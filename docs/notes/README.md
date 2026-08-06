@@ -9,27 +9,33 @@ reading surfaces, not independent specifications.
 
 ### First encounter
 
-1. [FA1 to FA4 high-level tile spec](tile-spec.md)
-2. [FA1 to FA4 tile and computation mental model](evolution.md)
-3. [FA1 forward visual map](../slides/fa1-forward.html)
-4. [FA1 backward visual map](../slides/fa1-backward.html)
-5. [FA1 one-page checkpoint](fa1-checkpoint.md)
+1. [High-level questions and GPU-to-kernel mental map](high-level-questions.md)
+2. [High-level questions visual deck](../slides/high-level-questions.html)
+3. [FA1 to FA4 high-level tile spec](tile-spec.md)
+4. [FA1 to FA4 tile and computation mental model](evolution.md)
+5. [FA1 forward visual map](../slides/fa1-forward.html)
+6. [FA1 backward visual map](../slides/fa1-backward.html)
+7. [FA1 one-page checkpoint](fa1-checkpoint.md)
 
-The spec gives every generation the same $(i,j)$ vocabulary and separates the
-mathematical tile, logical owner, and physical lowering. The evolution note
-adds the causal story; the visual maps then introduce CUDA vocabulary and
-ground that model in the common `B=1, H=32, N=8192, d=128` example.
+The high-level question route introduces the GPU, launch, occupancy,
+scheduler/dispatch, compilation, cycle, architecture, determinism, large-d,
+and kernel-analysis vocabulary. The spec then gives every generation the same
+$(i,j)$ vocabulary and separates the mathematical tile, logical owner, and
+physical lowering. The evolution note adds the causal story; the detailed
+visual maps ground that model in the common `B=1, H=32, N=8192, d=128`
+example.
 
 ### Full source-backed path
 
-1. [FA1 foundations](fa1-foundations.md)
-2. [FA2 forward delta](fa2-forward.md)
-3. [FA2 backward delta](fa2-backward.md)
-4. [FA3 Hopper deep dive](fa3.md)
-5. [FA4 Blackwell deep dive](fa4.md)
-6. [Large-head-dimension inference schedule comparison](large-head-dimension-inference.md)
-7. [Current implementation and determinism audit](current-implementation-and-determinism.md)
-8. [Rubin Attention opportunity and challenge map](rubin-attention-projection.md)
+1. [High-level questions source map](high-level-questions.md)
+2. [FA1 foundations](fa1-foundations.md)
+3. [FA2 forward delta](fa2-forward.md)
+4. [FA2 backward delta](fa2-backward.md)
+5. [FA3 Hopper deep dive](fa3.md)
+6. [FA4 Blackwell deep dive](fa4.md)
+7. [Large-head-dimension inference schedule comparison](large-head-dimension-inference.md)
+8. [Current implementation and determinism audit](current-implementation-and-determinism.md)
+9. [Rubin Attention opportunity and challenge map](rubin-attention-projection.md)
 
 The later-generation documents assume the earlier ownership and memory model.
 They intentionally explain deltas instead of repeating all of FA1.
